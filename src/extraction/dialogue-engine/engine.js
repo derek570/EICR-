@@ -84,10 +84,7 @@ import { canonicaliseNumericReadingField } from '../value-enum-validator.js';
 // `stage6-dispatch-validation.js`, which would evaluate `stage6-tool-schemas.js`
 // while `ALL_DIALOGUE_SCHEMA_NAMES` is still uninitialised — see the leaf's own
 // header, and the executable import-closure assertion that enforces it.
-import {
-  advisoryForFieldValue,
-  describeSlotValidation,
-} from '../circuit-value-descriptors.js';
+import { advisoryForFieldValue, describeSlotValidation } from '../circuit-value-descriptors.js';
 // PLAN-A (feedback-2026-09-17) — the handoff tombstone. A ZERO-IMPORT leaf, so
 // the two re-entry readers that live outside this module (the rename dispatcher
 // and the harness entry hook) can reach the same key builder without importing
@@ -96,8 +93,9 @@ import {
   setHandoff,
   deleteHandoff,
   isHandedOff,
+  hasAnyHandoffForSchema,
 } from '../dialogue-handoff-tombstone.js';
-import { formatCorrectionClause } from '../confirmation-text.js';
+import { formatCorrectionClause, speakSentinelValue } from '../confirmation-text.js';
 // NOTE: `clearValueCorrection` (lifecycle rule 2 — the slot itself was cleared)
 // is deliberately NOT imported here: the dialogue engine has no per-slot clear
 // path. Within an episode a slot is only ever OVERWRITTEN, which routes through
@@ -531,10 +529,16 @@ export function processDialogueTurn(ctx) {
               toolCallIdPrefix: crumbSchema.toolCallIdPrefix,
               sessionId,
               kind: 'correction',
+              // PLAN-A2 — same sentinel rendering as the terminal read-back and
+              // the ring triple. Continuity fields do not opt into this
+              // breadcrumb today, so this is defence in depth rather than a
+              // reachable fix: a future schema that did opt in would otherwise
+              // speak the bare character. Non-sentinel values pass through
+              // untouched, so every existing breadcrumb is byte-identical.
               text:
                 correctionClause === null
-                  ? `Got it, ${label} ${effective}.`
-                  : `Got it, ${label} ${effective}. ${correctionClause}.`,
+                  ? `Got it, ${label} ${speakSentinelValue(effective)}.`
+                  : `Got it, ${label} ${speakSentinelValue(effective)}. ${correctionClause}.`,
               now,
               responseEpoch,
             });
@@ -1277,7 +1281,16 @@ function computeUncoveredReadback(state, schema, siteLabel) {
     // operations that predate the label capture, then the raw field name.
     const slot = schema?.slots?.find((s) => s.field === op.field);
     const label = op.label ?? slot?.label ?? op.field;
-    const value = op.written_value ?? op.dictated_value;
+    // PLAN-A2 (2026-09-23) — the stored value can now be the "∞" sentinel on a
+    // continuity slot, and this sentence is SPOKEN. A bare "∞" is silence in
+    // every TTS voice, so "Also got lives ∞." would read as "Also got lives."
+    // — an applied reading with no audible read-back, which Audio-First
+    // invariant #1 forbids. Reached when a ring walk is cancelled, deferred or
+    // otherwise terminated before the triple is confirmed; the confirmed-triple
+    // path renders through the same helper in
+    // buildRingContinuityConfirmation. Every non-sentinel value is returned
+    // unchanged, so existing read-backs stay byte-identical.
+    const value = speakSentinelValue(op.written_value ?? op.dictated_value);
     const opCircuit = op.effective_circuit_ref ?? null;
     const circuitPrefix =
       opCircuit !== null && opCircuit !== currentCircuitRef ? `circuit ${opCircuit} ` : '';
@@ -3518,7 +3531,15 @@ function runActivePath({
           source: 'confirmation_5b_named_amend',
           circuit_ref: state.circuit_ref,
         });
-        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
+        const r = applyWriteWithDerivations(
+          session,
+          schema,
+          slot,
+          state.circuit_ref,
+          w.value,
+          now,
+          op
+        );
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D Seam B — the raw `state.values[w.field] = w.value` that used to
         // sit here is DELETED. applyWrite has already written the CLAMPED value;
@@ -5528,9 +5549,7 @@ export function composeFinishSummary(spec, values, omittedFields = new Set()) {
   }
   return {
     text:
-      rendered.length > 0
-        ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}`
-        : null,
+      rendered.length > 0 ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}` : null,
     fields,
   };
 }
@@ -5856,6 +5875,22 @@ function matchesAny(text, patterns) {
 }
 
 /**
+ * PLAN-A2 EP — the schemas a script can pivot into, read from its slots'
+ * declared derivations (`{ value: '61009', pivot: 'rcbo' }`). Static: a pivot
+ * is decided by a value the inspector may dictate LATER in the walk, not only by
+ * what the model seeded, so the fence must not depend on the pending writes.
+ */
+function pivotTargetsOf(schema) {
+  const targets = new Set();
+  for (const slot of schema?.slots ?? []) {
+    for (const d of Array.isArray(slot.derivations) ? slot.derivations : []) {
+      if (typeof d?.pivot === 'string') targets.add(d.pivot);
+    }
+  }
+  return [...targets];
+}
+
+/**
  * Server-driven script entry — the back door for the Sonnet
  * `start_dialogue_script` tool (Plan: Silvertown follow-up 2026-04-30).
  *
@@ -6095,6 +6130,53 @@ export function enterScriptByName({
     };
   }
 
+  // PLAN-A2 EP (2026-09-23, Codex cycle 3/4) — the circuit-less start after a
+  // handoff. `circuit: null` is allowed above ("engine asks"), and the check just
+  // above cannot match it. Left alone, the engine asks "Which circuit?", queues
+  // the model's values, and — if the inspector names a handed-off circuit —
+  // walks it anyway: its own read-back on top of any ordinary write the model
+  // made that turn, which is the double read-back the tombstone exists to stop.
+  //
+  // Fencing when the circuit later RESOLVES was tried and is wrong in two ways:
+  // the model's turn is over, so whether a same-turn ordinary write already
+  // spoke a queued value cannot be known, and one pending `BS EN 61009` can pivot
+  // into a different schema's walk. So the start is refused HERE, in the same
+  // turn, while the model still holds its values: nothing is queued, seeded or
+  // asked, and nothing is dropped. It names the circuit and calls again — the
+  // known-circuit path above then applies — or writes the values itself.
+  //
+  // Scope: a handoff for THIS schema, or for any schema one of its slots can
+  // pivot into (OCPD and RCD pivot to RCBO), anywhere on the current board. It
+  // over-fences a start meant for a different circuit, deliberately: the cost is
+  // one question the model asks itself, and the alternative is a guess.
+  if (resolvedCircuitRef === null) {
+    const guarded = [schema.name, ...pivotTargetsOf(schema)];
+    const fencedBy = guarded.find((name) =>
+      hasAnyHandoffForSchema(session, entryEffectiveBoardId, name)
+    );
+    if (fencedBy) {
+      logger?.info?.('stage6.script_reentered_after_handoff', {
+        sessionId,
+        schema: schema.name,
+        fenced_by_schema: fencedBy,
+        circuit_ref: null,
+        board_id: entryEffectiveBoardId,
+        path: 'start_dialogue_script_no_circuit',
+      });
+      return {
+        ok: true,
+        status: 'circuit_required',
+        schema: schema.name,
+        circuit_ref: null,
+        remaining: [],
+        hint:
+          'A walk-through for this device was already handed to you on this board, so the ' +
+          'server will not ask for the circuit. Nothing was recorded or queued. Name the ' +
+          'circuit and call again, or record the values yourself with the ordinary write tool.',
+      };
+    }
+  }
+
   // Validate Sonnet-supplied volunteered values against the schema's
   // slot fields. Drop any entry with an unknown field — Sonnet should
   // not be hallucinating field names (the agentic prompt enumerates
@@ -6275,7 +6357,15 @@ export function enterScriptByName({
       // canonical-DIFFERENT → fall through and overwrite.
     }
     if (resolvedCircuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now, op);
+      const r = applyWriteWithDerivations(
+        session,
+        schema,
+        slot,
+        resolvedCircuitRef,
+        w.value,
+        now,
+        op
+      );
       // Plan D — PROPAGATE Seam A's provenance (applyWrite's own re-clamp of the
       // already-corrected value reports null and would retire it), and strip the
       // `correction` key from the outgoing entries so it can never appear on the

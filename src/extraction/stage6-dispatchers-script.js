@@ -358,6 +358,10 @@ export async function dispatchStartDialogueScript(call, ctx) {
       // reporting `[]` rather than dropping the key and changing the envelope
       // shape per outcome.
       remaining: result.remaining ?? [],
+      // PLAN-A2 EP — carries what the model should do on `circuit_required`
+      // (a circuit-less start refused after a handoff). Null on every other
+      // outcome, so the envelope shape stays the same per outcome.
+      hint: result.hint ?? null,
       seeded_writes: result.seeded_writes ?? [],
       queued_writes: result.queued_writes ?? [],
       dropped_fields: result.dropped_fields ?? [],

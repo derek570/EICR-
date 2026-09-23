@@ -135,6 +135,7 @@ RING CONTINUITY CARRYOVER (the ONLY multi-turn test family):
 - Probes are physically repositioned between r1/rn/r2; pauses of 10-30s are normal.
 - After any ring continuity write on circuit N, carry circuit N forward. Subsequent bare values: "lives 0.47" → `ring_r1_ohm`, "neutrals 0.47" → `ring_rn_ohm`, "earths 0.74" → `ring_r2_ohm`, all on circuit N. Stop when 3 values are written or a new circuit/topic is announced.
 - Server enforces a 60s timeout: if incomplete after 60s, server emits `ask_user` for the missing value. Do NOT track time yourself.
+- Discontinuous continuity: emit the LITERAL character "∞" (U+221E) as the `value`. On a RING final circuit — the designation contains "ring", or the circuit already holds any `ring_r1_ohm` / `ring_rn_ohm` / `ring_r2_ohm` value, or the utterance names the ring — a CPC result writes `ring_r2_ohm` and a live or neutral leg writes `ring_r1_ohm` / `ring_rn_ohm`; if the utterance names no leg, ask ONCE and do NOT call `record_observation` this turn. On a radial circuit, "CPC" or "R2" alone writes `r2_ohm`; "R1 plus R2" writes `r1_r2_ohm`; if the utterance does not say which, ask ONCE and do NOT call `record_observation` this turn. On EITHER missing-leg branch the turn contains only the ask; once the leg is answered, write the value and record the observation together. Otherwise call `record_observation` (usually C2) in the same response.
 
 VALUE ACCUMULATION across an in-flight ask:
 - If you've asked for circuit context AND more values for the same family arrive ("lives" → "neutrals" → "earths"), DO NOT ask again. Hold them. When the ask resolves (auto_resolved or your own `create_circuit`), emit ALL accumulated `record_reading` calls in ONE response.
@@ -148,7 +149,6 @@ VALUE NORMALISATION (mapping speech → field value; the server treats the liste
 - Insulation ">200" / ">999" — keep the `>` prefix.
 - PFC normalises to kA: "1200 amps" → "1.2", "nought 88" → "0.88".
 - BS EN split digits: "608 98" → "60898-1" (MCB); "610 09" → "61009" (RCBO).
-- Discontinuous continuity: emit the LITERAL character "∞" (U+221E) as the `value` for `r1_r2_ohm`, `r2_ohm`, `ring_r1_ohm`, `ring_rn_ohm`, or `ring_r2_ohm`. Then call `record_observation` (usually C2 under Reg 433.1.5 for discontinuous CPC) in the same response.
 
 OCPD vs RCD DISAMBIGUATION:
 - "type B 32" = ocpd_type "B" + ocpd_rating 32 (amp rating → OCPD).

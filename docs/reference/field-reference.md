@@ -339,6 +339,60 @@ list, so dictating one drew a re-ask and the certificate recorded nothing.
 > classification. Voice acceptance of LIM on the ranged fields is gated behind
 > the `lim_ranged_write_v1` client capability (sentinel-safe derivation guards).
 
+> **The discontinuity sentinel `∞` on continuity fields (PLAN-A2, 2026-09-23,
+> feedback ids 141 and 142):** an open conductor is stored as the literal
+> character `∞` (U+221E) on the five continuity fields — `r1_r2_ohm`, `r2_ohm`,
+> `ring_r1_ohm`, `ring_rn_ohm`, and `ring_r2_ohm`. Six spoken forms map to it:
+> `infinite`, `infinity`, `open`, `open circuit`, `open ring`, and
+> `discontinuous`.
+>
+> **Which phrasings actually write, and which don't.** The ring slot parser
+> accepts a sentinel only as a bare or near-bare reply — "open circuit",
+> "it's open circuit", "an open ring" — or as the value captured next to a field
+> word, as in "the CPC is open circuit". That anchoring is deliberate: the
+> engine parses the whole utterance when no field word matched, so a looser
+> match would let "I'll open the board", said mid-walk-through, certify a
+> conductor as broken. Three gaps follow from it and are not yet closed:
+>
+> - A reply that names no field and isn't near-bare — "the circuit is open" —
+>   re-asks instead of writing.
+> - After you pick a leg to correct ("R2" → "What should R2 be?"), the answer
+>   "open circuit" is rejected. That slot accepts numbers only.
+> - The value-first form "open circuit on the lives" doesn't match, because the
+>   grammar captures only the head word "open".
+>
+> A bare LIM reply still wins over all six sentinels: a limitation means the
+> test wasn't performed, while `∞` means it was performed and the conductor is
+> open. A reply carrying both — "limitation, the circuit is open" — matches
+> neither and re-asks, because those are contradictory claims. Note that the
+> model answer path (`stage6-answer-resolver.js`) still resolves the same words
+> to `LIM`; the two paths disagree, and that's recorded as a follow-up. A
+> sentinel mixed with a digit ("open circuit on the 2.5") still yields `2.5`.
+>
+> **Stored as the character, spoken as the word "infinity".** Every TTS voice
+> reads a bare `∞` as silence, so `speakSentinelValue` in
+> `src/extraction/confirmation-text.js` renders it for every spoken producer:
+> the dispatcher read-backs through `buildValueSpokenTail`, the ring triple
+> ("R1 0.43, Rn 0.43, R2 infinity. All correct?"), the terminal read-back when a
+> walk-through is cancelled or deferred before its triple is confirmed ("Also
+> got lives infinity."), and the amendment breadcrumb. Storage, the UI, and the
+> PDF keep the character.
+>
+> Which field a result lands on depends on the circuit, not on the words alone.
+> On a ring final circuit — the designation contains "ring", the circuit already
+> holds a ring leg value, or the utterance names the ring — a CPC result writes
+> `ring_r2_ohm`, and a live or neutral leg writes `ring_r1_ohm` or
+> `ring_rn_ohm`. On a radial circuit, "CPC" or "R2" alone writes `r2_ohm`, and
+> "R1 plus R2" writes `r1_r2_ohm`. If the utterance names no leg, the model asks
+> once and defers the observation until the answer arrives. This is a prompt
+> rule, so the model follows it imperfectly; the structural tests pin the rule's
+> wording, not the model's compliance.
+>
+> Insulation resistance is deliberately different. "Infinite" on an IR reading
+> means the meter saturated, a good result recorded as `>999`; `open circuit`
+> isn't an IR sentinel at all. For more information, see the parity tests in
+> `src/__tests__/dialogue-ohms-discontinuity.test.js`.
+
 ## Observations Tab (`/job/[id]/observations`)
 
 | Field | Type | Options | AI Extraction Guidance |
