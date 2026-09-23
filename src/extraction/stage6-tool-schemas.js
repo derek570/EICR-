@@ -274,7 +274,11 @@ const recordReading = makeTool({
 //     future atomic unmark_distribution_circuit — not clear_reading.
 // The semantic round-trip audit (stage6-clear-wire-audit.test.js) pins its
 // domain to EXACTLY this resulting enum — update both together.
-const CLEAR_READING_EXCLUDED_FIELDS = new Set([
+// PLAN-C3 (Decision 5) — EXPORTED so the blank-write exemption set in
+// `stage6-dispatch-validation.js` can import it instead of retyping the three
+// names. A retyped copy is how the "say clear" hint ends up naming a field
+// `clear_reading` refuses.
+export const CLEAR_READING_EXCLUDED_FIELDS = new Set([
   'circuit_ref',
   'is_distribution_circuit',
   'feeds_board_id',
@@ -768,6 +772,13 @@ const askUser = makeTool({
       description:
         'Optional buffered write to be auto-emitted on a confident server-side match of the user answer. Use when the ask is to resolve a circuit/context for a value the user has spoken. Set to null (or omit) when the ask is purely informational (out_of_range_circuit, observation_confirmation, etc.).',
     },
+    // PLAN-C3 (feedback-2026-09-17, Decision 5) — optional, model-facing
+    // ONLY. Not a wire field: it never reaches a client frame.
+    rejection_ref: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description:
+        'PLAN-C3 (Decision 5) — the server-minted rejection_ref from the tool result of a write this turn that was rejected. Echo it when this question is ABOUT that rejection, so the server knows the question and the refusal are the same subject and speaks only one of them. Omit it otherwise; never invent one.',
+    },
   },
   required: ['question', 'reason', 'expected_answer_shape'],
 });
@@ -1170,6 +1181,67 @@ const setFieldForAllCircuits = makeTool({
 });
 
 // ---------------------------------------------------------------------------
+// PLAN-C3 (feedback-2026-09-17, Decision 5) — clear_field_for_all_circuits.
+//
+// The EXPLICIT replacement for the empty bulk write. `set_field_for_all_
+// circuits {value: ""}` used to be the way to wipe a field across a board,
+// and it was silent: nothing is read back per circuit, so fourteen
+// certificate values could empty while an inspector in AirPods heard
+// nothing. Decision 5 rejects that write — but rejecting it without a
+// replacement would reintroduce the failure the bulk tool exists to fix
+// (per-circuit model calls once stopped halfway through a 14-circuit
+// operation, session DC946608). So the clear becomes its own tool: server
+// iterated, one grouped spoken line, partial failures disclosed.
+//
+// Same scope grammar as its sibling, deliberately — an inspector who can say
+// "for all the RCD-protected circuits except 4" to set a value can say it to
+// clear one, and two different grammars for one idea is how a model picks the
+// wrong tool.
+// ---------------------------------------------------------------------------
+const clearFieldForAllCircuits = makeTool({
+  name: 'clear_field_for_all_circuits',
+  description:
+    'Clear ONE field on every circuit in scope. Use when the inspector wants a field emptied across the board ("clear the reference method for all circuits", "wipe the R1+R2 on every circuit"). This is the ONLY supported way to empty a field in bulk — never write an empty string with set_field_for_all_circuits. The server iterates and returns a per-circuit cleared/skipped breakdown; already-empty circuits count as cleared.',
+  properties: {
+    field: {
+      type: 'string',
+      enum: CLEAR_READING_FIELD_ENUM,
+      description:
+        'The circuit_fields key to clear across the targeted circuits. Same enum as clear_reading — row identity and the distribution-link fields are not clearable.',
+    },
+    scope: {
+      type: 'string',
+      enum: ['non_spare', 'all', 'rcd_protected_only'],
+      description:
+        'SELECTOR — which circuits to target. Identical grammar to set_field_for_all_circuits: prefer OMITTING it and let the family-aware spare default apply.',
+    },
+    spare_policy: {
+      type: 'string',
+      enum: ['automatic', 'include', 'exclude'],
+      description:
+        'FILTER applied AFTER the selector. Emit ONLY when the inspector explicitly said "including spares" or "excluding spares"; otherwise omit.',
+    },
+    board_id: {
+      type: 'string',
+      description:
+        'Scope the bulk clear to one board — the EXACT board id from the BOARDS section of the snapshot, never a designation or a board TYPE. Defaults to currentBoardId. Pass "*" to clear across every board on the job.',
+    },
+    exclude_circuits: {
+      type: 'array',
+      items: { type: 'integer' },
+      description:
+        'Circuit refs to exclude from the bulk clear ("clear it for all circuits apart from 4"). Honored regardless of scope. Integers only.',
+    },
+    source_turn_id: {
+      type: 'string',
+      description:
+        'Identifier of the user turn this bulk clear came from; used for dedup and correlation.',
+    },
+  },
+  required: ['field', 'source_turn_id'],
+});
+
+// ---------------------------------------------------------------------------
 // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit.
 //
 // Inspector says a circuit on the current board feeds another board:
@@ -1304,6 +1376,13 @@ const answerUser = makeTool({
       description:
         'The spoken answer, ≤ 2 sentences. Plain speech for TTS — no markdown, no field-key names (say "Zs", not "measured_zs_ohm").',
     },
+    // PLAN-C3 (feedback-2026-09-17, Decision 5) — optional, model-facing
+    // ONLY. Not a wire field.
+    rejection_ref: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+      description:
+        'PLAN-C3 (Decision 5) — when a tool result this turn returned a rejection_ref: carry THAT ref if this answer is about the rejection (the server has already told the inspector, so your answer is not spoken — carrying it shows you know), or carry "unrelated" if the answer is about anything else. Never omit it on a turn that produced a rejection_ref: an answer with neither is not spoken.',
+    },
   },
   required: ['answer_text'],
 });
@@ -1423,6 +1502,11 @@ export const TOOL_SCHEMAS = [
   // index remains stable. Unconditionally advertised in both A1 flag states:
   // this is a silent server lifecycle terminal, not an answer-user feature.
   resolveObservationClarification,
+  // PLAN-C3 (2026-09-17, Decision 5) — appended last so every pre-existing
+  // schema index stays stable. Unconditionally advertised: it is the only
+  // supported way to empty a field in bulk now that the empty bulk write is
+  // rejected, so a session without it would have no route at all.
+  clearFieldForAllCircuits,
 ];
 
 // ---------------------------------------------------------------------------

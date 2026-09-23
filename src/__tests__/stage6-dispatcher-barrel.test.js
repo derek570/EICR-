@@ -27,7 +27,7 @@ function mockLogger() {
 }
 
 describe('barrel re-exports', () => {
-  test('WRITE_DISPATCHERS has all sixteen keys, all async functions', () => {
+  test('WRITE_DISPATCHERS has all seventeen keys, all async functions', () => {
     expect(Object.keys(WRITE_DISPATCHERS).sort()).toEqual(
       [
         // Plan A1a (2026-07-27) — board/supply-scope clear (dispatcher-gated
@@ -54,6 +54,10 @@ describe('barrel re-exports', () => {
         // 2026-05-07 multi-board sprint Phase 6.3 — mark_distribution_circuit
         // (no forward-ref ask_user — STOP-SLICE).
         'mark_distribution_circuit',
+        // PLAN-C3 (2026-09-17, Decision 5) — the explicit bulk clear, the
+        // only supported way to empty a field across a scope now that the
+        // empty bulk write is rejected.
+        'clear_field_for_all_circuits',
       ].sort()
     );
     for (const fn of Object.values(WRITE_DISPATCHERS)) {
@@ -199,6 +203,10 @@ describe('barrel re-exports', () => {
       // is exactly the §3.5a mutation-safe dark-state shape this test's
       // envelope assertions require.
       clear_board_reading: { field: 'ze', reason: 'user_correction' },
+      // PLAN-C3 (2026-09-17, Decision 5) — clear_field_for_all_circuits. The
+      // seeded session has circuit 3 with `measured_zs_ohm` set, so the sweep
+      // clears exactly one circuit and returns {ok:true, cleared:[3]}.
+      clear_field_for_all_circuits: { field: 'measured_zs_ohm', source_turn_id: 't1' },
     };
     for (const [name, fn] of Object.entries(WRITE_DISPATCHERS)) {
       // Fresh session per call so create_circuit(4) etc don't collide.

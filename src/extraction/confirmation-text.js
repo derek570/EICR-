@@ -502,6 +502,51 @@ export function buildGroupedConfirmationText(
   return `Circuits ${ints.join(', ')}, ${tail}`;
 }
 
+/**
+ * PLAN-C3 (feedback-2026-09-17, Decision 5) — the grouped spoken line for one
+ * `clear_field_for_all_circuits` call.
+ *
+ * Head selection is deliberately `buildGroupedConfirmationText`'s, verbatim in
+ * spirit: "All circuits" only when the count is known and matches, the
+ * contiguous-range form only from three circuits up (so "Circuits 1 and 2"
+ * never becomes a range that sounds like a rounding), and the explicit list
+ * otherwise. Two head grammars for one idea is how an inspector stops
+ * trusting that "all circuits" means all of them.
+ *
+ * Returns null when there is nothing groupable, so the caller falls back to
+ * the per-circuit lines rather than speaking a malformed roll-up.
+ */
+export function buildGroupedClearText(field, circuits, totalCircuitsInJob = null) {
+  if (SUPPRESSED_TTS_FIELDS.has(field)) return null;
+  if (typeof field !== 'string' || field.length === 0) return null;
+  if (field.endsWith('_id')) return null;
+  if (!Array.isArray(circuits)) return null;
+  const ints = [];
+  const seen = new Set();
+  for (const c of circuits) {
+    const n = typeof c === 'number' ? c : parseInt(c, 10);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    ints.push(n);
+  }
+  ints.sort((a, b) => a - b);
+  if (ints.length < 2) return null;
+  const friendly = CONFIRMATION_FRIENDLY_NAMES[field] ?? deriveFriendlyName(field);
+  const tail = `${friendly} cleared`;
+  if (
+    typeof totalCircuitsInJob === 'number' &&
+    Number.isInteger(totalCircuitsInJob) &&
+    totalCircuitsInJob > 0 &&
+    ints.length === totalCircuitsInJob
+  ) {
+    return `All circuits, ${tail}`;
+  }
+  const isContiguous = ints.length >= 3 && ints[ints.length - 1] - ints[0] === ints.length - 1;
+  if (isContiguous) return `Circuits ${ints[0]} to ${ints[ints.length - 1]}, ${tail}`;
+  return `Circuits ${ints.join(', ')}, ${tail}`;
+}
+
 export function buildConfirmationText(field, value, circuit, designation = null, options = {}) {
   // 2026-05-29 — deny-list policy. Speak every field with a value
   // unless explicitly suppressed (internal IDs / metadata).

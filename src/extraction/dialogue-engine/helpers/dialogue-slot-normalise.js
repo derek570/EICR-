@@ -24,6 +24,10 @@
  */
 
 import { clampReadingForDispatch } from '../../impedance-clamp.js';
+// PLAN-C3 (Decision 5) — the SAME blank predicate the dispatchers use. It
+// lives in a leaf with zero imports precisely so this module, inside the
+// dialogue engine, can share the one definition rather than keep a copy.
+import { isBlankWrite } from '../../blank-write-policy.js';
 import { coerceRecordReadingValue } from '../../record-reading-coercion.js';
 import {
   NUMERIC_READING_FIELDS,
@@ -58,6 +62,21 @@ import {
  * @returns {{ok:true, value:*, correction:object|null} | {ok:false, reason:string}}
  */
 export function normaliseDialogueSlotWrite(schema, field, value, earthing = null) {
+  // PLAN-C3 (feedback-2026-09-17, Decision 5) — a SEEDED blank is a blank
+  // write and is dropped, on EVERY field, not only the numeric ones. A
+  // `start_dialogue_script` seed bypasses the slot parsers entirely, so
+  // without this gate a whitespace seed applies verbatim and empties a
+  // certificate value with no read-back at all — the same silent clear the
+  // dispatcher boundaries now reject.
+  //
+  // First, before the numeric short-circuit below: that short-circuit returns
+  // `{ok:true}` for every non-numeric field, so a check placed after it would
+  // never see a blank `ocpd_bs_en` seed. Dropping the write (rather than
+  // rejecting the call) is deliberate and is what the seam already does for
+  // an invalid seed — the SCRIPT still enters, and the slot is simply asked.
+  if (isBlankWrite(value)) {
+    return { ok: false, reason: 'seed_blank' };
+  }
   const canonicalField = canonicaliseNumericReadingField(field);
   // Non-numeric-reading field → preserve pre-P3 seed behaviour verbatim.
   if (!NUMERIC_READING_FIELDS.has(canonicalField)) {

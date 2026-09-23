@@ -57,6 +57,8 @@ import {
   dispatchMarkDistributionCircuit,
 } from './stage6-dispatchers-board.js';
 import { dispatchStartDialogueScript } from './stage6-dispatchers-script.js';
+// PLAN-C3 (2026-09-17, Decision 5) — the explicit bulk clear.
+import { dispatchClearFieldForAllCircuits } from './stage6-dispatcher-bulk-clear.js';
 
 /**
  * Dispatch table keyed by tool name. The six original write tools from
@@ -119,6 +121,13 @@ export const WRITE_DISPATCHERS = {
   // without the capability gets a soft-skip + spoken notice, never a
   // mutation or a board field_corrected frame.
   clear_board_reading: dispatchClearBoardReading,
+  // PLAN-C3 (2026-09-17, Decision 5) — clear_field_for_all_circuits, the
+  // explicit replacement for the empty bulk write. Registration is not a
+  // formality: an unregistered name returns `unknown_tool` at the barrel
+  // below, so the model would be told the ONLY supported bulk-clear route
+  // does not exist. Registering it here also enrols it in WRITE_TOOL_NAMES
+  // for composer delegation and the bundler's write accounting.
+  clear_field_for_all_circuits: dispatchClearFieldForAllCircuits,
 };
 
 /**

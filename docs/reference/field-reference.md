@@ -489,3 +489,67 @@ Apply ONE `(field, value)` pair to every active circuit in the schedule. Inspect
 | `scope` | enum | no | `non_spare` (default), `all`, `rcd_protected_only`. |
 | `board_id` | string | no | Defaults to `currentBoardId`. Pass `"*"` to apply across every board on the job. |
 | `exclude_circuits` | integer[] | no | **PLAN-backend-final §8.1.** Subtractive selector for "apart from / except / excluding / all but circuit N". Integers only (Stage 6 uses numeric refs throughout). Honored regardless of `scope`. The dispatcher's response carries `excluded_count` = inspector intent count (deduped validated input), independent of scope; `applied_count` is the post-exclude post-scope total; `skipped_count` continues to count scope-rule drops only. Example: `set_field_for_all_circuits({field:"rcd_time_ms", value:"25", scope:"non_spare", exclude_circuits:[1], ...})` for "RCD time is 25 milliseconds for all circuits apart from circuit 1." |
+
+### `clear_field_for_all_circuits` (Stage 6, PLAN-C3 2026-09-17)
+
+Clear ONE field on every circuit in scope. Inspector triggers: "clear the reference method for all circuits", "wipe the R1+R2 on every circuit".
+
+This is the only supported way to empty a field in bulk. `set_field_for_all_circuits` with an empty `value` used to do the job and is now rejected — see [No silent clear](#no-silent-clear-blank-writes-plan-c3-2026-09-17).
+
+| Param | Type | Required | Notes |
+|-------|------|----------|-------|
+| `field` | string | yes | Any key in `CLEAR_READING_FIELD_ENUM` — the same enum `clear_reading` uses, so `circuit_ref`, `is_distribution_circuit`, and `feeds_board_id` are excluded. An excluded key returns `field_not_clearable`. |
+| `source_turn_id` | string | yes | Dedup and correlation. |
+| `scope` | enum | no | `non_spare`, `all`, `rcd_protected_only`. Same grammar as `set_field_for_all_circuits`. Prefer omitting it. |
+| `spare_policy` | enum | no | `automatic`, `include`, `exclude`. Same grammar as `set_field_for_all_circuits`. |
+| `board_id` | string | no | Defaults to `currentBoardId`. Pass `"*"` to clear across every board on the job. |
+| `exclude_circuits` | integer[] | no | Subtractive selector, honored regardless of `scope`. |
+
+The response is `{ok: true, cleared: [], already_empty: [], failed: []}`.
+
+- `cleared` lists the circuits whose value was removed.
+- `already_empty` lists circuits that held no value. They count as cleared, not as failures: the inspector asked for the field to be empty across the scope, and it is. These produce no `field_corrected` event and no spoken member.
+- `failed` lists circuits the sweep could not reach, each with a reason. Every entry also stages a partial-failure notice, so a miss inside a scope the inspector asked for is always audible.
+
+On the wire the tool emits one `field_corrected` per cleared circuit, exactly as `clear_reading` does. The grouping is a speech decision: the bundler collapses same-call clears into one line, such as "Circuits 1 to 14, reference method cleared". Two bulk clears in one turn stay two lines, because they are two statements about two scopes.
+
+## No silent clear: blank writes (PLAN-C3, 2026-09-17)
+
+On September 17 the model was twice rejected on `BS 3871` for `ocpd_bs_en`, wrote `""`, and the dispatcher accepted it. Nothing was read back worth hearing, so a certificate value emptied while the inspector, working hands-free, heard nothing. Decision 5: a blank field stays blank, audibly.
+
+### The predicate
+
+`isBlankWrite(value)` in `src/extraction/blank-write-policy.js` is true when `value` is a string that trims to nothing. It lives in a module with no imports so the dialogue engine and the dispatchers share one definition.
+
+An explicit blank is rejected with `empty_write_not_allowed` at every model-controlled mutation boundary:
+
+| Boundary | Behavior |
+|---|---|
+| `record_reading` | Rejected. The tool result names `clear_reading`. |
+| `record_board_reading` | Rejected. The tool result names `clear_board_reading`. |
+| `set_field_for_all_circuits` | Rejected. The tool result names `clear_field_for_all_circuits`. |
+| `create_circuit` / `rename_circuit`, on `designation` and `phase` | An explicit blank is rejected. An omitted or `null` argument keeps today's leave-unchanged or default behavior. |
+| `start_dialogue_script.pending_writes` | The seed is dropped with reason `seed_blank`. The script still enters, so the slot is asked. |
+| `mark_distribution_circuit.feeds_board_id` | Out of scope by construction: the shipped `invalid_feeds_board_id` shape gate rejects a blank before board resolution. |
+
+### Exemptions
+
+The blank predicate does not fire on `STRUCTURAL_READING_FIELDS` or the `clear_reading` exclusions (`circuit_ref`, `is_distribution_circuit`, `feeds_board_id`). Those fields already have a truthful refusal naming `mark_distribution_circuit`, and `clear_reading` cannot clear them, so a "say clear" hint would name a tool that refuses them. The exemption set is the imported union of both manifests, never a retyped copy.
+
+`BLANK_WRITE_ALLOWED_FIELDS` is a separate escape for a field whose blank is a legitimate written value that no clear tool can reach. Rejecting a blank there would make the field permanently unclearable by voice. The set is committed empty and derived by `src/__tests__/stage6-blank-write-allowlist.test.js` from the live schema on every run; a mismatch fails the suite.
+
+### Audibility
+
+Every rejection stages one notice on the existing `stageMandatoryNotice` channel, drained at net 0. Six families cover the boundaries: `empty_write_blocked`, `empty_bulk_write_blocked`, `create_blocked`, `rename_blocked`, `enum_rejected`, and `enum_rejected_after_ask`.
+
+Each line names what the certificate still holds, read from the snapshot after the rejection: "OCPD BS/EN on circuit 1, still BS EN 60898", or "still blank". The model's rejected string is never spoken and never logged. These families are value-bearing, so the drain's `stage6.mandatory_notice_emitted` row omits its text preview for them.
+
+A notice is retired when a same-slot write or clear survives the turn, when a same-`(op, key_ref, board)` create or rename succeeds, or when a covering `ask_user` is registered. A bulk notice is per call and only a covering ask retires it: a later per-circuit write does not make a statement about a scope true.
+
+These six families also survive a cancelled generation, which every other family on the channel does not. A cancellation must not make a silent clear silent again.
+
+### `rejection_ref`
+
+Every rejecting dispatcher returns `rejection_ref: "<turnId>:<toolCallId>"` and journals the rejection. `ask_user` and `answer_user` each take an optional model-facing `rejection_ref` input. There is no wire change; neither field reaches a client frame.
+
+A staged notice is authoritative. An `answer_user` carrying the matching ref is dropped and the notice speaks, because a ref proves association with a rejection and never the truth of the answer's words. An answer with no ref, or an unresolvable one, is dropped the same way. Only `rejection_ref: "unrelated"` lets a model line speak beside a refusal.
