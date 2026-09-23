@@ -285,12 +285,12 @@ export class UplinkLossLedger {
     let voiced = input.voiced;
     if (clipped.end !== input.captureSampleRange.end) {
       // Straddles the cut: re-classify only the pre-cut prefix. Without the
-      // PCM there is no per-part evidence, so the straddling frame is not
-      // charged (the post-cut part is ineligible and the whole-frame verdict
-      // cannot be attributed to the pre-cut part alone).
+      // PCM there is no per-part evidence, so the whole-frame verdict is KEPT
+      // for the pre-cut part — conservative: never silently drop evidence
+      // that may be real pre-cut speech.
       voiced = input.samples
         ? classifyPcmEnergy(input.samples.subarray(0, clipped.end - clipped.start))
-        : false;
+        : input.voiced;
     }
     if (!voiced) return;
     // A block straddling the cut keeps only its pre-cut part; its dispatched

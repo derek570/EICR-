@@ -183,6 +183,26 @@ describe('PLAN-D — pauseCutAt on the loss ledger', () => {
     expect(ledger.unresolvedEntryCount).toBe(1);
   });
 
+  it('a straddling frame WITHOUT PCM keeps its voiced verdict for the pre-cut part (conservative)', () => {
+    // A material pre-cut voiced run reported without samples must still
+    // disclose if the socket fails before its watermark.
+    const { ledger, disclosed } = harness();
+    ledger.onSocketOpened(E(1));
+    const run = MATERIAL_VOICED_DEBOUNCE_SAMPLES + 1280;
+    ledger.setPauseCut(run - 640);
+    ledger.recordDispatched({
+      dispatchEpoch: E(1),
+      epochScope: epoch(1),
+      captureSampleRange: { start: 0, end: run },
+      dispatchedSampleRange: { start: 0, end: run },
+      voiced: true,
+    });
+    expect(ledger.unresolvedEntryCount).toBe(1);
+    ledger.onSocketClosed(E(1), ACTIVE);
+    ledger.onSocketOpened(E(2));
+    expect(disclosed).toHaveLength(1);
+  });
+
   it('clearing the cut on resume makes new capture accountable again', () => {
     const { ledger, disclosed } = harness();
     ledger.onSocketOpened(E(1));
