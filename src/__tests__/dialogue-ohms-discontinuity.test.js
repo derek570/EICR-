@@ -25,7 +25,12 @@
  *      character.
  */
 import { parseOhms } from '../extraction/dialogue-engine/parsers/ohms.js';
-import { processRingContinuityTurn } from '../extraction/dialogue-engine/index.js';
+import {
+  processRingContinuityTurn,
+  tryEnterScriptFromWrites,
+  ALL_DIALOGUE_SCHEMAS,
+} from '../extraction/dialogue-engine/index.js';
+import { isHandedOff } from '../extraction/dialogue-handoff-tombstone.js';
 import { parseMegaohms } from '../extraction/dialogue-engine/parsers/megaohms.js';
 import {
   RING_VALUE_GROUP,
@@ -37,6 +42,7 @@ import {
   INFINITY_SENTINEL,
   speakSentinelValue,
   buildValueSpokenTail,
+  buildConfirmationText,
 } from '../extraction/confirmation-text.js';
 
 // The exact six the plan names. Not "everything that sounds open" — widening
@@ -514,5 +520,102 @@ describe('PLAN-A2 — the TERMINAL read-back speaks the sentinel too (Codex EP r
       .map((f) => f.question ?? f.text)
       .find((t) => typeof t === 'string' && t.includes('Also got'));
     expect(readback).toBe('Ring continuity cancelled. 1 of 3 saved. Also got lives 0.43.');
+  });
+});
+
+describe('PLAN-A2 acceptance 3 — combined with PLAN-A’s handoff tombstone', () => {
+  // The plan's third acceptance item could not be checked while PLAN-A was
+  // unmerged: it asks what happens when THIS plan's ∞ is written by the MODEL
+  // on a circuit whose walk-through has already ended at its first miss.
+  //
+  // The risk it guards is a DOUBLE read-back. Before PLAN-A's tombstone, a
+  // write-only model turn re-entered the script through the post-dispatch entry
+  // hook (`tryEnterScriptFromWrites` guards only `script_already_active`, and a
+  // handed-off state is null), so the freshly seeded walk would have spoken the
+  // triple on top of the bundler's own line — two audible "infinity"s for one
+  // dictated reading, which Audio-First invariant #1 forbids.
+  //
+  // With the tombstone in place the write is an ORDINARY bundler read-back and
+  // nothing else. Both halves are asserted here because neither plan alone
+  // proves it: PLAN-A owns the fence, PLAN-A2 owns the word.
+  const SESSION_ID = 'sess_a2_handoff';
+
+  class FakeWS {
+    constructor() {
+      this.OPEN = 1;
+      this.readyState = this.OPEN;
+      this.sent = [];
+    }
+    send(data) {
+      this.sent.push(JSON.parse(data));
+    }
+  }
+
+  // Enter the ring walk, then miss it. One miss is all it takes since PLAN-A:
+  // the walk ends and the model owns the circuit.
+  function handedOffRingWalk() {
+    const ws = new FakeWS();
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 1: {} },
+        boards: [{ id: 'main', board_type: 'main' }],
+        currentBoardId: 'main',
+      },
+    };
+    const turn = (transcriptText, now) =>
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText,
+        rawReplyText: transcriptText,
+        logger: null,
+        now,
+      });
+    turn('Ring continuity on circuit 1.', 1000);
+    turn('there is no way to get at the other end', 2000);
+    return { ws, session };
+  }
+
+  test('the walk really has ended and the tombstone really is set', () => {
+    const { session } = handedOffRingWalk();
+    expect(session.dialogueScriptState).toBeNull();
+    expect(isHandedOff(session, 'main', 'ring_continuity', 1)).toBe(true);
+  });
+
+  test('a model ∞ write after the handoff starts no script and emits no script frame', () => {
+    const { ws, session } = handedOffRingWalk();
+    const framesBefore = ws.sent.length;
+
+    // What the dispatcher does with a model write: apply it, then offer it to
+    // the entry hook.
+    session.stateSnapshot.circuits[1].ring_r2_ohm = INFINITY_SENTINEL;
+    const entry = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'ring_r2_ohm', circuit: 1, value: INFINITY_SENTINEL }],
+      logger: null,
+      now: 3000,
+    });
+
+    expect(entry).toEqual({ entered: false, reason: 'handed_off' });
+    expect(session.dialogueScriptState).toBeNull();
+    // No ask, no confirmation, no triple — the script contributed nothing.
+    expect(ws.sent.length).toBe(framesBefore);
+    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
+    // And the value itself is untouched by the fence.
+    expect(session.stateSnapshot.circuits[1].ring_r2_ohm).toBe(INFINITY_SENTINEL);
+  });
+
+  test('the bundler read-back is the ONE audible line, and it says "infinity"', () => {
+    const spoken = buildConfirmationText('ring_r2_ohm', INFINITY_SENTINEL, 1);
+    expect(spoken).toBe('Circuit 1, ring r2 infinity');
+    // Exactly once — this is the whole point of the combined item.
+    expect(spoken.match(/infinity/g)).toHaveLength(1);
+    expect(spoken).not.toContain(INFINITY_SENTINEL);
+    // Control: a numeric write through the same builder is unchanged.
+    expect(buildConfirmationText('ring_r2_ohm', '0.43', 1)).toBe('Circuit 1, ring r2 0.43');
   });
 });
