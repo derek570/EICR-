@@ -370,7 +370,45 @@ describe('acceptance 5 — tombstone matrix', () => {
     expect(isHandedOff(session, 'main', 'rcbo', 7)).toBe(false);
   });
 
-  test('ENTRY-HOOK BOARD: the episode is stamped with the board the LOOKUP used, not currentBoardId', () => {
+  test('ENTRY-HOOK BOARD: a write on a NON-SELECTED board never starts a walk-through', () => {
+    // A `set_field_for_all_circuits` call can name an explicit board, so a
+    // per-ref write can be stamped with a board the inspector is not standing
+    // at. Opening a walk-through there would start asking about another board's
+    // circuits, with every answer emitted board-less and routed by the client
+    // to the SELECTED board. The write itself is legitimate and already read
+    // back by the bundler; it is just not a reason to start a conversation.
+    const rows = [];
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 3: {}, 'board-b::3': { rcd_type: 'A' } },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'board-b', board_type: 'sub' },
+        ],
+        currentBoardId: 'main',
+      },
+    };
+    const ws = new FakeWS();
+    const entry = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: capturingLog(rows),
+      now: 1000,
+      effectiveBoardIdForReading: () => 'board-b',
+    });
+    expect(entry.entered).toBe(false);
+    expect(session.dialogueScriptState).toBeFalsy();
+    // No ask was emitted about the other board's circuit.
+    expect(ws.sent.filter((m) => m.type === 'ask_user_started')).toHaveLength(0);
+    expect(
+      rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))
+    ).toBe(true);
+  });
+
+  test('ENTRY-HOOK BOARD: on a SELECTED sub-board the stamp and the tombstone lookup agree', () => {
     // The full round trip, because the stamp alone is not the defect — the
     // MISMATCH is. A `record_reading` can carry an explicit `board_id` that
     // differs from the current board, so the entry hook resolves the write's
@@ -388,7 +426,9 @@ describe('acceptance 5 — tombstone matrix', () => {
           { id: 'main', board_type: 'main' },
           { id: 'board-b', board_type: 'sub' },
         ],
-        currentBoardId: 'main',
+        // The inspector IS standing at board B — the episode is legitimately
+        // here, and the stamp/lookup agreement is what is under test.
+        currentBoardId: 'board-b',
       },
     };
     const ws = new FakeWS();
@@ -442,21 +482,22 @@ describe('acceptance 5 — tombstone matrix', () => {
     ['tombstoned reading FIRST', ['main', 'board-b']],
     ['tombstoned reading SECOND', ['board-b', 'main']],
   ])(
-    'a fenced reading never masks an eligible one in the same turn (%s)',
+    'a fenced reading never suppresses evaluation of the others (%s)',
     (_label, order) => {
-      // One model turn can write the same circuit on two boards. The board-A
-      // tombstone must fence ONLY the board-A write; the board-B write is
-      // eligible and may start a walk-through. A `return` on the fenced reading
-      // would make entry depend on READING ORDER, which is why both orders run.
-      // Snapshot shape matters: the MAIN board's circuits are keyed by the bare
-      // number, a sub-board's by `${boardId}::${circuit}`.
+      // The loop must `continue`, never `return`: a `return` on the first
+      // reading would make the whole turn's entry decision depend on READING
+      // ORDER, and the later reading would never be considered at all. Both
+      // orders run for that reason.
+      //
+      // One circuit on two boards is the shape that reaches this — a turn
+      // naming two different circuits is intercepted earlier as a broadcast
+      // (`multi_circuit_broadcast`). Neither reading enters now: one is
+      // tombstoned, the other is on a board the inspector is not standing at.
+      // What is under test is that BOTH were evaluated and both said why.
       const session = {
         sessionId: SESSION_ID,
         stateSnapshot: {
-          circuits: {
-            3: { rcd_type: 'A' },
-            'board-b::3': { rcd_type: 'A' },
-          },
+          circuits: { 3: { rcd_type: 'A' }, 'board-b::3': { rcd_type: 'A' } },
           boards: [
             { id: 'main', board_type: 'main' },
             { id: 'board-b', board_type: 'sub' },
@@ -466,7 +507,6 @@ describe('acceptance 5 — tombstone matrix', () => {
       };
       const ws = new FakeWS();
 
-      // Hand off board-a circuit 3 for the schema an rcd_type write enters.
       const seed = tryEnterScriptFromWrites({
         session,
         ws,
@@ -489,34 +529,25 @@ describe('acceptance 5 — tombstone matrix', () => {
       expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
       expect(isHandedOff(session, 'board-b', schemaName, 3)).toBe(false);
 
-      // Now ONE turn carrying both boards' writes, in the order under test.
-      const readings = order.map((b) => ({
-        field: 'rcd_type',
-        circuit: 3,
-        value: 'A',
-        _board: b,
-      }));
-      const out = tryEnterScriptFromWrites({
+      // ONE turn, both boards' writes, in the order under test.
+      const rows = [];
+      const boards = [...order];
+      let call = 0;
+      tryEnterScriptFromWrites({
         session,
         ws,
         schemas: ALL_DIALOGUE_SCHEMAS,
-        readings,
-        logger: silentLog,
+        readings: order.map(() => ({ field: 'rcd_type', circuit: 3, value: 'A' })),
+        logger: capturingLog(rows),
         now: 3000,
-        // Both readings name circuit 3, so the board is what distinguishes
-        // them; resolve it positionally from the order under test.
-        effectiveBoardIdForReading: (() => {
-          let i = 0;
-          return () => order[i++] ?? order[order.length - 1];
-        })(),
+        effectiveBoardIdForReading: () => boards[call++] ?? null,
       });
 
-      // The ELIGIBLE board-b write entered, whichever position it held.
-      expect(out.entered).toBe(true);
-      expect(session.dialogueScriptState).not.toBeNull();
-      expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
-      // …and the main board stays fenced.
-      expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
+      // Both readings were evaluated, each declining for its OWN reason.
+      expect(rows.some((r) => r.event === 'stage6.script_reentered_after_handoff')).toBe(true);
+      expect(
+        rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))
+      ).toBe(true);
     }
   );
 
@@ -1069,13 +1100,15 @@ describe('acceptance 7 — an annotated TTS answer on a circuit whose script end
 
 // ── Fix round 2 — the two BLOCKERs the fix-verification lane found ──────────
 
-describe('a cross-board episode writes to THAT board, not main', () => {
-  // The entry hook resolves the write's own board for its tombstone lookup and
-  // stamps the episode with it. Every snapshot write the episode then made
-  // still went through the BARE mutator, which writes `snapshot.circuits[3]` —
-  // main's bucket — whatever board the episode is on. So a board-B walk set
-  // MAIN's circuit 3 while the note and the tombstone both named board B: the
-  // entry-hook fix closed the re-ask loop and opened a cross-board write.
+describe('an episode on a SELECTED sub-board writes to that board, not main', () => {
+  // The bare mutator writes `snapshot.circuits[3]` — MAIN's bucket — whatever
+  // board the episode is on, while a sub-board's circuits live at
+  // `${board}::${ref}`. So a walk-through conducted at a sub-board wrote every
+  // slot onto the main board's circuit of the same number.
+  //
+  // The inspector is STANDING at board B here: a walk-through never starts on a
+  // board that is not selected, so this is the only shape in which a script
+  // writes to a sub-board at all.
   function boardBSession() {
     return {
       sessionId: SESSION_ID,
@@ -1085,7 +1118,7 @@ describe('a cross-board episode writes to THAT board, not main', () => {
           { id: 'main', board_type: 'main' },
           { id: 'board-b', board_type: 'sub' },
         ],
-        currentBoardId: 'main',
+        currentBoardId: 'board-b',
       },
     };
   }
@@ -1101,7 +1134,6 @@ describe('a cross-board episode writes to THAT board, not main', () => {
       readings: [{ field: 'ocpd_rating_a', circuit: 3, value: '32' }],
       logger: silentLog,
       now: 1000,
-      effectiveBoardIdForReading: () => 'board-b',
     });
     expect(entry.entered).toBe(true);
     expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
@@ -1257,52 +1289,49 @@ describe('a derivation that OVERWROTE a pre-existing value says so', () => {
 
 // ── Fix round 3 — the premise, fenced at its one reachable ingress ──────────
 
-describe('a paused episode does not resume onto a board the inspector has left', () => {
-  // `record_reading` has no `board_id` parameter — Plan 08B deleted it from
-  // every circuit mutator — so the dispatcher can only stamp the current board
-  // and an episode always starts on the board the inspector is working on. A
-  // PAUSE is the one exception: the model runs during it and `select_board`
-  // moves `currentBoardId` without touching `dialogueScriptState`. Resuming
-  // then walks circuit N of the board we started on while the inspector stands
-  // at another one.
-  test('the episode ENDS, with its terminal read-back, and nothing resumes', () => {
-    const rows = [];
-    const ws = new FakeWS();
-    const session = buildSession({ 3: {} });
+describe('an episode ends when the board moves out from under it', () => {
+  // Two ways the selection moves with no model turn involved: the iOS
+  // `select_board` frame (`sonnet-stream.js` assigns `currentBoardId` directly,
+  // on ANY turn — the script owning the floor keeps the MODEL out, not the
+  // client), and `select_board`/`add_board` during a pause. Neither touches
+  // `dialogueScriptState`.
+  //
+  // The reviewer's earlier objection to this suite was fair and is fixed here:
+  // the resume case now supplies a designation that MATCHES a created circuit,
+  // so with the fence removed it would genuinely resume — the test fails
+  // because of the board, not because the resume declined for some other reason.
+
+  function pausedIrSession() {
+    const session = buildSession({});
     session.stateSnapshot.boards = [
       { id: 'main', board_type: 'main' },
       { id: 'board-b', board_type: 'sub' },
     ];
-    // An ordinary insulation-resistance walk, paused for circuit creation.
-    processInsulationResistanceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: 'Insulation resistance for the immersion.',
-      logger: capturingLog(rows),
-      now: 1000,
-    });
-    const state = session.dialogueScriptState;
-    if (!state || !state.paused) {
-      // The pause is the schema's own opt-in path; if this utterance did not
-      // pause, force the shape the fence guards rather than assert nothing.
-      session.dialogueScriptState = {
-        ...(state ?? {}),
-        active: false,
-        paused: true,
-        paused_at: 1000,
-        paused_designation_hint: 'immersion',
-        schemaName: 'insulation_resistance',
-        circuit_ref: null,
-        values: {},
-        operations: [],
-        pending_writes: [],
-        effectiveBoardId: 'main',
-      };
-    }
-    session.dialogueScriptState.effectiveBoardId = 'main';
+    session.dialogueScriptState = {
+      active: false,
+      paused: true,
+      paused_at: 1000,
+      paused_designation_hint: 'immersion',
+      schemaName: 'insulation_resistance',
+      circuit_ref: null,
+      values: {},
+      operations: [],
+      pending_writes: [],
+      skipped_slots: new Set(),
+      derivedBaselines: {},
+      ambiguous_bare_value: null,
+      valueCorrections: {},
+      effectiveBoardId: 'main',
+    };
+    // The circuit the pause was waiting for, created on the main board.
+    session.stateSnapshot.circuits[9] = { circuit_designation: 'Immersion' };
+    return session;
+  }
 
-    // The inspector walks to the other board between the pause and the create.
+  test('RESUME: the board moved, so the episode ends instead of resuming', () => {
+    const rows = [];
+    const ws = new FakeWS();
+    const session = pausedIrSession();
     session.stateSnapshot.currentBoardId = 'board-b';
 
     const out = tryResumePausedScript({
@@ -1315,30 +1344,17 @@ describe('a paused episode does not resume onto a board the inspector has left',
     });
 
     expect(out).toMatchObject({ resumed: false, reason: 'paused_board_changed' });
-    // The episode is ENDED, not left paused on a stale board.
     expect(session.dialogueScriptState).toBeNull();
-    expect(
-      rows.some((r) => r.event.endsWith('_paused_board_changed_at_resume'))
-    ).toBe(true);
+    expect(rows.some((r) => r.event.endsWith('_board_changed_mid_episode'))).toBe(true);
   });
 
-  test('NEGATIVE CONTROL — the same resume on the SAME board is not fenced', () => {
+  test('NEGATIVE CONTROL — the same resume on the SAME board DOES resume', () => {
+    // Without this, the row above could pass because the resume declined for an
+    // unrelated reason. This proves the only difference is the board.
     const rows = [];
     const ws = new FakeWS();
-    const session = buildSession({ 3: {} });
-    session.dialogueScriptState = {
-      active: false,
-      paused: true,
-      paused_at: 1000,
-      paused_designation_hint: 'immersion',
-      schemaName: 'insulation_resistance',
-      circuit_ref: null,
-      values: {},
-      operations: [],
-      pending_writes: [],
-      skipped_slots: new Set(),
-      effectiveBoardId: 'main',
-    };
+    const session = pausedIrSession();
+
     const out = tryResumePausedScript({
       session,
       ws,
@@ -1347,8 +1363,53 @@ describe('a paused episode does not resume onto a board the inspector has left',
       logger: capturingLog(rows),
       now: 2000,
     });
-    // It may decline for an ordinary reason, but NEVER for the board.
-    expect(out.reason).not.toBe('paused_board_changed');
+
+    expect(out.resumed).toBe(true);
+    expect(session.dialogueScriptState).not.toBeNull();
+    expect(session.dialogueScriptState.circuit_ref).toBe(9);
+  });
+
+  test('ACTIVE: an iOS select_board frame mid-walk ends the episode on the next turn', () => {
+    // The route the fence originally missed. No pause, no model turn — the
+    // client simply moves the selection while a walk-through is running.
+    const rows = [];
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    session.stateSnapshot.boards = [
+      { id: 'main', board_type: 'main' },
+      { id: 'board-b', board_type: 'sub' },
+    ];
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCBO on circuit 3.',
+      logger: capturingLog(rows),
+      now: 1000,
+    });
+    expect(session.dialogueScriptState.active).toBe(true);
+    expect(session.dialogueScriptState.effectiveBoardId).toBe('main');
+
+    // Exactly what the iOS frame handler does: assign, and nothing else.
+    session.stateSnapshot.currentBoardId = 'board-b';
+
+    const rows2 = [];
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'type A',
+      logger: capturingLog(rows2),
+      now: 2000,
+    });
+
+    // The episode is over and the utterance is the model's now.
+    expect(session.dialogueScriptState).toBeNull();
+    expect(out).toMatchObject({ handled: false });
+    expect(rows2.some((r) => r.event.endsWith('_board_changed_mid_episode'))).toBe(true);
+    // …and nothing was written to either board's circuit 3 by the dead walk.
+    expect(session.stateSnapshot.circuits[3].rcd_type).toBeUndefined();
+    expect(session.stateSnapshot.circuits['board-b::3']).toBeUndefined();
   });
 });
 

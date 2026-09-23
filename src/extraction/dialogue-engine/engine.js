@@ -56,6 +56,7 @@ import {
 } from '../plan00-audibility-ledgers.js';
 import {
   circuitExistsInSnapshot,
+  listCircuitRefsInBoard,
   resolveEffectiveBoardId,
 } from '../stage6-multi-board-shape.js';
 import { applyReadingToSnapshot, applyReadingFlagAware } from '../stage6-snapshot-mutators.js';
@@ -172,6 +173,25 @@ export function processDialogueTurn(ctx) {
   if (!Array.isArray(schemas) || schemas.length === 0) return { handled: false };
   const text = typeof transcriptText === 'string' ? transcriptText : '';
   const replyText = typeof rawReplyText === 'string' ? rawReplyText : text;
+
+  // PLAN-A — before ANYTHING acts on the episode, check it still belongs to the
+  // selected board. The iOS `select_board` frame moves `currentBoardId` on any
+  // turn, active script or not, so this cannot live only on the resume path.
+  if (
+    endEpisodeOnBoardDrift({
+      session,
+      ws,
+      schemas,
+      logger,
+      sessionId,
+      now,
+      responseEpoch,
+    })
+  ) {
+    // The episode is over and its read-back has spoken. The utterance itself is
+    // an ordinary one now — let it reach the model.
+    return { handled: false };
+  }
 
   const state = session.dialogueScriptState;
 
@@ -1833,6 +1853,75 @@ function buildCircuitRetryQuestion(schema, designationAttempt) {
  * active-path handler below. See the comment on the unresolvable-circuit
  * branch for the failure mode they fix.
  */
+/**
+ * PLAN-A — END an episode whose board is no longer the selected one.
+ *
+ * A walk-through belongs to the board the inspector is standing at. It is bound
+ * to that board at entry, and there are two ways the selection can move out from
+ * under it, both outside the engine's control:
+ *
+ *  - the iOS `select_board` frame, handled in `sonnet-stream.js`, which assigns
+ *    `stateSnapshot.currentBoardId` directly and can arrive on ANY turn,
+ *    including one where a script is active — the script owning the floor keeps
+ *    the MODEL out, not the client;
+ *  - `select_board` / `add_board` during a PAUSE, where the model does run.
+ *
+ * Neither touches `dialogueScriptState`. Left alone, the next reply would ask
+ * about, and write to, circuit N of the board the inspector has left — and the
+ * extraction frames carry no `board_id`, so the client would route the answer to
+ * whichever board is selected now. The two sides would disagree about which
+ * certificate row the value belongs to.
+ *
+ * Ending it is the honest outcome: whatever the walk captured is spoken through
+ * the ordinary terminal exit, queued values are abandoned, and the utterance
+ * falls through to the model as an ordinary turn. Resuming on the old board, or
+ * silently adopting the new one, would each be a guess about what the inspector
+ * meant by walking away.
+ *
+ * Cross-wrapper isolation applies: production calls all three domain wrappers
+ * every turn with their own narrow `schemas` lists, so a wrapper that does not
+ * own the active schema must not clear its state — the same rule the
+ * broadcast pre-filter and the active-path handler already follow.
+ *
+ * @returns {boolean} true when an episode was ended (the caller stops).
+ */
+function endEpisodeOnBoardDrift({ session, ws, schemas, logger, sessionId, now, responseEpoch }) {
+  const state = session?.dialogueScriptState;
+  if (!state || (!state.active && !state.paused)) return false;
+  if (state.effectiveBoardId == null) return false;
+  const boardNow = resolveEffectiveBoardId(session, null);
+  if (boardNow === state.effectiveBoardId) return false;
+  const schema = Array.isArray(schemas) ? schemas.find((s) => s.name === state.schemaName) : null;
+  // Not this wrapper's episode — leave it to the one that owns it.
+  if (!schema) return false;
+
+  logger?.info?.(`${schema.logEventPrefix}_board_changed_mid_episode`, {
+    sessionId,
+    episode_board_id: state.effectiveBoardId,
+    current_board_id: boardNow,
+    circuit_ref: state.circuit_ref,
+    was_paused: state.paused === true,
+  });
+  if (Array.isArray(state.pending_writes)) {
+    for (const w of state.pending_writes) {
+      const op = w[OPERATION_REF];
+      if (op) markAbandoned(op);
+    }
+  }
+  renderTerminalReadback({
+    ws,
+    session,
+    sessionId,
+    schema,
+    logger,
+    now,
+    responseEpoch,
+    siteLabel: 'board_changed_mid_episode',
+  });
+  clearScriptState(session);
+  return true;
+}
+
 function initScriptState(session, schema, circuit_ref, now, effectiveBoardId = undefined) {
   // A new script invalidates any pending post-completion correction crumb —
   // closes the stale-fire window where a started-then-aborted script would
@@ -5258,11 +5347,17 @@ function handleBulkApplyReply({
   // Resolve the target circuit set.
   let targetCircuits = [];
   if (parse.scope === 'all') {
-    const snapshotRefs = Object.keys(session.stateSnapshot?.circuits ?? {})
-      .map((k) => parseInt(k, 10))
-      .filter((n) => Number.isInteger(n) && n > 0 && n !== state.circuit_ref)
+    // "All circuits" means all circuits ON THIS BOARD. Parsing
+    // `snapshot.circuits` keys as integers only ever sees MAIN's bare numeric
+    // keys — a sub-board's live at `${board}::${ref}` — so an RCD walk on a
+    // sub-board used to propagate onto main's ref set: it missed every
+    // sub-board-only circuit and could create a circuit on this board purely
+    // because main happened to have that ref, while confirming "all circuits"
+    // to the inspector. `listCircuitRefsInBoard` is the dual-shape enumerator
+    // the rest of the multi-board code already uses.
+    targetCircuits = listCircuitRefsInBoard(session.stateSnapshot, state?.effectiveBoardId)
+      .filter((n) => n !== state.circuit_ref)
       .sort((a, b) => a - b);
-    targetCircuits = snapshotRefs;
   } else if (parse.scope === 'range' || parse.scope === 'list') {
     targetCircuits = parse.circuits.filter((n) => n !== state.circuit_ref);
   }
@@ -6401,53 +6496,20 @@ export function tryResumePausedScript({
     return { resumed: false, reason: 'paused_timeout' };
   }
 
-  // PLAN-A — the board moved while we were paused, so do NOT resume.
-  //
-  // This is the ONE path on which an episode's board can differ from the
-  // selected board. `record_reading` has no `board_id` parameter (Plan 08B
-  // deleted it from every circuit mutator), so the dispatcher can only ever
-  // stamp the current board, and an episode starts on the board the inspector
-  // is working on. A PAUSE is the exception: the model runs during it, and
-  // `select_board` mutates `currentBoardId` without touching
-  // `dialogueScriptState`.
-  //
-  // Resuming here would walk circuit N of the board we STARTED on while the
-  // inspector is standing at another board — asking about the wrong circuit and
-  // writing values the client routes to a different row. The walk belongs to
-  // the board you are on, so the episode ends instead, with the same terminal
-  // read-back the stale-pause sweep gives: whatever it captured is spoken, and
-  // nothing is silently carried onto a board the inspector has left.
-  //
-  // Closing it HERE rather than carrying the episode board through the wire
-  // frames and the bulk enumerator is deliberate. Those carry no `board_id` and
-  // enumerate main's numeric keys respectively, and both are correct for every
-  // episode that starts and ends on the selected board — which, with this fence
-  // in place, is every episode there is.
-  const boardNow = resolveEffectiveBoardId(session, null);
-  if (state.effectiveBoardId != null && boardNow !== state.effectiveBoardId) {
-    logger?.info?.(`${schema.logEventPrefix}_paused_board_changed_at_resume`, {
-      sessionId: session.sessionId,
-      episode_board_id: state.effectiveBoardId,
-      current_board_id: boardNow,
-      circuit_ref: state.circuit_ref,
-    });
-    if (Array.isArray(state.pending_writes)) {
-      for (const w of state.pending_writes) {
-        const op = w[OPERATION_REF];
-        if (op) markAbandoned(op);
-      }
-    }
-    renderTerminalReadback({
-      ws,
+  // PLAN-A — the board moved while we were paused, so do NOT resume. The shared
+  // ender speaks the terminal read-back, abandons queued values and clears the
+  // state; see its comment for why ending beats resuming or re-adopting.
+  if (
+    endEpisodeOnBoardDrift({
       session,
-      sessionId: session.sessionId,
-      schema,
+      ws,
+      schemas,
       logger,
+      sessionId: session.sessionId,
       now,
       responseEpoch,
-      siteLabel: 'paused_board_changed_at_resume',
-    });
-    clearScriptState(session);
+    })
+  ) {
     return { resumed: false, reason: 'paused_board_changed' };
   }
 
@@ -6949,6 +7011,30 @@ export function tryEnterScriptFromWrites({
         // owns. That is the loop this plan exists to close, reopened one schema
         // to the left.
         sawHandedOff = true;
+        continue readingsLoop;
+      }
+
+      // PLAN-A — never START a walk-through on a board that is not selected.
+      //
+      // `record_reading` has no `board_id` (Plan 08B deleted it from the circuit
+      // mutators), but `set_field_for_all_circuits` DOES take one and stamps the
+      // named board on its per-ref `EFFECTIVE_CIRCUIT_SLOT`. Without this, a
+      // tool-only bulk write at board B while main is selected would open a
+      // walk-through on B and start asking the inspector — who is standing at
+      // main — about B's circuits, with every answer emitted board-less and
+      // routed by the client to main.
+      //
+      // A cross-board bulk write is a legitimate write; it is just not a reason
+      // to start a CONVERSATION about another board. The write already happened
+      // upstream and is read back by the bundler either way.
+      if (effectiveBoardId !== resolveEffectiveBoardId(session, null)) {
+        logger?.info?.(`${schema.logEventPrefix}_entry_from_write_skipped_other_board`, {
+          sessionId: session.sessionId,
+          circuit_ref: circuitRef,
+          trigger_field: field,
+          write_board_id: effectiveBoardId,
+          current_board_id: resolveEffectiveBoardId(session, null),
+        });
         continue readingsLoop;
       }
 

@@ -327,3 +327,59 @@ cases now cover it, with a negative control, and the positive one is red-proofed
 
 Had I written the outcome record from memory, item 2 would have been recorded PASS on the strength of
 the rows that were covered. That is the failure mode the enumerate-don't-sample rule exists for.
+
+### Round 4 — my premise argument was wrong, and the reviewer proved it
+
+Round 3's dispositions above claimed two BLOCKERs were unreachable. **That claim was false, and the
+round-4 lane demonstrated it against source.** I checked ONE write ingress and generalised from it.
+
+- `set_field_for_all_circuits` **does** take a `board_id`, and stamps the named board on each per-ref
+  `EFFECTIVE_CIRCUIT_SLOT` (`stage6-dispatchers-circuit.js`). So a tool-only bulk write can start an
+  episode on a board the inspector is not standing at, with no `record_reading` involved. I had even
+  read that schema — its description says "Scope the bulk write to one board" — and did not connect it.
+- The iOS **`select_board` frame** assigns `stateSnapshot.currentBoardId` directly in
+  `sonnet-stream.js`, with no reference to `dialogueScriptState`, and arrives on ANY turn. My
+  reasoning was "the script owns the floor, so the model cannot select_board" — true, and irrelevant:
+  the floor keeps the MODEL out, not the client. Divergence during an ACTIVE episode is reachable.
+- Finding 16's bulk enumerator needed no cross-board episode at all. An ordinary walk on a SELECTED
+  sub-board hits it, and my round-2 board carry made it worse: targets from main's numeric keys,
+  writes to the episode's board.
+
+The circuit-breaker was right that the answer was structural. It was wrong about which structure,
+because I built it on a premise I had not finished checking.
+
+**What ships instead — the invariant the codebase already had, restored.** `snapshot-write.js` used
+to say "Dialogue scripts are circuit-scoped on the current board." PLAN-A's entry-hook change is what
+invented the cross-board episode. So:
+
+1. **A walk-through never STARTS on a board that is not selected** — the entry hook skips such a
+   reading (`_entry_from_write_skipped_other_board`). The bulk write still lands and is still read
+   back; it is just not a reason to start a conversation about another board.
+2. **An episode whose board moves ENDS** — one shared `endEpisodeOnBoardDrift`, called at the
+   every-turn ingress AND at resume, so the iOS frame is covered and not just the pause. Terminal
+   read-back speaks, queued values are abandoned, the utterance falls through to the model. Honouring
+   cross-wrapper isolation, as the broadcast pre-filter and active-path handler already do.
+3. **"All circuits" enumerates THIS board** via `listCircuitRefsInBoard`.
+
+With 1 and 2, an episode's board is always the selected board, so board-less extraction frames route
+correctly and finding 14 dissolves for a reason that is now true rather than assumed.
+
+| # | Disposition |
+|---|---|
+| 14 (frames omit board_id) | CLOSED by construction — episodes cannot leave the selected board |
+| 15 (RCD→RCBO mirror baseline) | was already FIXED in round 3; lane confirmed |
+| 16 (bulk enumerator) | FIXED properly |
+| 17 (resume test proves too little) | FIXED — the control now performs a REAL resume, so the positive fails on the board and nothing else |
+
+**Four tests asserted the design I removed and were rewritten, not deleted.** The cross-board write
+test now runs with the sub-board SELECTED; the entry-hook test asserts the refusal AND keeps the
+stamp/lookup agreement on a selected sub-board; the ordering test keeps the `continue`-not-`return`
+property on the one shape that still reaches it (one circuit, two boards — two circuits is
+intercepted earlier as a broadcast). All three new behaviours are red-proofed, and the resume
+negative control stays green when the ender is neutered, so it cannot be passing for an unrelated
+reason.
+
+**The lesson, since it cost two rounds.** "This is unreachable" is a claim about EVERY ingress, and I
+verified one. The circuit-breaker rule says question the premise; it does not say the first premise
+you form is right. A premise argument needs the same enumerate-don't-sample discipline as an audit —
+and mine should have started by listing every tool that can stamp a board, which is a five-minute grep.
