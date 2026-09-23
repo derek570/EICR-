@@ -28,6 +28,7 @@ import { parseOhms } from '../extraction/dialogue-engine/parsers/ohms.js';
 import {
   processRingContinuityTurn,
   tryEnterScriptFromWrites,
+  enterScriptByName,
   ALL_DIALOGUE_SCHEMAS,
 } from '../extraction/dialogue-engine/index.js';
 import { isHandedOff } from '../extraction/dialogue-handoff-tombstone.js';
@@ -617,5 +618,142 @@ describe('PLAN-A2 acceptance 3 — combined with PLAN-A’s handoff tombstone', 
     expect(spoken).not.toContain(INFINITY_SENTINEL);
     // Control: a numeric write through the same builder is unchanged.
     expect(buildConfirmationText('ring_r2_ohm', '0.43', 1)).toBe('Circuit 1, ring r2 0.43');
+  });
+});
+
+describe('PLAN-A2 acceptance 3 — the DEFERRED start path is fenced too (Codex EP cycle 3, blocker)', () => {
+  // `start_dialogue_script` may be called with `circuit: null` — "engine asks".
+  // PLAN-A fenced the call when the circuit is known, but nothing checked the
+  // tombstone when the answer resolved it, so a handed-off ring circuit walked
+  // to its own "R2 infinity. All correct?" — on top of the bundler's line when
+  // the model had also written the value the ordinary way. Two audible
+  // "infinity"s for one dictated reading, and script involvement after a
+  // handoff: both halves of acceptance 3.
+  const SESSION_ID = 'sess_a2_deferred';
+
+  class FakeWS {
+    constructor() {
+      this.OPEN = 1;
+      this.readyState = this.OPEN;
+      this.sent = [];
+    }
+    send(data) {
+      this.sent.push(JSON.parse(data));
+    }
+  }
+
+  function setup() {
+    const ws = new FakeWS();
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 1: { circuit_designation: 'Ring Main' } },
+        boards: [{ id: 'main', board_type: 'main' }],
+        currentBoardId: 'main',
+      },
+    };
+    const turn = (transcriptText, now) =>
+      processRingContinuityTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText,
+        rawReplyText: transcriptText,
+        logger: null,
+        now,
+      });
+    return { ws, session, turn };
+  }
+
+  function handOff(turn) {
+    turn('Ring continuity on circuit 1.', 1000);
+    turn('there is no way to get at the other end', 2000);
+  }
+
+  function modelStartsWithNoCircuit(session, ws, now = 3000) {
+    return enterScriptByName({
+      session,
+      ws,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ring_continuity',
+      circuit_ref: null,
+      pending_writes: [{ field: 'ring_r2_ohm', value: INFINITY_SENTINEL }],
+      logger: null,
+      now,
+    });
+  }
+
+  const spokenTexts = (frames) =>
+    frames.map((f) => f.question ?? f.text).filter((s) => typeof s === 'string');
+
+  test('same-turn ordinary write + deferred start: the bundler line is the ONLY "infinity"', () => {
+    const { ws, session, turn } = setup();
+    handOff(turn);
+    // The model's ordinary write this turn — bundler-spoken as
+    // "Circuit 1, ring r2 infinity" (asserted in the block above).
+    session.stateSnapshot.circuits[1].ring_r2_ohm = INFINITY_SENTINEL;
+    expect(modelStartsWithNoCircuit(session, ws).status).toBe('entered');
+    const before = ws.sent.length;
+
+    const out = turn('circuit 1', 4000);
+
+    // The script hands straight back to the model rather than walking.
+    expect(out.fallthrough).toBe(true);
+    expect(out.serverNote.kind).toBe('deferred_entry');
+    expect(session.dialogueScriptState).toBeNull();
+    expect(isHandedOff(session, 'main', 'ring_continuity', 1)).toBe(true);
+    // Already on the certificate and already read back, so NOT returned for
+    // re-writing — that would be the second read-back.
+    expect(out.serverNote.unapplied).toBeUndefined();
+    expect(out.serverNote.existing_values).toMatchObject({ ring_r2_ohm: INFINITY_SENTINEL });
+    // Nothing further from the script: no ask, no triple, no "infinity".
+    const after = spokenTexts(ws.sent.slice(before));
+    expect(after.filter((s) => /infinity/.test(s))).toHaveLength(0);
+    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
+    // Follow the walk the old code took; the script must stay silent.
+    turn('0.43', 5000);
+    turn('0.44', 6000);
+    expect(ws.sent.filter((f) => f.reason === 'confirm_ring_continuity')).toHaveLength(0);
+  });
+
+  test('deferred start ALONE: the value goes back to the model, never silently dropped', () => {
+    const { ws, session, turn } = setup();
+    handOff(turn);
+    modelStartsWithNoCircuit(session, ws);
+    const out = turn('circuit 1', 4000);
+
+    expect(out.fallthrough).toBe(true);
+    expect(out.serverNote.unapplied).toEqual([
+      { field: 'ring_r2_ohm', value: INFINITY_SENTINEL },
+    ]);
+    // The script wrote nothing — the model owns the write, and the bundler
+    // will read it back once.
+    expect(session.stateSnapshot.circuits[1].ring_r2_ohm).toBeUndefined();
+    // And the model actually READS it: the note is prepended to the utterance.
+    expect(out.transcriptText).toMatch(/^\[Server note: The walk-through you started did not run/);
+    expect(out.transcriptText).toContain('"unapplied":[{"field":"ring_r2_ohm","value":"∞"}]');
+    expect(out.transcriptText.endsWith('circuit 1')).toBe(true);
+  });
+
+  test('scope: a deferred MODEL start on a circuit that was never handed off still walks', () => {
+    const { ws, session, turn } = setup();
+    modelStartsWithNoCircuit(session, ws);
+    const out = turn('circuit 1', 4000);
+    expect(out.fallthrough).toBe(false);
+    expect(session.dialogueScriptState?.active).toBe(true);
+    expect(session.dialogueScriptState.circuit_ref).toBe(1);
+    expect(session.stateSnapshot.circuits[1].ring_r2_ohm).toBe(INFINITY_SENTINEL);
+  });
+
+  test('scope: an INSPECTOR trigger with no circuit is not fenced — PLAN-A lets it override', () => {
+    const { session, turn } = setup();
+    handOff(turn);
+    turn('Ring continuity.', 3000);
+    expect(session.dialogueScriptState?.deferred_model_entry).toBeUndefined();
+    const out = turn('circuit 1', 4000);
+    expect(out.fallthrough).toBe(false);
+    expect(session.dialogueScriptState?.active).toBe(true);
+    expect(session.dialogueScriptState.circuit_ref).toBe(1);
   });
 });
