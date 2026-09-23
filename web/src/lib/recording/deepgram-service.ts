@@ -84,8 +84,19 @@ export interface DeepgramWord {
   punctuated_word?: string;
 }
 
+/** PLAN-D (WAVE-CONTEXT Decision 34) — which socket a TURN event came from.
+ *  Additive and optional: `current` is the same admissibility test a final
+ *  gets (the emitting socket is this service's current epoch and the
+ *  service has not been disconnected). A superseded socket's late
+ *  interim / StartOfTurn / turn end arrives with `current: false`; its
+ *  watermark handling is unchanged. */
+export interface TurnEventMeta {
+  readonly epoch: ConnectionEpoch | null;
+  readonly current: boolean;
+}
+
 export interface DeepgramCallbacks {
-  onInterimTranscript: (text: string, confidence: number) => void;
+  onInterimTranscript: (text: string, confidence: number, meta?: TurnEventMeta) => void;
   /** A02D — the optional fourth argument is the transport half of the
    *  FinalWindowV1 record (epoch, admissibility, `speech_start`,
    *  `window_end`). Always supplied by the real service; a caller that omits
@@ -96,8 +107,8 @@ export interface DeepgramCallbacks {
     words: DeepgramWord[],
     meta?: FinalTranscriptMeta
   ) => void;
-  onUtteranceEnd?: () => void;
-  onSpeechStarted?: () => void;
+  onUtteranceEnd?: (meta?: TurnEventMeta) => void;
+  onSpeechStarted?: (meta?: TurnEventMeta) => void;
   onStateChange?: (state: DeepgramConnectionState) => void;
   onError?: (err: Error) => void;
   /**
@@ -553,6 +564,16 @@ export class DeepgramService {
   /** A02D — the transport half of the admission predicate for a final
    *  emitted under `socketEpoch`: this instance has not been disconnected
    *  and the emitting socket is its current one. */
+  /** PLAN-D — the emitting socket of the TURN event being delivered right
+   *  now (`dispatchingSocketContext` is set around every socket's
+   *  `onmessage`). Outside a delivery (no context) the event is attributed
+   *  to the current epoch. */
+  private turnEventMeta(): TurnEventMeta {
+    const ctx = this.dispatchingSocketContext;
+    if (!ctx) return { epoch: this.currentEpoch, current: !this.admissionClosed };
+    return { epoch: ctx.epoch, current: this.admissibleFor(ctx.epoch) };
+  }
+
   private admissibleFor(socketEpoch: ConnectionEpoch | null | undefined): boolean {
     return (
       !this.admissionClosed &&
@@ -744,11 +765,14 @@ export class DeepgramService {
         // nova-3 interims are non-empty by construction (the frozen path
         // returns on an empty transcript); Flux notes its own evidence.
         if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
-        callbacks.onInterimTranscript(text, confidence);
+        callbacks.onInterimTranscript(text, confidence, this.turnEventMeta());
       },
       onSpeechStarted: () => {
         if (this.sttModel !== 'flux') this.noteProviderSpeechEvidence();
-        callbacks.onSpeechStarted?.();
+        callbacks.onSpeechStarted?.(this.turnEventMeta());
+      },
+      onUtteranceEnd: () => {
+        callbacks.onUtteranceEnd?.(this.turnEventMeta());
       },
     };
   }

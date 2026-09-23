@@ -3062,7 +3062,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             }
           }
         },
-        onInterimTranscript: (text) => {
+        onInterimTranscript: (text, _confidence, turnMeta) => {
           // PLAN-E1 E3 — first interim since the last onset resolves the
           // probe's pending sample as OBSERVED; arm the spoken advisory
           // only on an actual arm↔recover transition (the queue itself
@@ -3080,11 +3080,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // suppressed; the speaking flag, the phantom-VAD watchdog cancel and
           // the poor-signal probe resolution all keep running.
           if (!voicePausedRef.current) setInterim(text);
-          // Decision 34 — a non-empty interim opens (or continues) a turn.
-          if (text && emittingService !== null && emittingService === deepgramRef.current) {
+          // Decision 34 — a non-empty interim opens (or continues) a turn,
+          // but ONLY from the current socket: a superseded socket's late
+          // interim (turnMeta.current === false) must not open a stale turn.
+          if (
+            text &&
+            turnMeta?.current !== false &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current
+          ) {
             deepgramTurnRef.current = {
               service: emittingService,
-              epoch: emittingService.liveEpoch ?? null,
+              epoch: turnMeta?.epoch ?? emittingService.liveEpoch ?? null,
             };
           }
           // Mirror iOS `isSpeaking` flag — interim arrival proves the
@@ -3105,18 +3112,19 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             postWakeMonitorTimerRef.current = null;
           }
         },
-        onSpeechStarted: () => {
-          // Decision 34 — Flux StartOfTurn opens a turn. nova-3's VAD
-          // SpeechStarted does not (it fires on breath); there the first
-          // interim does.
+        onSpeechStarted: (turnMeta) => {
+          // Decision 34 — Flux StartOfTurn opens a turn (current socket
+          // only). nova-3's VAD SpeechStarted does not (it fires on
+          // breath); there the first interim does.
           if (
             activeSttModelRef.current === 'flux' &&
+            turnMeta?.current !== false &&
             emittingService !== null &&
             emittingService === deepgramRef.current
           ) {
             deepgramTurnRef.current = {
               service: emittingService,
-              epoch: emittingService.liveEpoch ?? null,
+              epoch: turnMeta?.epoch ?? emittingService.liveEpoch ?? null,
             };
           }
           // Stamp the time so the post-wake monitor (#53) can tell
@@ -3142,12 +3150,18 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             onInspectorStoppedSpeaking();
           }, SPEECH_CONFIRM_TIMEOUT_MS);
         },
-        onUtteranceEnd: () => {
+        onUtteranceEnd: (turnMeta) => {
           // Decision 34 — the turn ended. With a transcript Flux fires the
           // final FIRST (which consumed any tap marker); reaching here with
           // the marker still set means the marked turn ended with NO final,
-          // so there is nothing left to drop.
-          if (emittingService !== null && emittingService === deepgramRef.current) {
+          // so there is nothing left to drop. A superseded socket's late turn
+          // end (turnMeta.current === false) is NOT the current turn's end
+          // and must not clear a live mark.
+          if (
+            turnMeta?.current !== false &&
+            emittingService !== null &&
+            emittingService === deepgramRef.current
+          ) {
             deepgramTurnRef.current = null;
             if (tapDropTurnRef.current?.service === emittingService) tapDropTurnRef.current = null;
           }

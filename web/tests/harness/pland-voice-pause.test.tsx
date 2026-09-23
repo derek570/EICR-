@@ -873,6 +873,66 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(lateDrops(harness)).toHaveLength(0);
     });
 
+    /** Pause, then let the socket die and the service reconnect (a new
+     *  epoch on the SAME service), so socket #0 is superseded. */
+    async function pauseThenReconnect(harness: Bundle, api: () => RecordingApi) {
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitUnownedClose();
+      });
+      await advance(30_000);
+      expect(dg.sockets.length).toBeGreaterThan(1);
+      expect(dg.connectionState).toBe('connected');
+      return dg;
+    }
+
+    it('a LATE interim from the superseded socket does not open a turn: the tap marks nothing', async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = await pauseThenReconnect(harness, api);
+      await act(async () => {
+        dg.emitFrameOnSocket(0, {
+          type: 'TurnInfo',
+          event: 'Update',
+          transcript: 'stale words from the old socket',
+          audio_window_end: 0.5,
+        });
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a LATE turn end from the superseded socket does not clear a live current-epoch mark', async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = await pauseThenReconnect(harness, api);
+      // A turn opens on the CURRENT socket; Resume is tapped mid-turn.
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('Zs on circuit 1 is');
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      // The old socket delivers a late, empty EndOfTurn.
+      await act(async () => {
+        dg.emitFrameOnSocket(0, { type: 'TurnInfo', event: 'EndOfTurn', transcript: '' });
+      });
+      // The current turn's final is still the paused speech: dropped.
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual([]);
+      expect(lateDrops(harness)).toHaveLength(1);
+      // And the next turn is admitted.
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+    });
+
     it('the phrase route is untouched: a reading right after "carry on" is admitted, nothing is marked', async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
