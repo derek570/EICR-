@@ -37,6 +37,7 @@ import {
 } from '@/lib/boards/canonical-main';
 import {
   applyDefaultsToCircuit,
+  canonicaliseOcpdStandardForImport,
   clampImpedance,
   clearMaxZs,
   recomputeMaxZsForOcpdTuple,
@@ -1237,11 +1238,31 @@ const NUMERIC_READING_COLUMNS = new Set<string>([
   'ir_live_earth_mohm',
 ]);
 
+/**
+ * PLAN-CC — stable row identity, by id when present and by (board, ref)
+ * otherwise. Shared by the explicit-max-Zs-clear set and H3's prior-row map so
+ * the two cannot key differently: `circuit_ref` ALONE would collide on a
+ * multi-board job where main and sub-board both have a circuit 1, and a
+ * collision there would suppress the wrong board's derivation.
+ */
+function circuitRowIdentity(r: CircuitRow): string | null {
+  if (r.id != null && r.id !== '') return `id:${r.id}`;
+  const ref = r.circuit_ref ?? r.number;
+  if (ref == null) return null;
+  const board = typeof r.board_id === 'string' ? r.board_id : '';
+  return `br:${board}|${ref}`;
+}
+
 function applyCircuitReadings(
   job: JobDetail,
   readings: ExtractedReading[],
   circuitUpdates: CircuitUpdate[],
   fieldClears: FieldClear[],
+  /** PLAN-CC — receives the identity of every circuit whose `ocpd_max_zs_ohm`
+   *  this turn CLEARED explicitly, so the H3 derivation below can skip it. An
+   *  out-parameter rather than a changed return shape: the return value is
+   *  consumed in three places and this is the only consumer that needs it. */
+  clearedMaxZs: Set<string>,
   // A2-multiboard item 6 — the envelope's board ops used to be evidence in the
   // `replaces_cleared` cardinality gate this file no longer has: P4b resolves a
   // flagged replacement against the ROWS it may legally land on, so an op
@@ -1952,6 +1973,14 @@ function applyCircuitReadings(
     if (column === 'circuit_designation' && typeof writeValue === 'string') {
       writeValue = repairCircuitDesignation(writeValue);
     }
+    // PLAN-CC (write paths 1 / 2) — the standard-write boundary table's server
+    // -apply row: canonicalise a known or grammar-valid form, preserve anything
+    // else exactly as sent with the row marker. iOS canonicalises at BOTH of
+    // its server-apply switches, so without this web would persist and print a
+    // raw `60909` where iOS stores `BS EN 61009` from the same frame.
+    if (column === 'ocpd_bs_en' && typeof writeValue === 'string') {
+      writeValue = canonicaliseOcpdStandardForImport(writeValue);
+    }
     // PLAN-CC (M15) — a max Zs that arrives on an `extraction` frame is a
     // DICTATED value, not a derivation, so it is recorded `manual` and the
     // helper must never later recompute over it. The `replaces_cleared` bypass
@@ -1982,6 +2011,8 @@ function applyCircuitReadings(
     // on an empty cell and refuses to derive anything ever again.
     if (column === 'ocpd_max_zs_ohm') {
       circuits[idx] = clearMaxZs(row);
+      const clearedKey = circuitRowIdentity(circuits[idx]);
+      if (clearedKey != null) clearedMaxZs.add(clearedKey);
       continue;
     }
     delete row[column];
@@ -3001,11 +3032,18 @@ export function applyExtractionToJob(
   // AFTER this returns (`onBoardOps` fires after `onExtraction` —
   // sonnet-session.ts). The A2 gate below therefore has to read the ops
   // itself; by the time boards[] reflects them the readings have landed.
+  // PLAN-CC — circuits whose max Zs this turn CLEARED explicitly. H3 below
+  // runs over every row, and an empty cell with a resolvable tuple is exactly
+  // what it derives into: without this a `field_cleared` for
+  // `ocpd_max_zs_ohm` was removed and then immediately written back, so the
+  // clear the inspector asked for never reached the certificate.
+  const clearedMaxZs = new Set<string>();
   let newCircuits = applyCircuitReadings(
     job,
     readings,
     circuitUpdates,
     fieldClears,
+    clearedMaxZs,
     result.board_ops ?? [],
     options
   );
@@ -3034,16 +3072,9 @@ export function applyExtractionToJob(
     // alone, so a multi-board job where main + sub-board both have circuit 1
     // doesn't collide (which would evaluate provenance against the wrong
     // board's rating).
-    const priorRowKey = (r: CircuitRow): string | null => {
-      if (r.id != null && r.id !== '') return `id:${r.id}`;
-      const ref = r.circuit_ref ?? r.number;
-      if (ref == null) return null;
-      const board = typeof r.board_id === 'string' ? r.board_id : '';
-      return `br:${board}|${ref}`;
-    };
     const priorByRef = new Map<string, CircuitRow>();
     for (const p of (job.circuits as CircuitRow[] | undefined) ?? []) {
-      const k = priorRowKey(p);
+      const k = circuitRowIdentity(p);
       if (k != null) priorByRef.set(k, p);
     }
     let mzsChanged = false;
@@ -3053,7 +3084,11 @@ export function applyExtractionToJob(
       // provenance from value equality: `manual` is never touched, a pre-plan
       // row with no key is preserved and marked, and only an `auto` row (or an
       // empty cell) is recomputed or cleared.
-      const rowKey = priorRowKey(row);
+      const rowKey = circuitRowIdentity(row);
+      // An explicit clear this turn wins over the derivation. A later tuple
+      // change still derives normally — the suppression is scoped to the turn
+      // that asked for the clear, not to the row forever.
+      if (rowKey != null && clearedMaxZs.has(rowKey)) return row;
       const prior = rowKey != null ? priorByRef.get(rowKey) : undefined;
       const next = recomputeMaxZsForOcpdTuple(prior, row, logMaxZsChange);
       if (next !== row) mzsChanged = true;

@@ -31,7 +31,7 @@
 
 import * as React from 'react';
 import { MaxZsMarker } from '@/components/job/max-zs-marker';
-import { useOcpdStandardDraft } from '@/components/job/ocpd-standard-field';
+import { OcpdStandardComboCell } from '@/components/job/ocpd-standard-field';
 import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { orderCircuitFocusFields } from './circuit-focus-fields';
@@ -443,27 +443,25 @@ function OcpdStandardCell({
   onPatch: (id: string, patch: Record<string, string>) => void;
   ariaLabel: string;
 }) {
+  // PLAN-CC — the SAME combo the desktop schedule uses. This cell used to be a
+  // bare input, which left one of the three web surfaces with no suggestions
+  // at all while acceptance 4 requires both tiers on every one of them.
+  // Open state is local because this table has no shared active-cell registry.
+  const [open, setOpen] = React.useState(false);
   const accessory = React.useContext(StickyAccessoryContext);
   const handlers = accessory?.inputHandlers(id, 'ocpd_bs_en');
-  const field = useOcpdStandardDraft(String(value ?? ''), (next) =>
-    onPatch(id, { ocpd_bs_en: next })
-  );
   return (
-    <input
-      type="text"
-      inputMode="text"
-      maxLength={field.cap}
-      ref={(el) => accessory?.registerRef(id, 'ocpd_bs_en', el)}
-      value={field.draft}
-      onChange={field.onChange}
+    <OcpdStandardComboCell
+      value={String(value ?? '')}
+      onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
+      ariaLabel={ariaLabel}
+      isOpen={open}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
+      font="text-[12px]"
+      inputRef={(el) => accessory?.registerRef(id, 'ocpd_bs_en', el)}
       onFocus={handlers?.onFocus}
-      onBlur={(e) => {
-        field.onBlur(e);
-        handlers?.onBlur?.();
-      }}
-      onKeyDown={field.onKeyDown}
-      aria-label={ariaLabel}
-      className="w-full rounded-[var(--radius-sm)] border border-transparent bg-transparent px-1 py-0.5 text-[12px] focus:border-[var(--color-brand-blue)] focus:outline-none"
+      onAccessoryBlur={handlers?.onBlur}
     />
   );
 }

@@ -26,7 +26,7 @@
 
 import * as React from 'react';
 import { MaxZsMarker } from '@/components/job/max-zs-marker';
-import { useOcpdStandardDraft } from '@/components/job/ocpd-standard-field';
+import { OcpdStandardComboCell } from '@/components/job/ocpd-standard-field';
 import { OCPD_BS_TIER1, OCPD_BS_TIER2 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
@@ -456,131 +456,6 @@ function HeaderCell({
   );
 }
 
-/**
- * PLAN-CC — the desktop schedule's OCPD-standard cell: a free-text input with
- * the shared commit contract, plus a suggestion list behind the same chevron
- * the other option columns use.
- *
- * It is a combo rather than a dropdown because the closed list is what the
- * plan removes: a `BS 3871` or `BS 88-6` printed on the device has to be
- * recordable. Tier 2 is behind a disclosure so the everyday case stays one
- * click, and the 24-character cap and canonicalise-on-commit timing come from
- * `useOcpdStandardDraft`, shared with the card and the sticky table.
- */
-function OcpdStandardDesktopCell({
-  id,
-  value,
-  onPatch,
-  ariaLabel,
-  isOpen,
-  onOpen,
-  onClose,
-}: {
-  id: string;
-  value: string | undefined;
-  onPatch: (id: string, patch: Record<string, string>) => void;
-  ariaLabel: string;
-  isOpen: boolean;
-  onOpen: () => void;
-  onClose: () => void;
-}) {
-  const [showTier2, setShowTier2] = React.useState(false);
-  const field = useOcpdStandardDraft(value ?? '', (next) => onPatch(id, { ocpd_bs_en: next }));
-  const suggestions = showTier2 ? [...OCPD_BS_TIER1, ...OCPD_BS_TIER2] : OCPD_BS_TIER1;
-
-  return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
-      <div
-        className={`flex h-10 w-full items-center gap-1 rounded-[var(--radius-sm)] border px-2 transition-all duration-150 ${
-          isOpen
-            ? 'border-[var(--color-brand-blue)] bg-[var(--color-surface-2)] shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-brand-blue)_25%,transparent)]'
-            : 'border-transparent hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)]'
-        }`}
-      >
-        <input
-          type="text"
-          inputMode="text"
-          maxLength={field.cap}
-          value={field.draft}
-          onChange={field.onChange}
-          onBlur={field.onBlur}
-          onKeyDown={field.onKeyDown}
-          aria-label={ariaLabel}
-          placeholder="—"
-          className="h-full w-full min-w-0 bg-transparent text-[13px] font-medium placeholder:opacity-50 focus:outline-none"
-        />
-        <button
-          type="button"
-          onClick={() => (isOpen ? onClose() : onOpen())}
-          aria-haspopup="listbox"
-          aria-expanded={isOpen}
-          aria-label={`${ariaLabel} suggestions`}
-          className="flex-shrink-0"
-        >
-          <ChevronDown
-            className={`h-3 w-3 transition-transform duration-150 ${
-              isOpen ? 'rotate-180 text-[var(--color-brand-blue)]' : 'opacity-60'
-            }`}
-            aria-hidden
-          />
-        </button>
-      </div>
-      {isOpen ? (
-        <ul
-          role="listbox"
-          aria-label={ariaLabel}
-          className="cm-popover-in absolute left-0 top-full z-30 mt-1 max-h-64 min-w-full overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
-        >
-          <li>
-            <button
-              type="button"
-              role="option"
-              aria-selected={!value}
-              onClick={() => {
-                field.commit('');
-                onClose();
-              }}
-              className="block w-full px-3 py-2 text-left text-[13px] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-2)]"
-            >
-              — Clear —
-            </button>
-          </li>
-          {suggestions.map((opt) => (
-            <li key={opt}>
-              <button
-                type="button"
-                role="option"
-                aria-selected={value === opt}
-                onClick={() => {
-                  field.commit(opt);
-                  onClose();
-                }}
-                className={`block w-full px-3 py-2 text-left text-[13px] hover:bg-[var(--color-surface-2)] ${
-                  value === opt
-                    ? 'bg-[var(--color-surface-2)] text-[var(--color-brand-blue)]'
-                    : 'text-[var(--color-text-primary)]'
-                }`}
-              >
-                {opt}
-              </button>
-            </li>
-          ))}
-          <li>
-            <button
-              type="button"
-              onClick={() => setShowTier2((v) => !v)}
-              aria-expanded={showTier2}
-              className="block w-full px-3 py-2 text-left text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
-            >
-              {showTier2 ? 'Fewer standards' : 'More standards'}
-            </button>
-          </li>
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
 function ColumnFillPopover({
   column,
   onApply,
@@ -841,10 +716,9 @@ function CellField({
   // no list carries. Tier 1 stays one click; Tier 2 sits behind a disclosure.
   if (column.key === 'ocpd_bs_en') {
     return (
-      <OcpdStandardDesktopCell
-        id={id}
-        value={value}
-        onPatch={onPatch}
+      <OcpdStandardComboCell
+        value={value ?? ''}
+        onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
         ariaLabel={ariaLabel}
         isOpen={isOpen}
         onOpen={onOpen}

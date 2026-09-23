@@ -77,15 +77,41 @@ const NA_PHRASES: ReadonlySet<string> = new Set([
   'not applicable',
 ]);
 
+/**
+ * EVERY whitespace character either twin will ever see, written out.
+ *
+ * Do NOT replace this with `\s`. JavaScript's `\s` and ICU's `\s` (which is
+ * what Swift's `NSRegularExpression` uses) are DIFFERENT sets: ICU omits the
+ * vertical tab and the BOM, JavaScript includes both. A dictated or imported
+ * value carrying a non-breaking space — routine in text pasted from a PDF —
+ * would then trim on web and miss on iOS, and the two clients would store
+ * different strings for the same input. The literal is duplicated verbatim in
+ * `OcpdStandard.swift` and pinned by shared vectors.
+ */
+const WHITESPACE_CLASS =
+  '\t\n\u000B\f\r \u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF';
+
+/** Collapses every one of those to a plain space before anything else looks at
+ *  the value, so the steps below only ever deal with `U+0020`. */
+const ANY_WHITESPACE = new RegExp(`[${WHITESPACE_CLASS}]`, 'g');
+
 /** Edge punctuation and quote characters only. Internal `/`, `-` and `+` are
  *  preserved so `N/A` and `BS 88-2` survive — the exact characters a naive
  *  `replace(/\W/g)` would eat. Same rule as `cleanClosedEnumResidue`. */
-const EDGE_PUNCTUATION = /^[\s"'“”‘’.,!?;:]+|[\s"'“”‘’.,!?;:]+$/g;
+const EDGE_PUNCTUATION = /^[ "'“”‘’.,!?;:]+|[ "'“”‘’.,!?;:]+$/g;
 
-/** Step 7 capture grammar, run on the whole normalised value. Anchored: the
- *  value is already isolated, so an unanchored match would silently swallow
- *  trailing words. */
-const CAPTURE_GRAMMAR = /^(?:bs)?\s?(en)?\s?(\d{2,5})(?:-(\d{1,2}))?(?:-(\d))?$/;
+/**
+ * Step 7 capture grammar, run on the whole normalised value. Anchored: the
+ * value is already isolated, so an unanchored match would silently swallow
+ * trailing words.
+ *
+ * `[0-9]` rather than `\d`, for the same reason the whitespace class is spelt
+ * out: JavaScript's `\d` is ASCII-only while ICU's matches every Unicode
+ * decimal digit. A fullwidth `６０８９８` would MISS on web and ASSEMBLE on iOS,
+ * writing a standard made of characters no BS number contains. Both twins
+ * refuse it.
+ */
+const CAPTURE_GRAMMAR = /^(?:bs)? ?(en)? ?([0-9]{2,5})(?:-([0-9]{1,2}))?(?:-([0-9]))?$/;
 
 /**
  * Canonicalise a dictated or typed OCPD standard.
@@ -101,20 +127,28 @@ export function canonicaliseOcpdStandard(raw: unknown): string | null {
   else if (typeof raw === 'number' && Number.isFinite(raw)) source = String(raw);
   else return null;
 
+  // Step 0 — every whitespace character becomes a plain space, so the two
+  // twins are looking at the same bytes before step 1 trims anything.
+  const spaced = source.replace(ANY_WHITESPACE, ' ');
+
   // Step 10 — `N/A` short-circuits before step 1 and is returned unchanged.
-  const trimmed = source.replace(EDGE_PUNCTUATION, '');
+  const trimmed = spaced.replace(EDGE_PUNCTUATION, '');
   if (trimmed === '') return null;
   if (NA_PHRASES.has(trimmed.toLowerCase())) return 'N/A';
 
   // Step 1 — edge trim done above; lower-case for MATCHING only. The output is
   // assembled from captures, never from the input's own casing.
+  //
+  // `toLowerCase()` and not `toLocaleLowerCase()`: the latter maps a Turkish
+  // dotted `I` differently and the Swift twin uses the locale-independent
+  // `lowercased()`.
   let v = trimmed.toLowerCase();
 
   // Step 2 — letter-split standard words. `a b s` drops its leading `a` (Flux's
   // rendering of the letter sequence, as `bs-code.js:76` does today).
-  v = v.replace(/\ba\.?\s+b\.?\s*s\.?(?![a-z])/g, 'bs');
-  v = v.replace(/\bb\.?\s+s\.?(?![a-z])/g, 'bs');
-  v = v.replace(/\be\.?\s+n\.?(?![a-z])/g, 'en');
+  v = v.replace(/\ba\.? +b\.? *s\.?(?![a-z])/g, 'bs');
+  v = v.replace(/\bb\.? +s\.?(?![a-z])/g, 'bs');
+  v = v.replace(/\be\.? +n\.?(?![a-z])/g, 'en');
 
   // Step 3 — spoken `dash` / `hyphen` between digit groups → `-`. Looped rather
   // than lookbehind so the Swift twin and older Safari behave identically on
@@ -122,11 +156,11 @@ export function canonicaliseOcpdStandard(raw: unknown): string | null {
   let previous: string;
   do {
     previous = v;
-    v = v.replace(/(\d)\s*(?:dash|hyphen)\s*(\d)/g, '$1-$2');
+    v = v.replace(/([0-9]) *(?:dash|hyphen) *([0-9])/g, '$1-$2');
   } while (v !== previous);
 
   // Step 4 — zero-words inside a digit run → digits (`6 zero 8 9 8` → `60898`).
-  v = v.replace(/\b\d+(?:\s+(?:\d+|zero|oh|nought|naught))+\b/g, (m) =>
+  v = v.replace(/\b[0-9]+(?: +(?:[0-9]+|zero|oh|nought|naught))+\b/g, (m) =>
     m
       .split(/\s+/)
       .map((tok) =>
@@ -135,11 +169,12 @@ export function canonicaliseOcpdStandard(raw: unknown): string | null {
       .join('')
   );
 
-  // Step 5 — collapse whitespace runs to one space.
-  v = v.replace(/\s+/g, ' ').trim();
+  // Step 5 — collapse whitespace runs to one space. Only U+0020 can be left by
+  // step 0, so a plain space class is exact here.
+  v = v.replace(/ +/g, ' ').trim();
 
   // Step 6 — remove spaces around hyphens (`12345 - 12 - 3` → `12345-12-3`).
-  v = v.replace(/\s*-\s*/g, '-');
+  v = v.replace(/ *- */g, '-');
 
   // Step 7 — capture grammar.
   const m = CAPTURE_GRAMMAR.exec(v);

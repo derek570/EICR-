@@ -1,3 +1,5 @@
+import { canonicaliseOcpdStandard } from './ocpd-standard';
+
 /**
  * BS 7671 Maximum Earth Fault Loop Impedance (Zs) lookup.
  *
@@ -490,8 +492,51 @@ export function ocpdMaxZsStatus(row: MaxZsRow): OcpdMaxZsStatus | null {
   return str(row.ocpd_max_zs_ohm).trim() === computed ? 'ok' : 'manual_mismatch';
 }
 
+/**
+ * PLAN-CC — the STANDARD's own compatibility status, which is separate from
+ * the max Zs's and is reachable when the max Zs is empty.
+ *
+ * The standard-write boundary table says an automatic ingress preserves an
+ * unreadable standard "as-is, row marker". The max-Zs status cannot carry that:
+ * it returns null the moment the cell is empty, so a CCU photo or a document
+ * import that wrote `There is no RCBO` into `ocpd_bs_en` on a row with no max
+ * Zs produced no marker anywhere and no preflight line — the inspector was
+ * never told to look at it, which is the silent-drop outcome in a different
+ * shape.
+ *
+ * `unreadable` means the canonicaliser could not read the stored value. It is
+ * a QUESTION, not an error: the value is kept exactly as it arrived, because
+ * at an import there is nobody to re-ask and refusing it would lose a reading.
+ */
+export function ocpdStandardStatus(row: MaxZsRow): 'unreadable' | null {
+  const stored = str(row.ocpd_bs_en).trim();
+  if (stored === '') return null;
+  return canonicaliseOcpdStandard(stored) == null ? 'unreadable' : null;
+}
+
 /** Pinned warning copy. Byte-identical on both clients and in both preflights
  *  — the fixture test compares these strings, not a description of them. */
+export function ocpdStandardWarningText(circuitRef: string, row: MaxZsRow): string | null {
+  if (ocpdStandardStatus(row) == null) return null;
+  return `Circuit ${circuitRef}: OCPD standard ${str(row.ocpd_bs_en).trim()} was stored as recorded and is not a recognised form — check it before issuing`;
+}
+
+/**
+ * Every compatibility line this row owes the inspector, in a fixed order:
+ * the standard first (it is the cause when both fire), then the max Zs.
+ *
+ * ONE function so a surface cannot render one and forget the other. Both PDF
+ * preflights and both grid markers call it.
+ */
+export function ocpdRowWarnings(circuitRef: string, row: MaxZsRow): string[] {
+  const out: string[] = [];
+  const standard = ocpdStandardWarningText(circuitRef, row);
+  if (standard) out.push(standard);
+  const maxZs = ocpdMaxZsWarningText(circuitRef, row);
+  if (maxZs) out.push(maxZs);
+  return out;
+}
+
 export function ocpdMaxZsWarningText(circuitRef: string, row: MaxZsRow): string | null {
   const status = ocpdMaxZsStatus(row);
   const value = str(row.ocpd_max_zs_ohm).trim();

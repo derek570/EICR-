@@ -33,6 +33,7 @@ import {
   cleanClosedEnumResidue,
   GUARDED_CLOSED_ENUM_FIELDS,
   isGuardedClosedEnumField,
+  isValueCheckedCircuitField,
   reaskForClosedEnumOutcome,
   renderClosedEnumReask,
   type ClosedEnumReaskReason,
@@ -40,7 +41,8 @@ import {
   type GuardedClosedEnumField,
   type GuardedTarget,
 } from './closed-enum-guard';
-import { canonicaliseOcpdStandard } from './ocpd-standard';
+import { canonicaliseOcpdStandard, canonicaliseOcpdStandardForImport } from './ocpd-standard';
+import { applyOcpdAwarePatch } from './max-zs-lookup';
 import { repairCircuitDesignation } from './designation-canonicaliser';
 import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
@@ -508,15 +510,6 @@ export function parseVoiceCommand(transcript: string): VoiceCommand | null {
  *  guarded fields take the guard's own edge-only cleaner, which
  *  preserves internal `/ - + &` (N/A, A-S, B+, T&E) and never strips a
  *  unit-shaped letter. Unguarded fields are byte-identical to before. */
-/** Circuit fields whose dictated VALUE is checked before it is written —
- *  the five closed enums, plus `ocpd_bs_en`, which PLAN-CC made free text but
- *  which still goes through a canonicaliser that can MISS. Both classes take
- *  the edge-only cleaner, judge the value once per command, and speak the
- *  stored value rather than what was heard when the two differ. */
-function isValueCheckedCircuitField(field: string | null | undefined): boolean {
-  return isGuardedClosedEnumField(field) || field === 'ocpd_bs_en';
-}
-
 function cleanValue(raw: string, canonicalField?: string): string {
   // PLAN-CC — `ocpd_bs_en` is named explicitly alongside the guarded set
   // because it LEFT that set and must keep the edge-only cleaner. The
@@ -1234,8 +1227,20 @@ function applyUpdateField(
     if (guardedValue != null) {
       value = guardedValue;
     }
+    // PLAN-CC (write path 7 / M3) — the ONE manual-boundary commit route. The
+    // bare `{ ...row, [field]: value }` spread this replaces recomputed
+    // nothing, so a dictated standard, type, rating or disconnect-time change
+    // left the PREVIOUS device's max Zs on the certificate; and a dictated max
+    // Zs kept whatever source the row already had, so the next tuple change
+    // could recompute the inspector's own correction away.
     const next: VoiceCommandCircuit[] = circuits.map((row, i) =>
-      i === idx ? { ...row, [resolved.circuitField as string]: value } : row
+      i === idx
+        ? (applyOcpdAwarePatch(
+            row as Record<string, unknown>,
+            { [resolved.circuitField as string]: value },
+            canonicaliseOcpdStandardForImport
+          ) as VoiceCommandCircuit)
+        : row
     );
     const label = labelForField(resolved.circuitField);
     return {
@@ -1719,7 +1724,15 @@ function applyApplyField(
       field: resolved.circuitField as string,
       value: appliedValue,
     });
-    return { ...row, [resolved.circuitField as string]: appliedValue };
+    // PLAN-CC (write path 7 / M3) — per row, the same commit route as the
+    // single-circuit branch above. A bulk standard change has to recompute the
+    // derived rows and leave the manual ones exactly as the inspector entered
+    // them, which a plain spread cannot do.
+    return applyOcpdAwarePatch(
+      row as Record<string, unknown>,
+      { [resolved.circuitField as string]: appliedValue },
+      canonicaliseOcpdStandardForImport
+    ) as VoiceCommandCircuit;
   });
   const label = labelForField(resolved.circuitField);
   if (updated === 0) {

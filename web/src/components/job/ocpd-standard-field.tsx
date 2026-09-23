@@ -8,6 +8,7 @@ import {
   OCPD_BS_TIER2,
 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 import { canonicaliseOcpdStandardForImport } from '@certmate/shared-utils';
+import { ChevronDown } from 'lucide-react';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { cn } from '@/lib/utils';
 
@@ -69,6 +70,14 @@ export function useOcpdStandardDraft(value: string, onCommit: (next: string) => 
     const next = e.target.value;
     // Refuse, do not truncate: truncating would silently store a different
     // standard from the one the inspector typed.
+    //
+    // The cap is enforced HERE and deliberately NOT with the native
+    // `maxLength` attribute. `maxLength` truncates a PASTE before React sees
+    // it, so a pasted 25-character standard would arrive at this handler
+    // already 24 characters long, pass the check, and commit — silently
+    // storing a different standard, which is the exact outcome the
+    // refuse-don't-truncate rule exists to prevent. `length` is UTF-16 units;
+    // the Swift twin counts `utf16.count` for the same reason.
     if (next.length > OCPD_BS_INPUT_CAP) return;
     setDraft(next);
   }, []);
@@ -114,7 +123,6 @@ export function OcpdStandardField({
     <FloatingLabelInput
       label={label}
       value={field.draft}
-      maxLength={field.cap}
       ref={inputRef}
       onChange={field.onChange}
       onFocus={onFocus}
@@ -159,6 +167,153 @@ export function OcpdStandardField({
           {showTier2 ? 'Fewer standards' : 'More standards'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PLAN-CC — the TABLE form of the OCPD-standard control: a free-text input
+ * with the shared commit contract, plus the suggestion tiers behind a chevron.
+ *
+ * Both grid surfaces use it — the desktop schedule and the sticky table. The
+ * sticky table originally rendered a bare input, which left one of the three
+ * web surfaces with no suggestions at all while acceptance 4 requires both
+ * tiers on every one of them. Sharing the component is what makes that
+ * structurally true rather than something to re-check.
+ *
+ * It is a combo rather than a dropdown because the closed list is what the
+ * plan removes: a `BS 3871` or `BS 88-6` printed on the device has to be
+ * recordable. Tier 2 sits behind a disclosure so the everyday case stays one
+ * click, and the cap and canonicalise-on-commit timing come from
+ * `useOcpdStandardDraft`, shared with the card too.
+ */
+export function OcpdStandardComboCell({
+  value,
+  onCommit,
+  ariaLabel,
+  isOpen,
+  onOpen,
+  onClose,
+  font = 'text-[13px]',
+  inputRef,
+  onFocus,
+  onAccessoryBlur,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  ariaLabel: string;
+  isOpen: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+  /** Tailwind text size — the sticky table runs 12px, the schedule 13px. */
+  font?: string;
+  /** Keyboard-accessory registration. The sticky table's bar walks focusable
+   *  cells by `(circuitId, field)`; without these the OCPD standard would be
+   *  the one text cell its prev/next arrows skip. */
+  inputRef?: (el: HTMLInputElement | null) => void;
+  onFocus?: React.FocusEventHandler<HTMLInputElement>;
+  onAccessoryBlur?: () => void;
+}) {
+  const [showTier2, setShowTier2] = React.useState(false);
+  const field = useOcpdStandardDraft(value, onCommit);
+  const suggestions = showTier2 ? [...OCPD_BS_TIER1, ...OCPD_BS_TIER2] : OCPD_BS_TIER1;
+
+  return (
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`flex h-10 w-full items-center gap-1 rounded-[var(--radius-sm)] border px-2 transition-all duration-150 ${
+          isOpen
+            ? 'border-[var(--color-brand-blue)] bg-[var(--color-surface-2)] shadow-[0_0_0_2px_color-mix(in_srgb,var(--color-brand-blue)_25%,transparent)]'
+            : 'border-transparent hover:border-[var(--color-border-subtle)] hover:bg-[var(--color-surface-2)]'
+        }`}
+      >
+        <input
+          type="text"
+          inputMode="text"
+          ref={inputRef}
+          value={field.draft}
+          onChange={field.onChange}
+          onFocus={onFocus}
+          onBlur={(e) => {
+            field.onBlur(e);
+            onAccessoryBlur?.();
+          }}
+          onKeyDown={field.onKeyDown}
+          aria-label={ariaLabel}
+          placeholder="—"
+          className={cn(
+            'h-full w-full min-w-0 bg-transparent font-medium placeholder:opacity-50 focus:outline-none',
+            font
+          )}
+        />
+        <button
+          type="button"
+          onClick={() => (isOpen ? onClose() : onOpen())}
+          aria-haspopup="listbox"
+          aria-expanded={isOpen}
+          aria-label={`${ariaLabel} suggestions`}
+          className="flex-shrink-0"
+        >
+          <ChevronDown
+            className={`h-3 w-3 transition-transform duration-150 ${
+              isOpen ? 'rotate-180 text-[var(--color-brand-blue)]' : 'opacity-60'
+            }`}
+            aria-hidden
+          />
+        </button>
+      </div>
+      {isOpen ? (
+        <ul
+          role="listbox"
+          aria-label={ariaLabel}
+          className="cm-popover-in absolute left-0 top-full z-30 mt-1 max-h-64 min-w-full overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border-subtle)] bg-[var(--color-surface-1)] py-1 shadow-[0_16px_40px_rgba(0,0,0,0.55)]"
+        >
+          <li>
+            <button
+              type="button"
+              role="option"
+              aria-selected={!value}
+              onClick={() => {
+                field.commit('');
+                onClose();
+              }}
+              className="block w-full px-3 py-2 text-left text-[13px] text-[var(--color-text-tertiary)] hover:bg-[var(--color-surface-2)]"
+            >
+              — Clear —
+            </button>
+          </li>
+          {suggestions.map((opt) => (
+            <li key={opt}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={value === opt}
+                onClick={() => {
+                  field.commit(opt);
+                  onClose();
+                }}
+                className={`block w-full px-3 py-2 text-left text-[13px] hover:bg-[var(--color-surface-2)] ${
+                  value === opt
+                    ? 'bg-[var(--color-surface-2)] text-[var(--color-brand-blue)]'
+                    : 'text-[var(--color-text-primary)]'
+                }`}
+              >
+                {opt}
+              </button>
+            </li>
+          ))}
+          <li>
+            <button
+              type="button"
+              onClick={() => setShowTier2((v) => !v)}
+              aria-expanded={showTier2}
+              className="block w-full px-3 py-2 text-left text-[12px] font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-2)]"
+            >
+              {showTier2 ? 'Fewer standards' : 'More standards'}
+            </button>
+          </li>
+        </ul>
+      ) : null}
     </div>
   );
 }

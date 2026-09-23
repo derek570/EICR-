@@ -20,8 +20,10 @@
  */
 
 import {
+  applyOcpdAwarePatch,
   canonicaliseClosedEnumValue,
   canonicaliseOcpdStandard,
+  canonicaliseOcpdStandardForImport,
   isGuardedClosedEnumField,
   type GuardedClosedEnumField,
 } from '@certmate/shared-utils';
@@ -332,7 +334,19 @@ export function applyRegexMatchToJob(
       const idx = c.circuitIdx ?? -1;
       const row = circuits[idx];
       if (!row) continue;
-      circuits[idx] = { ...row, [c.fieldKey]: c.value };
+      // PLAN-CC (write path 18) — the instant fill writes into the same four
+      // tuple columns the rest of the app recomputes from, and a plain spread
+      // recomputed nothing: a regex-admitted `ocpd_bs_en` or `ocpd_type` left
+      // the PREVIOUS device's max Zs on the row until some later server apply
+      // happened to touch it. `applyOcpdAwarePatch` is per-candidate rather
+      // than per-row because each candidate is committed on its own here, and
+      // the helper is idempotent, so two candidates on one row produce the
+      // same end state as one patch carrying both.
+      circuits[idx] = applyOcpdAwarePatch(
+        row as Record<string, unknown>,
+        { [c.fieldKey]: c.value },
+        canonicaliseOcpdStandardForImport
+      ) as CircuitRow;
     } else {
       // Every stored alias of the destination receives the value (wire key
       // + PWA-column key), so the page the inspector edits and the wire

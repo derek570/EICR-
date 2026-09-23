@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { ocpdMaxZsWarningText } from '@certmate/shared-utils';
+import { ocpdRowWarnings } from '@certmate/shared-utils';
 import { useParams } from 'next/navigation';
 import {
   AlertTriangle,
@@ -641,7 +641,10 @@ function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
     w.push('No circuits added (Circuits tab)');
   }
 
-  // PLAN-CC — one line per circuit whose max Zs the app cannot vouch for.
+  // PLAN-CC — one line per compatibility question the app cannot answer for
+  // itself: an OCPD standard it could not read (preserved exactly as it
+  // arrived at an import, where there is nobody to re-ask), and a max Zs it
+  // cannot vouch for.
   // NON-BLOCKING by design: generation proceeds either way. A hand-entered
   // value that no longer fits its OCPD tuple and a value with no recorded
   // origin are both things the inspector should see before issuing, and
@@ -649,8 +652,7 @@ function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
   if (Array.isArray(circuits)) {
     for (const circuit of circuits as Array<Record<string, unknown>>) {
       const ref = typeof circuit.circuit_ref === 'string' ? circuit.circuit_ref : '';
-      const line = ocpdMaxZsWarningText(ref, circuit);
-      if (line) w.push(line);
+      for (const line of ocpdRowWarnings(ref, circuit)) w.push(line);
     }
   }
 

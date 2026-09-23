@@ -50,6 +50,7 @@ export {
   CLOSED_ENUM_LABELS,
   WIRING_TYPE_DESCRIPTION_TO_CODE,
   isGuardedClosedEnumField,
+  isValueCheckedCircuitField,
   canonicaliseClosedEnumValue,
   cleanClosedEnumResidue,
   parseClosedEnumBsCode,
@@ -78,6 +79,9 @@ export {
   readMaxZsSource,
   ocpdMaxZsStatus,
   ocpdMaxZsWarningText,
+  ocpdStandardStatus,
+  ocpdStandardWarningText,
+  ocpdRowWarnings,
   applyOcpdAwarePatch,
 } from './max-zs-lookup';
 export type {

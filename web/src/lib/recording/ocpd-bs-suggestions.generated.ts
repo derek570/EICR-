@@ -15,10 +15,10 @@
 
 /** SHA-256 of config/ocpd-bs-suggestions.json at generation time. */
 export const OCPD_BS_SUGGESTIONS_DIGEST =
-  'd6a5fba96d07a43f34d21338aec058254074ff0387be950a04fc029ea3401fb3';
+  '68eba79b2f5d58c4fcb898662898bdf11fbd8f6a6798eaf8ca38bec8b3dff0a2';
 
 export const OCPD_BS_SUGGESTIONS = {
-  "$comment": "PLAN-CC (feedback-2026-09-17 wave) — OCPD BS(EN) standard manifest. CROSS-PLATFORM CONTRACT and the NORMATIVE source for the canonicalisation alias table: the rendering in PLAN-CC § CC1 has no independent authority, and if the two disagree this file wins. Shape mirrors config/closed-enum-vectors.json. web/ compiles it in through the generated module web/src/lib/recording/ocpd-bs-suggestions.generated.ts (the production Docker builder never copies root config/, so web cannot import this path at runtime) and a web test re-reads THIS file and asserts digest + deep equality; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/ocpd-bs-suggestions.json pinned by paired SHA-256 digest constants, and scripts/check-ocpd-bs-fixture-sync.sh byte-compares them as a named hard-fail pre-TestFlight step. `accepted_value_vectors` IS the canonical mapping — there is no separate alias layer. A miss is a `rejected_value_vectors` entry, never an accepted entry with a null expected. `tier1`/`tier2` are CURATED picker suggestions, not a closed list: ocpd_bs_en accepts any grammar-valid standard, and BS EN 61008 / BS 4293 / BS 7288 are accepted when dictated but deliberately appear in NEITHER tier. The backend twin parseOcpdStandard and its conformance test are PLAN-CS's deliverable (PLAN-CC § Integration note).",
+  "$comment": "PLAN-CC (feedback-2026-09-17 wave) — OCPD BS(EN) standard manifest. CROSS-PLATFORM CONTRACT and the NORMATIVE source for the canonicalisation alias table: the rendering in PLAN-CC § CC1 has no independent authority, and if the two disagree this file wins. Shape mirrors config/closed-enum-vectors.json. web/ compiles it in through the generated module web/src/lib/recording/ocpd-bs-suggestions.generated.ts (the production Docker builder never copies root config/, so web cannot import this path at runtime) and a web test re-reads THIS file and asserts digest + deep equality; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/ocpd-bs-suggestions.json pinned by paired SHA-256 digest constants, and scripts/check-ocpd-bs-fixture-sync.sh byte-compares them as a named hard-fail pre-TestFlight step. `accepted_value_vectors` IS the canonical mapping — there is no separate alias layer. A miss is a `rejected_value_vectors` entry, never an accepted entry with a null expected. `tier1`/`tier2` are CURATED picker suggestions, not a closed list: ocpd_bs_en accepts any grammar-valid standard, and BS EN 61008 / BS 4293 / BS 7288 are accepted when dictated but deliberately appear in NEITHER tier. The last two accepted and two rejected vectors pin the two places the twins could diverge outside this list: a non-breaking space at the edges (ICU and JavaScript disagree about what whitespace IS) and fullwidth digits (ICU matches Unicode decimal digits, JavaScript matches ASCII only). The backend twin parseOcpdStandard and its conformance test are PLAN-CS's deliverable (PLAN-CC § Integration note).",
   "plan": "PLAN-CC-v29.md (feedback-2026-09-17 wave)",
   "schema_source": "config/field_schema.json",
   "cap": 24,
@@ -234,6 +234,14 @@ export const OCPD_BS_SUGGESTIONS = {
     {
       "input": "N/A",
       "expected": "N/A"
+    },
+    {
+      "input": " N/A ",
+      "expected": "N/A"
+    },
+    {
+      "input": "BS EN 60898",
+      "expected": "BS EN 60898"
     }
   ],
   "rejected_value_vectors": [
@@ -261,6 +269,16 @@ export const OCPD_BS_SUGGESTIONS = {
       "input": "There is no RCBO",
       "reason": "prose",
       "why": "the whole-value grammar consumes nothing; a miss re-asks"
+    },
+    {
+      "input": "６０８９８",
+      "reason": "non_ascii_digits",
+      "why": "ICU matches Unicode decimal digits and JavaScript does not; both twins refuse fullwidth digits so they cannot diverge (step 7)"
+    },
+    {
+      "input": "BS EN ６０８９８",
+      "reason": "non_ascii_digits",
+      "why": "same, with a prefix the grammar would otherwise consume"
     }
   ]
 } as const;

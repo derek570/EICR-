@@ -353,6 +353,25 @@ export function isGuardedClosedEnumField(field: string | null | undefined): bool
   return typeof field === 'string' && GUARDED_CLOSED_ENUM_FIELDS.has(field);
 }
 
+/**
+ * Circuit fields whose dictated VALUE is checked before it is written — the
+ * five closed enums, PLUS `ocpd_bs_en`, which PLAN-CC made free text but which
+ * still goes through a canonicaliser that can MISS.
+ *
+ * This is the predicate every "is this field value-checked?" branch must use,
+ * and it lives here rather than beside one caller because the WIRE DECODER
+ * needs it too. `voice-command-action.ts` decodes a server action tolerantly
+ * for this class — a numeric `60898` is stringified, an empty value is
+ * forwarded rather than dropped, and a missing scope is routed to the local
+ * missing-target re-ask instead of returning null. Dropping `ocpd_bs_en` out
+ * of that class would silently discard a server action while the caller speaks
+ * the server's success line, which is exactly the failure PLAN-C introduced
+ * the tolerant branch to prevent.
+ */
+export function isValueCheckedCircuitField(field: string | null | undefined): boolean {
+  return isGuardedClosedEnumField(field) || field === 'ocpd_bs_en';
+}
+
 /** Phrases that mean "not applicable" — accepted only on the fields whose
  *  schema option set actually carries `N/A`. Deliberately tight: "none" is
  *  excluded because it is just as often a mis-heard fragment as a genuine

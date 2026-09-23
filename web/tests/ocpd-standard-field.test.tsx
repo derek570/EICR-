@@ -152,6 +152,23 @@ describe('OcpdStandardField — the commit contract', () => {
     expect(onCommit).toHaveBeenCalledWith('88');
   });
 
+  it('refuses a PASTE that exceeds the cap, rather than truncating it', () => {
+    // The native `maxLength` attribute this control used to carry truncated a
+    // paste BEFORE React's onChange saw it, so a pasted 25-character standard
+    // arrived already 24 characters long, passed the check and committed — the
+    // control silently storing a different standard from the one pasted, which
+    // is the exact outcome refuse-don't-truncate exists to prevent. jsdom's
+    // property setter ignores `maxLength`, so the old test passed either way;
+    // the assertion that discriminates is the absence of the attribute.
+    const onCommit = vi.fn();
+    mount(<OcpdStandardField value="BS 3036" onCommit={onCommit} />);
+    expect(input().hasAttribute('maxlength')).toBe(false);
+    type('B'.repeat(OCPD_BS_INPUT_CAP + 1));
+    expect(input().value).toBe('BS 3036');
+    blur();
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
   it('refuses a 25th character WITHOUT changing the value already there', () => {
     const onCommit = vi.fn();
     mount(<OcpdStandardField value="" onCommit={onCommit} />);

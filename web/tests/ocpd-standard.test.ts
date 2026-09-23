@@ -63,7 +63,7 @@ describe('ocpd-bs-suggestions manifest — cross-platform pins', () => {
    *  in the same coordinated change. */
   it('manifest bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('d6a5fba96d07a43f34d21338aec058254074ff0387be950a04fc029ea3401fb3');
+    expect(digest).toBe('68eba79b2f5d58c4fcb898662898bdf11fbd8f6a6798eaf8ca38bec8b3dff0a2');
   });
 
   /** The generated module is what web actually compiles against; the manifest

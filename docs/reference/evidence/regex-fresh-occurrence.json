@@ -23,8 +23,8 @@
       "src/extraction/sonnet-stream.js": "62b79e16870f678363f0fb05648fe0098dfcbf0b910d5ba1e00b315af9d0b96e",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
       "web/src/lib/recording-context.tsx": "eda1d15866136567f81ad4af18deeb99df20e689b590398e099c5450469f5580",
-      "web/src/lib/recording/apply-extraction.ts": "56e9a088244418f2e648669fb2103f1a8e3c6b239d4cd85bc545315c236d554c",
-      "web/src/lib/recording/apply-regex-match.ts": "57686e35fe2cd31981ae2001f2268806aea4ea5abe44219e1713d38a9636561c",
+      "web/src/lib/recording/apply-extraction.ts": "d67ec287d4dee2ed53dc35c2485ae194c27dff5c46ad3e7559d405bbf168b38f",
+      "web/src/lib/recording/apply-regex-match.ts": "d16a329670e6d41b14188e532582bc6b2141b61960f87874e505eda3bac58eb0",
       "web/src/lib/recording/deepgram-service.ts": "2f76ccfc46a430acc1f559896ab90a4e2e7ba5a700711e4797cc1ebc73d056a8",
       "web/src/lib/recording/field-source-tracker.ts": "5b23afdcf6f19a872db359ffa2e62ff9e72c6ab6d51c60d817c406ad5f60cdd0",
       "web/src/lib/recording/final-window.ts": "1cde3fb651251a6f3c874e8c5c653d96677a2c225b5c5edfabe460468c543a27",
@@ -3933,6 +3933,15 @@
         "sources: web/src/lib/recording/apply-extraction.ts",
         "sources: web/src/lib/recording/apply-regex-match.ts",
         "tests: web/tests/closed-enum-guard.test.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CC",
+      "date": "2026-09-23",
+      "files": [
+        "sources: web/src/lib/recording/apply-extraction.ts",
+        "sources: web/src/lib/recording/apply-regex-match.ts"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }
