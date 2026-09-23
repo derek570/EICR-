@@ -1730,7 +1730,7 @@ function buildCircuitRetryQuestion(schema, designationAttempt) {
  * active-path handler below. See the comment on the unresolvable-circuit
  * branch for the failure mode they fix.
  */
-function initScriptState(session, schema, circuit_ref, now) {
+function initScriptState(session, schema, circuit_ref, now, effectiveBoardId = undefined) {
   // A new script invalidates any pending post-completion correction crumb —
   // closes the stale-fire window where a started-then-aborted script would
   // otherwise leave an OLD breadcrumb pointing at the wrong leg (#1).
@@ -1755,7 +1755,10 @@ function initScriptState(session, schema, circuit_ref, now) {
     // would ask the next missing slot on the circuit the model already owns —
     // the first-miss handoff failing silently, which is this plan's headline
     // guarantee.
-    effectiveBoardId: resolveEffectiveBoardId(session, null),
+    effectiveBoardId:
+      effectiveBoardId === undefined
+        ? resolveEffectiveBoardId(session, null)
+        : resolveEffectiveBoardId(session, effectiveBoardId),
     values: {},
     // Plan D (2026-07-25) — impedance-clamp provenance, field-keyed, exactly
     // parallel to `values`. Lives HERE (not on the session) so lifecycle rule 3
@@ -6746,7 +6749,14 @@ export function tryEnterScriptFromWrites({
         continue;
       }
 
-      initScriptState(session, schema, circuitRef, now);
+      // PLAN-A — the episode is stamped with the SAME board the tombstone lookup
+      // above used, not a fresh `currentBoardId` read. A `record_reading` can
+      // carry an explicit `board_id` that differs from the current board, and
+      // re-resolving here would write a later handoff's tombstone under one
+      // board while every subsequent write on that circuit looks it up under
+      // the other — the lookup MISSES and a fresh script asks the next missing
+      // slot on a circuit the model already owns, silently.
+      initScriptState(session, schema, circuitRef, now, effectiveBoardId);
       const state = session.dialogueScriptState;
       // PLAN A2 §A2.2 (feedback id 117) — Sonnet incoming readings: mark
       // ONLY the triggering field. No applyWriteWithDerivations call exists

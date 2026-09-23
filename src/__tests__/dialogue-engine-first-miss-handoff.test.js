@@ -280,6 +280,74 @@ describe('acceptance 5 — tombstone matrix', () => {
     expect(isHandedOff(session, 'main', 'rcbo', 7)).toBe(false);
   });
 
+  test('ENTRY-HOOK BOARD: the episode is stamped with the board the LOOKUP used, not currentBoardId', () => {
+    // The full round trip, because the stamp alone is not the defect — the
+    // MISMATCH is. A `record_reading` can carry an explicit `board_id` that
+    // differs from the current board, so the entry hook resolves the write's
+    // board (`board-b`) for its tombstone lookup. If `initScriptState` then
+    // re-resolved from `currentBoardId` (`main`), a later handoff would write
+    // the tombstone under `main` while every subsequent write on that circuit
+    // looks it up under `board-b`: the lookup MISSES, a fresh script asks the
+    // next missing slot on a circuit the model already owns, and the first-miss
+    // handoff fails SILENTLY — this plan's headline guarantee.
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 'board-b::3': { rcd_type: 'A' } },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'board-b', board_type: 'sub' },
+        ],
+        currentBoardId: 'main',
+      },
+    };
+    const ws = new FakeWS();
+    const onBoardB = () => 'board-b';
+
+    const entry = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: silentLog,
+      now: 1000,
+      effectiveBoardIdForReading: onBoardB,
+    });
+    expect(entry.entered).toBe(true);
+    // The episode carries the board its own entry resolved.
+    expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
+    // Derived, not hardcoded: an `rcd_type` write enters whichever schema the
+    // hook's own scoring picks, and the board property is what is under test.
+    const schemaName = session.dialogueScriptState.schemaName;
+
+    // Miss the question the walk asked, so the episode terminates and stamps.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'nothing that parses',
+      logger: silentLog,
+      now: 2000,
+    });
+    expect(session.dialogueScriptState).toBeNull();
+    expect(isHandedOff(session, 'board-b', schemaName, 3)).toBe(true);
+    // …and NOT under the current board, which is the mismatch itself.
+    expect(isHandedOff(session, 'main', schemaName, 3)).toBe(false);
+
+    // The round trip: a later write on the SAME board+circuit is fenced. On the
+    // pre-fix code this returns `{entered: true}` and restarts the walk.
+    const reentry = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: silentLog,
+      now: 3000,
+      effectiveBoardIdForReading: onBoardB,
+    });
+    expect(reentry).toEqual({ entered: false, reason: 'handed_off' });
+  });
+
   test('BOARD NORMALISATION — it fails on the raw-currentBoardId asymmetry', () => {
     // A snapshot that has NOT been through ensureMultiBoardShape, so
     // `currentBoardId` is undefined, with a single board whose id is NOT
