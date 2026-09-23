@@ -124,19 +124,20 @@ import {
   createSortRecordsAsksLast,
 } from './stage6-dispatchers.js';
 import { createAskDispatcher } from './stage6-dispatcher-ask.js';
-// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the four
-// Phase 5 gates (filled-slots shadow / restrained-mode / per-key budget /
-// 1500ms debounce) around the unmodified Plan 03-05 createAskDispatcher.
-// The branch below activates ONLY when sonnet-stream.js threads
-// options.askBudget AND options.restrainedMode through (Plans 05-03 +
-// 05-04 wire the activeSessions entry); without both, runShadowHarness
-// reverts to the Phase 3/4 dispatcher shape unchanged.
+// Stage 6 Phase 5 Plan 05-01 — higher-order composition of the ask gates
+// (filled-slots shadow / AFDD chain guard / 1500ms debounce) around the
+// unmodified Plan 03-05 createAskDispatcher. PLAN-B (feedback-2026-09-17,
+// Decision 3) removed the per-key ask budget and restrained mode; the
+// composition no longer needs any per-session object threaded in, so both
+// ask-dispatcher sites below compose it unconditionally.
 import {
   createAskGateWrapper,
   wrapAskDispatcherWithGates,
   createObsClarifyChainBroker,
   normaliseObsClarifyChainId,
 } from './stage6-ask-gate-wrapper.js';
+import { createRepeatAskTracker, REPEAT_ASK_NOTE_THRESHOLD } from './stage6-repeat-ask.js';
+import { requestModelAuthoredLine } from './stage6-model-authored-line.js';
 import {
   createPerTurnWrites,
   EFFECTIVE_BOARD_SLOT,
@@ -1496,6 +1497,38 @@ export function resolveZeroToolCallDuplicateOutcome({
  * byte-for-byte (bundler circuit "0" for board-level; board_id '' when
  * absent).
  */
+/**
+ * PLAN-B (feedback-2026-09-17, B-79) — the marker-② "did a mutation land?"
+ * predicate and its recovery read-backs. Re-runs the SAME canonical
+ * projection the bundler ran for this turn (`bundleToolCallsIntoResult`, a
+ * pure function) with the byte-identical options object over the final
+ * per-turn journal. A non-empty projection means a mutation landed, and its
+ * confirmations ARE the recovery read-backs; an empty projection is the only
+ * condition under which marker-② may say nothing was recorded. Because it is
+ * the bundler's own code, every category the bundler can speak is covered by
+ * construction, with the bundler's own suppression rules. When the mid-stream
+ * filter is on, slots already emitted mid-stream are removed from the
+ * recovery so nothing is spoken twice (they still count as landed).
+ *
+ * @returns {{ landed: boolean, confirmations: object[] }}
+ */
+export function recoverLandedMutationConfirmations({
+  perTurnWrites,
+  bundlerOptions,
+  midStreamFilterEnabled = false,
+  midStreamEmittedSlots = null,
+}) {
+  const projected = bundleToolCallsIntoResult(perTurnWrites, null, bundlerOptions);
+  const audible = Array.isArray(projected?.confirmations)
+    ? projected.confirmations.filter((c) => typeof c?.text === 'string' && c.text.trim().length > 0)
+    : [];
+  const confirmations =
+    midStreamFilterEnabled && midStreamEmittedSlots instanceof Set && midStreamEmittedSlots.size > 0
+      ? applyMidStreamConfirmationFilter(audible, midStreamEmittedSlots)
+      : audible;
+  return { landed: audible.length > 0, confirmations };
+}
+
 export function applyMidStreamConfirmationFilter(confirmations, midStreamEmittedSlots) {
   const confKeyOf = (c) => {
     const circ = c.circuit;
@@ -1741,6 +1774,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
   // would leak this turn's pendingFastTtsSlots / fastPathCorrelationIdByTurn
   // entries forward and the next turn's speculator preflight would skip
   // synth on a stale slot.
+  // PLAN-B (B3) — set once the primary loop has run; the outer `finally`
+  // calls it so the turn's single billing ingest happens even when the
+  // post-loop finalization throws.
+  let turnBillingFinalizer = null;
   try {
     // Build the dispatcher session that the tool dispatchers mutate. In LIVE
     // mode we want mutations to land on the LIVE session, not a clone — there's
@@ -1811,6 +1848,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     const isAudibleText = (t) => typeof t === 'string' && t.trim().length > 0;
     const isCurrentGenPrompt = (p) =>
       generationId == null || p?.generationId == null || p.generationId === generationId;
+    // PLAN-B (Codex cycle 2, BLOCKER) — a queued prompt that will reach the
+    // wire. A pending-value terminal whose value a later write in this
+    // generation recovered is RETRACTED by the §A4 drain, so it is not speech:
+    // counting it as surviving would suppress the nets (marker-② recovery in
+    // particular) and the drain would then drop it, leaving a chimed turn
+    // silent. The drain's own retraction predicate decides; this only reads it.
+    const isSurvivingSpokenPrompt = (p) =>
+      isCurrentGenPrompt(p) &&
+      isAudibleText(p?.text) &&
+      !pendingValuePromptWasRecovered(p, perTurnWrites);
     // Plan 2A (2026-07-30) §3.1 — HOISTED out of the A3 orphan block (where it
     // was `const allRejected = …`, block-scoped) so the partial-failure drain
     // that runs LATER in this function can read it. The classification itself
@@ -2145,30 +2192,26 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         stageEnumRejectionAfterAsk: (spec) =>
           stagePostAskRejection(liveSession, perTurnWrites, turnId, spec),
       });
-      if (options.askBudget && options.restrainedMode) {
-        askGateForTurn = createAskGateWrapper({
-          logger: log,
-          sessionId: liveSession.sessionId,
-          mode: 'live',
-        });
-        // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
-        // chain broker. Lazy on the session (like confirmationDebounceState)
-        // so chain ids survive across turns; the wrapper mints/stamps chain
-        // ids and keys the ask budget per OBSERVATION instead of per scope.
-        if (!liveSession.obsClarifyChains) {
-          liveSession.obsClarifyChains = createObsClarifyChainBroker();
-        }
-        asks = wrapAskDispatcherWithGates(asks, {
-          askBudget: options.askBudget,
-          restrainedMode: options.restrainedMode,
-          gate: askGateForTurn,
-          filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
-          logger: log,
-          sessionId: liveSession.sessionId,
-          mode: 'live',
-          obsClarifyChains: liveSession.obsClarifyChains,
-        });
+      askGateForTurn = createAskGateWrapper({
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+      });
+      // §D2 (field-feedback-2026-07-14) — per-session observation_clarify
+      // chain broker. Lazy on the session (like confirmationDebounceState)
+      // so chain ids survive across turns; the wrapper mints/stamps chain
+      // ids per OBSERVATION and the AFDD flow keys on them.
+      if (!liveSession.obsClarifyChains) {
+        liveSession.obsClarifyChains = createObsClarifyChainBroker();
       }
+      asks = wrapAskDispatcherWithGates(asks, {
+        gate: askGateForTurn,
+        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+        logger: log,
+        sessionId: liveSession.sessionId,
+        mode: 'live',
+        obsClarifyChains: liveSession.obsClarifyChains,
+      });
       dispatcher = createToolDispatcher(writes, asks, {
         answers,
         inspects,
@@ -2511,6 +2554,37 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     let cancelled = false;
     let toolLoopOut;
     const loopInvocationId = `${session.sessionId}:${options.extractionTurnId}:${generationId ?? randomUUID()}`;
+    // PLAN-B (feedback-2026-09-17, B2) — repeat visibility for the model's own
+    // asks. The ask budget is gone (Decision 3), so nothing blocks a third
+    // ask; instead, on the SECOND unusable reply to the same (field, circuit,
+    // board) key, the ask's tool result gains a `[Server note: repeat_ask. …]`
+    // the model reads in its next round of THIS loop. Informational only: a
+    // third ask still dispatches and logs `stage6.repeat_ask {count}`. The
+    // counter is per SESSION (a repeat spans turns). See stage6-repeat-ask.js.
+    if (!session.repeatAskTracker) session.repeatAskTracker = createRepeatAskTracker();
+    const repeatAskTracker = session.repeatAskTracker;
+    let repeatAskNoteThisTurn = null;
+    const augmentToolResult = (call, res) => {
+      if (call?.name !== 'ask_user') return null;
+      const observed = repeatAskTracker.observe({
+        input: call.input,
+        result: res,
+        perTurnWrites,
+        currentBoardId: session.stateSnapshot?.currentBoardId ?? null,
+      });
+      if (observed.count >= REPEAT_ASK_NOTE_THRESHOLD) {
+        log.info?.('stage6.repeat_ask', {
+          sessionId: session.sessionId,
+          turnId,
+          tool_call_id: call.tool_call_id ?? null,
+          ask_key: observed.key,
+          count: observed.count,
+          note_appended: observed.note != null,
+        });
+      }
+      if (observed.note) repeatAskNoteThisTurn = observed.note;
+      return observed.note;
+    };
     let accountingStarted = false;
     let failedBillableUsage = null;
     let billableRoundUsage = [];
@@ -2577,6 +2651,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // tool. Dedup via cachePeek inside _speculate ensures the
         // onSnapshotPatch fire that arrives later doesn't double-synth.
         onToolUseStreamed: speculator?.onToolUseStreamed,
+        // PLAN-B (B2) — the repeat_ask note rides the model-facing tool result.
+        augmentToolResult,
       });
     } catch (err) {
       failedBillableUsage = err?.billableUsage ?? null;
@@ -2629,17 +2705,142 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     } finally {
       billableRoundUsage = toolLoopOut?.round_usage ?? failedBillableUsage?.round_usage ?? [];
-      session.costTracker?.ingestBillableUsage?.(
-        loopInvocationId,
-        billableRoundUsage,
-        'inspector_live'
-      );
-      if (accountingStarted) {
-        session.costTracker?.endBillableInvocation?.(loopInvocationId);
-      }
     }
 
     askGateForTurn?.destroy();
+
+    // PLAN-B (feedback-2026-09-17, B3) — the ONE billing ingest for this turn.
+    // `loopInvocationId` stays open from the primary runToolLoop through any
+    // net-site helper call (requestModelAuthoredLine) in the same turn; the
+    // helper's rows (tagged `usage_role: 'terminal_retry'`, re-indexed after
+    // the primary rounds) are merged here and the cost tracker ingests the
+    // turn once. Idempotent: called before the turn telemetry and again from
+    // the outer `finally`, so an exception between the loop and the telemetry
+    // still ingests and closes the scope.
+    const helperRoundUsage = [];
+    let turnBillingFinalized = false;
+    const finalizeTurnBilling = () => {
+      if (turnBillingFinalized) return;
+      turnBillingFinalized = true;
+      const primaryRows = Array.isArray(billableRoundUsage) ? billableRoundUsage : [];
+      billableRoundUsage = [
+        ...primaryRows,
+        ...helperRoundUsage.map((row, i) => ({ ...row, round_idx: primaryRows.length + i })),
+      ];
+      try {
+        session.costTracker?.ingestBillableUsage?.(
+          loopInvocationId,
+          billableRoundUsage,
+          'inspector_live'
+        );
+      } finally {
+        if (accountingStarted) {
+          session.costTracker?.endBillableInvocation?.(loopInvocationId);
+        }
+      }
+    };
+    turnBillingFinalizer = finalizeTurnBilling;
+
+    // PLAN-B (feedback-2026-09-17, B3/B4) — canned nets ask the model first.
+    // Each net about to speak a canned "I didn't understand" line first gives
+    // the model ONE retry through the retry-only `net_response` tool; the
+    // server renders the line from a fixed table (stage6-model-authored-line
+    // .js). `deps` is the primary call's already-resolved environment: the
+    // same target (Luna for ordinary turns, Terra for observation turns),
+    // tier, reasoning effort, turn kind, system blocks and messages, and the
+    // generation's abort signal. Never on a cancelled generation, never when
+    // the primary loop produced no message history, and never while a script
+    // terminal read-back was BUILT this turn: every template says nothing was
+    // recorded, and values were (PLAN-A carries the read-back itself).
+    const netHelperContext = () => ({
+      transcript:
+        typeof options.canonicalInspectorTranscript === 'string'
+          ? options.canonicalInspectorTranscript
+          : rawInspectorTranscript || transcriptText,
+      canonicalInspectorTranscript:
+        typeof options.canonicalInspectorTranscript === 'string'
+          ? options.canonicalInspectorTranscript
+          : undefined,
+      repeatAsk: repeatAskNoteThisTurn,
+      handoff: options.handoff ?? null,
+    });
+    // TOTAL by construction: every net wraps its body in a try/catch that only
+    // logs, so a throw here would skip the canned push and leave a chimed turn
+    // silent. Any failure resolves to `null` and the canned line speaks.
+    const askModelForNetLine = async (netKind) => {
+      try {
+        return await askModelForNetLineUnsafe(netKind);
+      } catch (helperErr) {
+        log.warn?.('stage6.noop_retry_round_error', {
+          sessionId: session.sessionId,
+          turnId,
+          netKind,
+          error: helperErr?.message ?? String(helperErr),
+        });
+        return null;
+      }
+    };
+    const askModelForNetLineUnsafe = async (netKind) => {
+      if (cancelled) return null;
+      if (options.terminalReadbackBuilt === true) return null;
+      if (!Array.isArray(toolLoopOut?.messages_final)) return null;
+      const out = await requestModelAuthoredLine(
+        {
+          target: selectedTarget,
+          tier: observationOpenAIServiceTier,
+          reasoningEffort: openAIReasoningEffort,
+          turnKind: routeToObservationTier ? 'observation' : 'reading',
+          systemBlocks,
+          messages: toolLoopOut.messages_final,
+          abortSignal: signal,
+          billingIdentity: loopInvocationId,
+          ctx: { sessionId: session.sessionId, turnId },
+          logger: log,
+        },
+        { netKind, context: netHelperContext() }
+      );
+      helperRoundUsage.push(...out.roundUsage);
+      return out.line;
+    };
+    // The helper line rides the same channel as the canned string it
+    // replaces, with a replay-stable structural token so two identical lines
+    // on two turns both play while a replay of the same turn collapses (the
+    // `p4ack_` family every client already recognises).
+    const netLineToken = (netKind) => `p4ack_${turnId}_net_${netKind}`;
+    // B4 — ONE dropped-value helper ATTEMPT per turn (P4 or the drain, first
+    // come), and the identities of the pending-value prompts it disclosed.
+    let droppedValueHelperUsed = false;
+    const disclosedPendingPrompts = new Set();
+    // The script terminal read-back (PLAN-A carrier). A net is EXCLUDED only
+    // when every built frame was actually EMITTED — never on `built` alone: a
+    // built-but-unsent frame spoke nothing, and PLAN-A appends its own
+    // recovery line for it.
+    const terminalReadbackEmitted = options.terminalReadbackEmitted === true;
+
+    // PLAN-B (B2) — a repeat_ask note is normally read by the model's next
+    // round in this same loop (the normal dispatch branch always runs another
+    // round). Only a cancelled or failed generation ends the loop before that
+    // round, so only then is the note carried to the NEXT turn's transcript,
+    // where sonnet-stream prepends it when no other server note is attached.
+    // A note carried INTO this turn (prepended to the transcript by
+    // sonnet-stream) is consumed only once a provider round has actually
+    // received it; a generation that failed before any round leaves it
+    // pending for the next turn.
+    const primaryRoundsCompleted = Array.isArray(toolLoopOut?.round_usage)
+      ? toolLoopOut.round_usage.length
+      : Array.isArray(failedBillableUsage?.round_usage)
+        ? failedBillableUsage.round_usage.length
+        : 0;
+    if (
+      typeof session.pendingRepeatAskNote === 'string' &&
+      primaryRoundsCompleted > 0 &&
+      String(transcriptText || '').includes(session.pendingRepeatAskNote)
+    ) {
+      session.pendingRepeatAskNote = null;
+    }
+    if (cancelled && repeatAskNoteThisTurn) {
+      session.pendingRepeatAskNote = repeatAskNoteThisTurn;
+    }
 
     // ── A1 agentic-voice — turnAnswerState FINALIZATION (PLAN Item 4) ─────
     // Runs at the post-loop seam: AFTER the runToolLoop try/catch (BOTH the
@@ -3089,7 +3290,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       }
     }
 
-    const result = bundleToolCallsIntoResult(perTurnWrites, null, {
+    // PLAN-B (B-79) — the options object is kept so marker-② can re-run the
+    // SAME canonical projection over the final journal (the "a mutation
+    // landed" predicate) with byte-identical options.
+    const bundlerOptions = {
       // Plan B B1.2/B1.3 — resolve THIS turn's accepted fast-TTS identities
       // IMMEDIATELY before bundling (not at turn entry, above — a route can
       // accept mid-turn, during the Sonnet round-trip). Empty Map (not
@@ -3150,7 +3354,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // this post-loop bundle call, so session.stateSnapshot already carries
       // whatever this turn wrote/preserved by the time the bundler reads it.
       stateSnapshot: session.stateSnapshot,
-    });
+    };
+    const result = bundleToolCallsIntoResult(perTurnWrites, null, bundlerOptions);
     if (addressMirrorDirectFollowup) {
       Object.defineProperty(result, ADDRESS_MIRROR_DIRECT_FOLLOWUP, {
         value: addressMirrorDirectFollowup,
@@ -4178,14 +4383,38 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // this same helper otherwise) — kept as a real branch rather than
           // assumed away so this helper stays a byte-identical extraction of
           // the pre-C2 code, not a rewrite.
-          const emitGenericOrphanPrompt = (cause) => {
-            const prompt = allRejected
-              ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
+          const emitGenericOrphanPrompt = async (cause) => {
+            // PLAN-B (B-131) — the script's terminal read-back was actually
+            // spoken this turn (a PLAN-A handoff after a captured value), so
+            // this net has nothing to add: the inspector heard the outcome.
+            // Keyed on EMITTED, never on BUILT alone — a frame that was built
+            // but never sent spoke nothing.
+            if (terminalReadbackEmitted) {
+              log.info?.('stage6.orphan_prompt_suppressed_by_terminal_readback', {
+                sessionId: session.sessionId,
+                turnId,
+                cause,
+              });
+              return;
+            }
+            // PLAN-B (B3) — ask the model first; the canned family is last.
+            const netKind = allRejected
+              ? 'rejected'
               : carriesObservation
-                ? OBSERVATION_ORPHAN_PROMPT
+                ? 'orphan_observation'
                 : carriesValue
-                  ? ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length]
-                  : NOOP_AUDIBILITY_PROMPTS[turnNum % NOOP_AUDIBILITY_PROMPTS.length];
+                  ? 'orphan_value'
+                  : 'noop';
+            const modelLine = await askModelForNetLine(netKind);
+            const prompt =
+              modelLine ??
+              (allRejected
+                ? REJECTED_PROMPTS[turnNum % REJECTED_PROMPTS.length]
+                : carriesObservation
+                  ? OBSERVATION_ORPHAN_PROMPT
+                  : carriesValue
+                    ? ORPHAN_PROMPTS[turnNum % ORPHAN_PROMPTS.length]
+                    : NOOP_AUDIBILITY_PROMPTS[turnNum % NOOP_AUDIBILITY_PROMPTS.length]);
             if (!Array.isArray(result.confirmations)) result.confirmations = [];
             result.confirmations.push({
               text: prompt,
@@ -4195,6 +4424,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               // a clarifying prompt, not a value read-back to reconcile against a
               // fast-path POST.
               expects_ios_ack: false,
+              ...(modelLine ? { dedupe_token: netLineToken(netKind) } : {}),
             });
             // Carry the raw transcript forward ONLY when we have positive
             // evidence it was a reading/observation/action (carriesValue,
@@ -4209,6 +4439,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               turnId,
               rounds: toolLoopOut.rounds,
               cause,
+              author: modelLine ? 'model' : 'canned',
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           };
@@ -4350,7 +4581,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 // a future refactor) is the LEGACY generic-prompt mechanism,
                 // not part of B3's ledger chain — it stays behind the flag
                 // like every other emitGenericOrphanPrompt call site.
-                emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
+                await emitGenericOrphanPrompt('fast_ledger_unaddressed_failure');
               }
             }
           } else if (!recovered && ORPHAN_PROMPT_ENABLED) {
@@ -4381,7 +4612,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // per-cause forensics tag stay exactly as they were. A3: the
             // observation shape gets its own cause for forensics; the two
             // pre-existing reading causes are unchanged.
-            emitGenericOrphanPrompt(
+            await emitGenericOrphanPrompt(
               allRejected
                 ? 'all_rejected'
                 : carriesObservation
@@ -5300,7 +5531,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // ── F7 Item 2 (task #16) — pre-emission ask-audibility net ───────────
     // Codex cycle-6 finding: A3/D2/A4 all MISS the case where Sonnet emitted
     // an ask_user that was SUPPRESSED before ask_user_started crossed the wire
-    // (restrained_mode / ask_budget_exhausted / validation_error / prompt-leak
+    // (afdd_flow_violation / validation_error / prompt-leak
     // / dispatcher_error / closed-WS / throwing-send / fallbackToLegacy). A
     // transcript-gate chime is then followed by SILENCE. Decide audibility
     // from POSITIVELY recorded emission (emittedAskToolCallIds) plus surviving
@@ -5325,8 +5556,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
         : 0;
       const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-        ? session.pendingVoicePrompts.filter((p) => isCurrentGenPrompt(p) && isAudibleText(p?.text))
-            .length
+        ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
         : 0;
       // F7 Item 3 — the cancellation branch uses ONLY a "nothing audible
       // survived" predicate (a ceiling-cancelled generation may have no
@@ -5339,16 +5569,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
       // an audible SURVIVOR: neither the F7 apology nor the cancellation
       // apology may double-speak over it. Required false on BOTH branches.
       const survivingAnswer = isAudibleText(result.spoken_response);
+      // PLAN-B (B-131) — `!terminalReadbackEmitted`: a script terminal
+      // read-back that actually crossed the wire this turn is audible output
+      // the harness `result` never sees. Keyed on EMITTED, never BUILT alone.
       const shouldFire = cancelled
         ? survivingConfCount === 0 &&
           survivingPromptCount === 0 &&
           emittedAskToolCallIds.size === 0 &&
-          !survivingAnswer
+          !survivingAnswer &&
+          !terminalReadbackEmitted
         : attemptedAskCalls.length > 0 &&
           emittedAskToolCallIds.size === 0 &&
           survivingConfCount === 0 &&
           survivingPromptCount === 0 &&
-          !survivingAnswer;
+          !survivingAnswer &&
+          !terminalReadbackEmitted;
       if (shouldFire) {
         if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
         // Queue on the A4 FIFO channel; the drain below moves it onto the
@@ -5428,9 +5663,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter(
-              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-            ).length
+          ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
           : 0;
         const noSpeechIntent =
           survivingConfCount === 0 &&
@@ -5443,7 +5676,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // asks and queued prompts already count.
           !isAudibleText(result.spoken_response) &&
           // E1 — see predicate 5 above.
-          !fastLedgerSuppressesCatchallThisTurn;
+          !fastLedgerSuppressesCatchallThisTurn &&
+          // PLAN-B (B-131) — the script's terminal read-back was spoken.
+          !terminalReadbackEmitted;
         if (noSpeechIntent) {
           if (!Array.isArray(session.pendingVoicePrompts)) session.pendingVoicePrompts = [];
           // F/U-2/3 (2026-07-19, Codex r1) — SPECIFIC-FIRST branch: when a
@@ -5465,7 +5700,48 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               )
             : [];
           const calls = Array.isArray(toolLoopOut?.tool_calls) ? toolLoopOut.tool_calls : [];
-          if (notices.length > 0) {
+          // PLAN-B (B-79) — split by AUTHORITATIVE mutation state first. The
+          // predicate above counts speech-intent only ("successful writes are
+          // UI state, not speech"), so it also fires when a write LANDED but
+          // its confirmation did not survive to here. "Did anything land?" is
+          // decided by re-running the SAME canonical projection the bundler
+          // ran for this turn — same function, byte-identical options — over
+          // the final journal; a non-empty projection's confirmations ARE the
+          // recovery read-backs (server-owned, ordinary keys), never an
+          // apology. The mid-stream filter is re-applied so a slot already
+          // emitted mid-stream is never spoken twice.
+          let recoveredConfirmations = [];
+          let projectionLanded = false;
+          try {
+            const recovery = recoverLandedMutationConfirmations({
+              perTurnWrites,
+              bundlerOptions,
+              midStreamFilterEnabled: process.env.VOICE_MID_STREAM_FILTER === 'true',
+              midStreamEmittedSlots,
+            });
+            projectionLanded = recovery.landed;
+            recoveredConfirmations = recovery.confirmations;
+          } catch (projectionErr) {
+            log.warn?.('stage6.catchall_projection_error', {
+              sessionId: session.sessionId,
+              turnId,
+              error: projectionErr?.message ?? String(projectionErr),
+            });
+          }
+          if (projectionLanded) {
+            if (!Array.isArray(result.confirmations)) result.confirmations = [];
+            for (const confirmation of recoveredConfirmations) {
+              result.confirmations.push(confirmation);
+            }
+            log.info?.('stage6.catchall_landed_mutation_recovered', {
+              sessionId: session.sessionId,
+              turnId,
+              generationId,
+              recovered_count: recoveredConfirmations.length,
+              fields: recoveredConfirmations.map((c) => c.field ?? null),
+              tool_names: calls.map((c) => c?.name ?? null),
+            });
+          } else if (notices.length > 0) {
             for (const notice of notices) {
               session.pendingVoicePrompts.push({ text: notice.text, generationId });
             }
@@ -5478,12 +5754,19 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               textPreview: notices[0].text.slice(0, 80),
             });
           } else {
-            // Queue on the A4 FIFO channel (field-null / expects_ios_ack:false —
-            // the drain below stamps those); the drain moves it onto the wire
-            // THIS turn. generationId keeps it generation-owned.
+            // PLAN-B (B3) — nothing landed: the model gets one retry
+            // (kind `catchall`, whose codes all say nothing was recorded);
+            // the canned family is last. Queue on the A4 FIFO channel
+            // (field-null / expects_ios_ack:false — the drain below stamps
+            // those); the drain moves it onto the wire THIS turn.
+            // generationId keeps it generation-owned.
+            const modelLine = await askModelForNetLine('catchall');
             session.pendingVoicePrompts.push({
-              text: CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
+              text:
+                modelLine ??
+                CATCHALL_AUDIBILITY_PROMPTS[turnNum % CATCHALL_AUDIBILITY_PROMPTS.length],
               generationId,
+              ...(modelLine ? { dedupe_token: netLineToken('catchall') } : {}),
             });
             log.info?.('stage6.catchall_audibility_fallback_emitted', {
               sessionId: session.sessionId,
@@ -5491,6 +5774,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               generationId,
               tool_names: calls.map((c) => c?.name ?? null),
               reason: 'no_speech_intent_survived',
+              author: modelLine ? 'model' : 'canned',
             });
           }
         }
@@ -5620,9 +5904,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           ? result.confirmations.filter((c) => isAudibleText(c?.text)).length
           : 0;
         const survivingPromptCount = Array.isArray(session.pendingVoicePrompts)
-          ? session.pendingVoicePrompts.filter(
-              (p) => isCurrentGenPrompt(p) && isAudibleText(p?.text)
-            ).length
+          ? session.pendingVoicePrompts.filter((p) => isSurvivingSpokenPrompt(p)).length
           : 0;
         const survivingAnswer = isAudibleText(result.spoken_response);
         if (survivingConfCount === 0 && survivingPromptCount === 0 && !survivingAnswer) {
@@ -5652,7 +5934,16 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               : isDroppedValue
                 ? ASK_DROPPED_VALUE_PROMPTS
                 : ASK_ANSWERED_ACK_PROMPTS;
-            const text = family[turnNum % family.length];
+            // PLAN-B (B4) — a DROPPED-VALUE disclosure asks the model first.
+            // Its only valid code, `not_recorded`, renders "I couldn't record
+            // that…", so the disclosure is a property of the template, never
+            // of the model's words. The canned loss line is last.
+            let droppedValueModelLine = null;
+            if (isDroppedValue && !droppedValueHelperUsed) {
+              droppedValueHelperUsed = true;
+              droppedValueModelLine = await askModelForNetLine('dropped_value');
+            }
+            const text = droppedValueModelLine ?? family[turnNum % family.length];
             // PLAN-G2 (2026-08-14, held finding 2) — a replay-stable structural
             // dedupe token for BOTH P4 ack families. Neither family previously
             // carried any board/turn identity, so two genuinely distinct acks
@@ -5667,7 +5958,9 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             session.pendingVoicePrompts.push({
               text,
               generationId,
-              dedupe_token: `p4ack_${turnId}`,
+              dedupe_token: droppedValueModelLine
+                ? netLineToken('dropped_value')
+                : `p4ack_${turnId}`,
             });
             log.info?.('stage6.answered_ask_ack_emitted', {
               sessionId: session.sessionId,
@@ -5675,6 +5968,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               generationId,
               ack_class: isDecline ? 'decline' : isDroppedValue ? 'dropped_value' : 'answered',
               answered_ask_source: latestAnswered.source ?? null,
+              author: droppedValueModelLine ? 'model' : 'canned',
             });
           }
         }
@@ -5733,8 +6027,47 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           });
           continue;
         }
+        // PLAN-B (B4) — a pending-value terminal apology is a DROPPED-VALUE
+        // loss line: the model gets one retry first. An accepted
+        // `not_recorded` line is recorded against THIS prompt's identity
+        // (field, circuit, board, comparable value — the identity
+        // pendingValuePromptWasRecovered compares) and replaces only this
+        // entry; any other queued pending terminal still speaks its canned
+        // line. At most one helper line per turn: the net token is
+        // turn-scoped, so a second would collapse on the client.
+        const pendingIdentity =
+          p.promptKind === 'pending_value_terminal'
+            ? [
+                p.pendingField ?? '',
+                p.pendingCircuit ?? '',
+                p.pendingBoardId ?? '',
+                pendingPromptComparableValue(p.pendingValue),
+              ].join('\u0000')
+            : null;
+        if (pendingIdentity != null && disclosedPendingPrompts.has(pendingIdentity)) {
+          // Already disclosed by the model's line this turn: retracted, the
+          // same way a recovered write retracts it.
+          continue;
+        }
+        let pendingModelLine = null;
+        if (pendingIdentity != null && !droppedValueHelperUsed && !cancelled) {
+          // One attempt per turn, whatever it returns: the line's token is
+          // turn-scoped, and a second call for the same net only adds a
+          // provider round.
+          droppedValueHelperUsed = true;
+          pendingModelLine = await askModelForNetLine('dropped_value');
+          if (pendingModelLine) {
+            disclosedPendingPrompts.add(pendingIdentity);
+            log.info?.('stage6.pending_value_apology_disclosed_by_model', {
+              sessionId: session.sessionId,
+              turnId,
+              pending_field: p.pendingField ?? null,
+              pending_circuit: p.pendingCircuit ?? null,
+            });
+          }
+        }
         const drained = {
-          text: p.text,
+          text: pendingModelLine ?? p.text,
           field: null,
           circuit: null,
           expects_ios_ack: false,
@@ -5743,7 +6076,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // so an apology family that never set a token (the pending-value
           // terminal, the F7 Item 2 fallback, etc.) does not gain the KEY at
           // all — only the P4 ack production site above stamps one.
-          ...(p.dedupe_token != null ? { dedupe_token: p.dedupe_token } : {}),
+          ...(pendingModelLine
+            ? { dedupe_token: netLineToken('dropped_value') }
+            : p.dedupe_token != null
+              ? { dedupe_token: p.dedupe_token }
+              : {}),
         };
         // Codex diff-review cycle 1 (PLAN-G2) — the ONE
         // applyConfirmationDebounce call site (§3.3a above, ~line 3324) runs
@@ -5864,6 +6201,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Increment turn count to match legacy's contract
     // (extractFromUtterance does this internally).
     session.turnCount = turnNum;
+
+    // PLAN-B (B3) — ingest the merged primary + net-helper rows once, now
+    // that every net has run.
+    finalizeTurnBilling();
 
     // Caller-side ingestion above is the sole production billing authority.
     // Derive per-turn telemetry from those exact rows so mixed models/tiers,
@@ -6063,6 +6404,11 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
 
     return result;
   } finally {
+    try {
+      turnBillingFinalizer?.();
+    } catch {
+      // billing never breaks teardown
+    }
     // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 12.2 + 8.4).
     // Tear down both per-turn maps so the next turn's speculator
     // preflight and audio finalizer start with a clean slate. .delete
@@ -6465,38 +6811,31 @@ async function runShadowHarnessDispatch(
       // short-circuits `mode === 'shadow'` before the resolution path, so
       // any hook here would be dead code.
     });
-    // Phase 5 — wrap with gates ONLY when the activeSessions entry threaded
-    // both stateful resources through. Existing Phase 3/4 callers (and the
-    // dispatcher's own unit tests) thread neither, so they keep the
-    // Phase 3 dispatcher shape unchanged.
-    if (options.askBudget && options.restrainedMode) {
-      askGateForTurn = createAskGateWrapper({
-        logger: log,
-        sessionId: shadowSession.sessionId,
-        // Plan 05-07 r1-#3 — pass the session's actual mode through so
-        // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
-        // log rows tag with mode='shadow' instead of the hard-coded 'live'.
-        // Phase 8 dashboards split by mode; corrupting that split for shadow
-        // sessions was the r1-#3 finding.
-        mode: 'shadow',
-      });
-      asks = wrapAskDispatcherWithGates(asks, {
-        askBudget: options.askBudget,
-        restrainedMode: options.restrainedMode,
-        gate: askGateForTurn,
-        // Plan 05-02 supplies the real adapter; until then a no-op keeps
-        // the wrapper's pre-wrapper shadow-log step (Open Question #5)
-        // a structural placeholder. The wrapper's own try/catch around
-        // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
-        filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
-        logger: log,
-        sessionId: shadowSession.sessionId,
-        // Plan 05-07 r1-#3 — restrained_mode + ask_budget_exhausted rows
-        // are emitted from synthResultWrapped on the wrapper-internal
-        // short-circuit paths; thread the same shadow mode so they match.
-        mode: 'shadow',
-      });
-    }
+    // Phase 5 gates, composed unconditionally since PLAN-B removed the
+    // per-session budget and restrained-mode objects they used to require.
+    askGateForTurn = createAskGateWrapper({
+      logger: log,
+      sessionId: shadowSession.sessionId,
+      // Plan 05-07 r1-#3 — pass the session's actual mode through so
+      // wrapper-emitted `gated` / `session_terminated` / `dispatcher_error`
+      // log rows tag with mode='shadow' instead of the hard-coded 'live'.
+      // Phase 8 dashboards split by mode; corrupting that split for shadow
+      // sessions was the r1-#3 finding.
+      mode: 'shadow',
+    });
+    asks = wrapAskDispatcherWithGates(asks, {
+      gate: askGateForTurn,
+      // Plan 05-02 supplies the real adapter; until then a no-op keeps
+      // the wrapper's pre-wrapper shadow-log step (Open Question #5)
+      // a structural placeholder. The wrapper's own try/catch around
+      // filledSlotsShadow keeps a thrown adapter from tearing down dispatch.
+      filledSlotsShadow: options.filledSlotsShadow ?? (() => {}),
+      logger: log,
+      sessionId: shadowSession.sessionId,
+      // Plan 05-07 r1-#3 — thread the same shadow mode into the wrapper's
+      // own short-circuit rows.
+      mode: 'shadow',
+    });
     dispatcher = createToolDispatcher(writes, asks, {
       answers: shadowAnswers,
       inspects: shadowInspects,

@@ -1397,6 +1397,15 @@ async function buildResolvedBody({
     return { answered: false, reason: outcome.reason };
   }
 
+  // PLAN-B (feedback-2026-09-17, B2) — the value resolver's `escalate`
+  // verdict on a context_field + context_circuit ask. It used to be LOGGED
+  // only, and the body below carried `{answered, untrusted_user_text}` alone,
+  // so no consumer (neither the model nor the repeat_ask counter) could tell
+  // "the resolver could not parse a value" from the legacy bare body. Recorded
+  // here and emitted on the no-pending-write body when no later resolver
+  // supersedes it.
+  let valueEscalation = null;
+
   // §A4 (field-feedback-2026-07-14, F8) — pending-value resolution for the
   // INVERTED ask shape (`context_field:"none"`: value captured at ask time,
   // FIELD expected in the answer). Runs BEFORE the board/enum/value
@@ -1824,14 +1833,26 @@ async function buildResolvedBody({
           parsed_hint: valueVerdict.parsed_hint,
         });
       }
+      valueEscalation = { parsed_hint: valueVerdict.parsed_hint ?? null };
       // Don't return yet — fall through to circuit-resolver / legacy body.
     }
     // `no_value_context` — fall through silently.
   }
 
   // Legacy / no-pending-write path: same body the dispatcher emitted before
-  // the bug-1B fix. Sonnet sees only the user text and decides what to do.
+  // the bug-1B fix. Sonnet sees only the user text and decides what to do —
+  // unless the value resolver escalated above, in which case the body says so
+  // (`value_escalated` + the resolver's `parsed_hint`). `escalated` keeps its
+  // pending-write meaning; the prompt documents both (PLAN-B).
   if (!pendingWrite || !autoResolveWrite) {
+    if (valueEscalation) {
+      return {
+        answered: true,
+        untrusted_user_text: outcome.user_text,
+        match_status: 'value_escalated',
+        parsed_hint: valueEscalation.parsed_hint,
+      };
+    }
     return { answered: true, untrusted_user_text: outcome.user_text };
   }
 

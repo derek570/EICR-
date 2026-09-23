@@ -184,7 +184,7 @@ export function createWriteDispatcher(session, logger, turnId, perTurnWrites, ex
     }
     // 2026-08-07 (Derek, field-test observability) — a SEPARATE log name
     // from stage6_tool_call's schema-locked input_summary (never touch that
-    // contract; see stage6-dispatcher-logger.js's restrained-mode tests).
+    // contract; see stage6-dispatcher-logger-schema.test.js).
     // input_summary deliberately excludes the actual value on a blanket PII
     // rule; for a sole-user field test comparing Luna's real output against
     // what was dictated, the value itself (an ohms reading, a defect code)

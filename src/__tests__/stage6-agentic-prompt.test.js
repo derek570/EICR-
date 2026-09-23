@@ -72,8 +72,12 @@ const WRAG_PATH = path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs
 // STQ-05 VERBATIM sentence. Emdash character (U+2014), not double-hyphen.
 // If the author edits a single character of this sentence, the test
 // breaks — which is precisely what we want: this is the contract.
+// PLAN-B (feedback-2026-09-17, Decision 3) replaced "do not ask again — write
+// what you believe" with the one-repeat-with-new-information rule: with the
+// ask budget gone, the prompt (and the repeat_ask server note) is the only
+// thing that stops a third ask.
 const STQ_05_VERBATIM =
-  'If you have already asked about field F for circuit C this session and did not get a clear answer, do not ask again — write what you believe and move on. The user will correct you if wrong.';
+  'You may repeat a question at most ONCE, and only when the repeat carries new information: the valid options, or a clearer rephrase naming what you heard. If that reply is still unusable, do not ask a third time — record the most defensible value if one is clear (LIM, N/A or ∞ where the field allows it).';
 
 describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   let prompt;
@@ -510,6 +514,13 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // emptied a certificate value in silence), plus a bulk-clear edge case
       // and the `rejection_ref` rule. Shared region; measured 25475 and cap
       // retains ~100-token headroom (measured + ~100, P8 precedent).
+      // 2026-09-23 (PLAN-B, Decision 3): the no-write terminal rule (every
+      // turn ends audibly; a no-write, no-ask turn ends with one fitting
+      // answer_user), the one-repeat-with-new-information RESTRAINT rule that
+      // replaces the retired ask budget, the customer-speech acknowledgment
+      // bullet, and `value_escalated` at the ask_user contract and Example 5b.
+      // Measured 25875 and cap retains ~100-token headroom (measured + ~100,
+      // P8 precedent).
       // 2026-09-23 (PLAN-A2, feedback ids 141/142): the discontinuous-continuity
       // rule moves out of VALUE NORMALISATION into the RING CONTINUITY CARRYOVER
       // block and gains the ring-vs-radial field routing plus the ask-ONCE
@@ -520,8 +531,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // (measured + ~100, P8 precedent).
       // 2026-09-23 (PLAN-A2 merged with PLAN-C3): both edits together measure
       // 25620 (25475 + A2's +145); cap retains ~100-token headroom.
+      // 2026-09-23 (PLAN-B merged with PLAN-A2): both edits together measure
+      // 26020; cap retains ~100-token headroom.
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(25720);
+      expect(estimate).toBeLessThanOrEqual(26120);
     });
   });
 
@@ -708,6 +721,59 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
     test('contains the STQ-05 verbatim sentence (emdash character, not double-hyphen)', () => {
       // Single-pass indexOf — character-for-character match.
       expect(prompt.includes(STQ_05_VERBATIM)).toBe(true);
+    });
+
+    test('PLAN-B: the retired "do not ask again — write what you believe" rule is gone', () => {
+      expect(prompt).not.toContain('do not ask again — write what you believe and move on');
+      expect(prompt).toContain('[Server note: repeat_ask');
+      // RESTRAINT keeps "never for an enum rejection" (PLAN-C3).
+      expect(prompt).toContain('- Never for an enum rejection:');
+    });
+
+    test('PLAN-B: the "say what you still need" line is answer_user-only (A1:ON)', () => {
+      const line = 'say in ONE short `answer_user` line what you still need';
+      expect(renderedOn).toContain(line);
+      expect(renderedOff).not.toContain(line);
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // PLAN-B (feedback-2026-09-17) B1 + B2 — terminal rule and value_escalated
+  // ------------------------------------------------------------------
+  describe('PLAN-B — no-write terminal rule and the value_escalated contract', () => {
+    test('A1:ON ends every no-write, no-ask turn with one fitting answer_user; never a generic apology', () => {
+      expect(renderedOn).toContain('Every turn ends with something the inspector hears.');
+      expect(renderedOn).toContain(
+        'A turn with NO write and NO ask ends with ONE `answer_user` that fits what was heard'
+      );
+      expect(renderedOn).toContain('speech not addressed to you → a short neutral acknowledgment');
+      expect(renderedOn).toContain('Never a generic apology.');
+      // The retired "the server handles silence" rule is gone from A1:ON.
+      const doneOn = renderedOn.slice(renderedOn.indexOf('YOU ARE DONE WHEN:'));
+      expect(doneOn).not.toContain('the server handles silence');
+    });
+
+    test('A1:OFF keeps its original terminal line and never names answer_user', () => {
+      expect(renderedOff).toContain(
+        'If no new information was spoken, emit NO tool calls — the server handles silence.'
+      );
+      expect(renderedOff).not.toContain('answer_user');
+    });
+
+    test('value_escalated is documented at the ask_user contract and in Example 5b; escalated keeps its meaning', () => {
+      const askLine = prompt.split('\n').find((l) => l.startsWith('- `ask_user` — BLOCKING'));
+      expect(askLine).toContain('`match_status: "value_escalated"`');
+      expect(askLine).toContain('`escalated` keeps its pending-write meaning');
+      const ex5b = prompt.split('\n').find((l) => l.startsWith('Example 5b — Value-resolve'));
+      expect(ex5b).toContain('`escalated` → write yourself.');
+      expect(ex5b).toContain('`value_escalated` (+ `parsed_hint`)');
+    });
+
+    test('the bare-negation chitchat line no longer says "emit NO tool call" (it defers to YOU ARE DONE WHEN)', () => {
+      expect(prompt).toContain(
+        'blue, or in chitchat), emit NO correction — there is nothing to correct.'
+      );
+      expect(prompt).not.toContain('blue, or in chitchat), emit NO tool call');
     });
   });
 
@@ -1418,14 +1484,20 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // the bulk-clear edge case and the `rejection_ref` rule (see the Group 1
       // combined-cap comment). Measured 20226; cap 20326 leaves ~100-token
       // headroom (measured + ~100, P8 precedent).
+      // 2026-09-23 (PLAN-B, Decision 3): terminal rule, RESTRAINT repeat rule,
+      // customer-speech bullet and `value_escalated` (see the Group 1
+      // combined-cap comment). Measured 20625; cap 20725 leaves ~100-token
+      // headroom (measured + ~100, P8 precedent).
       // 2026-09-23 (PLAN-A2, feedback ids 141/142): the re-authored
       // discontinuous-continuity rule (see the Group 1 combined-cap comment).
       // Measured 20102; cap 20202 leaves ~100-token headroom (measured + ~100,
       // P8 precedent).
       // 2026-09-23 (PLAN-A2 merged with PLAN-C3): both edits together measure
       // 20371 (20226 + A2's +145); cap 20471.
+      // 2026-09-23 (PLAN-B merged with PLAN-A2): both edits together measure
+      // 20771; cap 20871.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20471);
+      expect(estimate).toBeLessThanOrEqual(20871);
     });
   });
 

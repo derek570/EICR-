@@ -13,7 +13,7 @@ succeeds without modification.
 
 ## Purpose
 
-Stage 6 Agentic Extraction CloudWatch dashboard. Defines widgets for the 5 STO-03 metrics + tool-call histogram. Designed to be the operator's first-stop view of Stage 6 health post-cutover (Phase 7 §"Cutover Plan").
+Stage 6 Agentic Extraction CloudWatch dashboard. Defines widgets for 4 STO-03 metrics + tool-call histogram (the restrained-mode-rate widget was retired with restrained mode by PLAN-B, 2026-09-23). Designed to be the operator's first-stop view of Stage 6 health post-cutover (Phase 7 §"Cutover Plan").
 
 ## Metric namespace
 
@@ -24,18 +24,16 @@ Stage 6 Agentic Extraction CloudWatch dashboard. Defines widgets for the 5 STO-0
 | `stage6.divergence_rate` | `src/extraction/stage6-divergence-evaluator.js` |
 | `stage6.ask_user_per_session_p50` | `src/extraction/stage6-dispatcher-logger.js` |
 | `stage6.ask_user_per_session_p95` | `src/extraction/stage6-dispatcher-logger.js` |
-| `stage6.restrained_mode_rate` | `src/extraction/stage6-dispatcher-ask.js` |
 | `stage6.tool_loop_cap_hit_rate` | `src/extraction/stage6-tool-loop.js` |
 | `stage6.tool_call.count` | `src/extraction/stage6-dispatcher-logger.js` |
 
 ## Threshold rationale (Phase 8 SC #3)
 
-Inline annotations on each alarm-bearing widget make threshold values visible at a glance. Threshold values match the alarm definitions in [`cloudwatch-stage6-alarm-divergence-rate.json`](./cloudwatch-stage6-alarm-divergence-rate.json), [`cloudwatch-stage6-alarm-restrained-mode-rate.json`](./cloudwatch-stage6-alarm-restrained-mode-rate.json), and [`cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json`](./cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json) verbatim:
+Inline annotations on each alarm-bearing widget make threshold values visible at a glance. Threshold values match the alarm definitions in [`cloudwatch-stage6-alarm-divergence-rate.json`](./cloudwatch-stage6-alarm-divergence-rate.json) and [`cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json`](./cloudwatch-stage6-alarm-tool-loop-cap-hit-rate.json) verbatim:
 
 | Metric | Target | Alarm threshold |
 |---|---|---|
 | `stage6.divergence_rate` | ≤ 5% | > 10% |
-| `stage6.restrained_mode_rate` | ≤ 2% | > 5% |
 | `stage6.tool_loop_cap_hit_rate` | 0% | > 0.5% |
 | `stage6.ask_user_per_session_p50` | ≤ 1 | (no alarm — soft target) |
 | `stage6.ask_user_per_session_p95` | ≤ 4 | (no alarm — soft target) |

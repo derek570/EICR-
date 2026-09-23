@@ -59,7 +59,6 @@ async function buildModules() {
   const { activeSessions } = await import('../../extraction/active-sessions.js');
   const { createPendingAsksRegistry } =
     await import('../../extraction/stage6-pending-asks-registry.js');
-  const { createAskBudget } = await import('../../extraction/stage6-ask-budget.js');
   const vlc = await import('../../extraction/voice-latency-config.js');
   const { createFilledSlotsShadowLogger } =
     await import('../../extraction/stage6-filled-slots-shadow.js');
@@ -74,7 +73,6 @@ async function buildModules() {
       EICRExtractionSession,
       activeSessions,
       createPendingAsksRegistry,
-      createAskBudget,
       snapshotFlagsForSession: vlc.snapshotFlagsForSession,
       parseVoiceLatencyCapabilities: vlc.parseVoiceLatencyCapabilities,
       createFilledSlotsShadowLogger,

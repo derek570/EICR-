@@ -77,7 +77,7 @@ async function buildToolInputValidator() {
 function roundToEvents(round) {
   if (round.stop_reason === 'tool_use') {
     return toolUseRound(
-      (round.tool_calls ?? []).map((tc) => ({ id: tc.id, name: tc.name, input: tc.input })),
+      (round.tool_calls ?? []).map((tc) => ({ id: tc.id, name: tc.name, input: tc.input }))
     );
   }
   return endTurnRound(round.text ?? '');
@@ -122,13 +122,47 @@ export function makeTurnClient({
   const roundMeta = baseRounds.map((r) => ({ source: 'base', round: r }));
   let cursor = 0;
   let branchTaken = null;
+  // PLAN-B (feedback-2026-09-17, B3) — the net-site helper's one retry call.
+  // A net about to speak a canned "I didn't understand" line first asks the
+  // model through a call whose ONLY tool is `net_response`. Recorded rounds
+  // were captured from the primary loop; no fixture carries a helper response,
+  // and model wording is live-lane evidence in any case. So the recorded lane
+  // answers every helper call with an EMPTY end_turn round — "helper frozen
+  // empty": the helper resolves `outcome: 'empty'` and the net speaks its
+  // canned line, exactly as the fixture recorded. Helper calls never count
+  // against strict round consumption; they are tallied separately.
+  //
+  // A request is a helper call only when BOTH hold: its sole tool is
+  // `net_response` (never in the production tool schema) and its last user
+  // message carries the helper's own `[Server note: retry.` marker. Anything
+  // else stays under strict consumption. A turn has at most two net sites that
+  // can ask (orphan/no-op or catch-all, plus one dropped-value line), so a
+  // third helper request in one turn is a violation, not a free round.
+  const MAX_NET_HELPER_REQUESTS_PER_TURN = 2;
+  let netHelperRequests = 0;
+  const lastUserText = (args) => {
+    const msgs = Array.isArray(args?.messages) ? args.messages : [];
+    const last = msgs[msgs.length - 1];
+    if (!last || last.role !== 'user') return '';
+    if (typeof last.content === 'string') return last.content;
+    return (Array.isArray(last.content) ? last.content : [])
+      .map((b) => (typeof b?.text === 'string' ? b.text : ''))
+      .join('\n');
+  };
+  const isNetHelperRequest = (args) =>
+    Array.isArray(args?.tools) &&
+    args.tools.length === 1 &&
+    args.tools[0]?.name === 'net_response' &&
+    lastUserText(args).includes('[Server note: retry.');
 
   const maybeExtendWithBranch = () => {
     if (cursor < rounds.length || !branches || branches.length === 0 || branchTaken) return;
     const interceptorObserved = turnState.backendAsksObserved.length > 0;
     const interceptorAnswered = turnState.backendAsksAnswered.length > 0;
     const branch = branches.find((b) =>
-      b.when === 'interceptor_ask_answered' ? interceptorObserved && interceptorAnswered : !interceptorObserved,
+      b.when === 'interceptor_ask_answered'
+        ? interceptorObserved && interceptorAnswered
+        : !interceptorObserved
     );
     if (!branch) return;
     branchTaken = branch.branch_id;
@@ -139,8 +173,10 @@ export function makeTurnClient({
       for (const sub of branch.substitutions ?? []) {
         let value;
         if (sub.from === 'ask_tool_call_id') value = turnState.backendAsksObserved[0] ?? null;
-        else if (sub.from === 'ask_answer_text') value = turnState.backendAsksAnswered[0]?.user_text ?? null;
-        else if (sub.from === 'tool_result_field') value = turnState.toolResultBindings.get(sub.from_field) ?? null;
+        else if (sub.from === 'ask_answer_text')
+          value = turnState.backendAsksAnswered[0]?.user_text ?? null;
+        else if (sub.from === 'tool_result_field')
+          value = turnState.toolResultBindings.get(sub.from_field) ?? null;
         if (value == null) {
           violations.push(`branch ${branch.branch_id}: substitution ${sub.bind} resolved to null`);
         }
@@ -153,11 +189,22 @@ export function makeTurnClient({
 
   return {
     messages: {
-      stream() {
+      stream(args) {
+        if (isNetHelperRequest(args)) {
+          netHelperRequests += 1;
+          if (netHelperRequests > MAX_NET_HELPER_REQUESTS_PER_TURN) {
+            const err = new Error(
+              `net helper over-request: turn ${turnIndex} of ${corpusId} made ${netHelperRequests} net_response requests (max ${MAX_NET_HELPER_REQUESTS_PER_TURN})`
+            );
+            violations.push(err.message);
+            throw err;
+          }
+          return mockStream(endTurnRound(''));
+        }
         maybeExtendWithBranch();
         if (cursor >= rounds.length) {
           const err = new Error(
-            `strict round consumption: turn ${turnIndex} of ${corpusId} requested stream #${cursor + 1} but only ${rounds.length} round(s) are declared`,
+            `strict round consumption: turn ${turnIndex} of ${corpusId} requested stream #${cursor + 1} but only ${rounds.length} round(s) are declared`
           );
           violations.push(err.message);
           throw err;
@@ -176,10 +223,13 @@ export function makeTurnClient({
     get _branchTaken() {
       return branchTaken;
     },
+    get _netHelperRequests() {
+      return netHelperRequests;
+    },
     assertFullyConsumed() {
       if (cursor !== rounds.length) {
         violations.push(
-          `strict round consumption: turn ${turnIndex} of ${corpusId} consumed ${cursor}/${rounds.length} declared round(s) (under-consumption)`,
+          `strict round consumption: turn ${turnIndex} of ${corpusId} consumed ${cursor}/${rounds.length} declared round(s) (under-consumption)`
         );
       }
     },
@@ -206,7 +256,11 @@ function makeTurnWs(mode, onFrame) {
   return base;
 }
 
-function matchDeclaration(declarations, { toolCallId, contextField, contextCircuit, question, reason }, { emitted }) {
+function matchDeclaration(
+  declarations,
+  { toolCallId, contextField, contextCircuit, question, reason },
+  { emitted }
+) {
   // tool_call_id FIRST; backend-generated asks match the REDUCED tuple only
   // (the registry entry carries no reason/question text).
   for (const d of declarations) {
@@ -216,10 +270,17 @@ function matchDeclaration(declarations, { toolCallId, contextField, contextCircu
     const m = d.match ?? {};
     if (m.tool_call_id) continue;
     if (m.context_field !== undefined && m.context_field !== contextField) continue;
-    if (m.context_circuit !== undefined && String(m.context_circuit) !== String(contextCircuit)) continue;
+    if (m.context_circuit !== undefined && String(m.context_circuit) !== String(contextCircuit))
+      continue;
     if (emitted) {
       if (m.reason !== undefined && m.reason !== reason) continue;
-      if (m.question_contains !== undefined && !String(question ?? '').toLowerCase().includes(String(m.question_contains).toLowerCase())) continue;
+      if (
+        m.question_contains !== undefined &&
+        !String(question ?? '')
+          .toLowerCase()
+          .includes(String(m.question_contains).toLowerCase())
+      )
+        continue;
     }
     return d;
   }
@@ -232,17 +293,70 @@ function matchDeclaration(declarations, { toolCallId, contextField, contextCircu
  * replay-clock controller (null in-process). Returns
  * { corpusId, verdict, detail, turnResults, branchLog }.
  */
+/**
+ * PLAN-B — the recorded client's free helper rounds must equal the harness's
+ * own `stage6.noop_retry_round` rows for the turn. Returns the violation
+ * string, or null when the two agree.
+ */
+export function netHelperAccountingViolation({ served, turnRows, turnIndex, corpusId }) {
+  const logged = turnRows.filter((r) => r.name === 'stage6.noop_retry_round').length;
+  const count = served ?? 0;
+  if (count === logged) return null;
+  return `net helper accounting: turn ${turnIndex} of ${corpusId} served ${count} helper round(s) but logged ${logged} stage6.noop_retry_round row(s)`;
+}
+
+/**
+ * PLAN-B — the net-site helper calls each fixture turn is EXPECTED to make,
+ * declared in `net-helper-expectations.json` beside the corpus runner:
+ * `{ [corpus_id]: { [turn_index]: [netKind, …] } }`. A fixture or turn with
+ * no entry expects none. The recorded client answers helper calls empty and
+ * the net then speaks its canned line, so a SPURIOUS call whose line is
+ * dropped changes nothing audible — only this declaration catches the extra
+ * provider round. Returns the mismatch description, or null.
+ */
+export function netHelperExpectationMismatch({ corpusId, helperLog, expectations }) {
+  const expected = expectations?.[corpusId] ?? {};
+  const observed = {};
+  for (const { turn, nets } of helperLog ?? []) observed[String(turn)] = nets;
+  const turns = new Set([...Object.keys(expected), ...Object.keys(observed)]);
+  const diffs = [];
+  for (const t of [...turns].sort((a, b) => Number(a) - Number(b))) {
+    const want = JSON.stringify(expected[t] ?? []);
+    const got = JSON.stringify(observed[t] ?? []);
+    if (want !== got) diffs.push(`turn ${t}: expected ${want}, observed ${got}`);
+  }
+  return diffs.length
+    ? `net helper calls differ from net-helper-expectations.json — ${diffs.join('; ')}`
+    : null;
+}
+
+export function loadNetHelperExpectations() {
+  const file = new URL('../net-helper-expectations.json', import.meta.url);
+  const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
+  return doc.expectations ?? {};
+}
+
 export async function runFixture({ fixture, modules, clockCtl = null, wallClockNowMs, apiKey }) {
   const rows = [];
   const sink = (level) => (msg, meta) =>
-    rows.push({ level, name: typeof msg === 'string' ? msg : msg?.message, meta: meta ?? (typeof msg === 'object' ? msg : undefined) });
-  const logger = { info: sink('info'), warn: sink('warn'), error: sink('error'), debug: sink('debug') };
+    rows.push({
+      level,
+      name: typeof msg === 'string' ? msg : msg?.message,
+      meta: meta ?? (typeof msg === 'object' ? msg : undefined),
+    });
+  const logger = {
+    info: sink('info'),
+    warn: sink('warn'),
+    error: sink('error'),
+    debug: sink('debug'),
+  };
 
   const built = buildReplaySession({ modules, fixture, logger, apiKey });
   const validateToolInput = await buildToolInputValidator();
   const allFailures = [];
   const turnResults = [];
   const branchLog = [];
+  const helperLog = [];
 
   // Expiry against the REAL wall clock, never replay time.
   if (fixture.gate_state === 'expected_red' && fixture.expires_at && wallClockNowMs != null) {
@@ -265,6 +379,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         allFailures: [],
         turnResults: [],
         branchLog: [],
+        helperLog: [],
         logRows: [],
       };
     }
@@ -290,7 +405,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       const declaredTimeoutAskIds = new Set();
       const pendingAnswerQueue = [];
       const injectedToolIds = new Set(
-        (turn.model_rounds ?? []).flatMap((r) => (r.tool_calls ?? []).map((tc) => tc.id)),
+        (turn.model_rounds ?? []).flatMap((r) => (r.tool_calls ?? []).map((tc) => tc.id))
       );
       const askOrigins = new Map();
       const rowStart = rows.length;
@@ -309,7 +424,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         turnState.emittedAskIds.add(frame.tool_call_id);
         askOrigins.set(
           frame.tool_call_id,
-          injectedToolIds.has(frame.tool_call_id) ? 'model_emitted' : 'backend_interceptor',
+          injectedToolIds.has(frame.tool_call_id) ? 'model_emitted' : 'backend_interceptor'
         );
         if (!injectedToolIds.has(frame.tool_call_id)) {
           turnState.backendAsksObserved.push(frame.tool_call_id);
@@ -323,7 +438,7 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
             question: frame.question,
             reason: frame.reason,
           },
-          { emitted: true },
+          { emitted: true }
         );
         if (!decl) return; // may still be an EXPECTED-but-unanswered ask (assertion (d))
         if (decl.answer_channel === 'terminal' && decl.terminal_outcome === 'timeout') {
@@ -372,15 +487,22 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           if (!stillPending) return; // production fast-fail already resolved it
           const decl = matchDeclaration(
             declarations,
-            { toolCallId, contextField: regEntry?.contextField, contextCircuit: regEntry?.contextCircuit },
-            { emitted: false },
+            {
+              toolCallId,
+              contextField: regEntry?.contextField,
+              contextCircuit: regEntry?.contextCircuit,
+            },
+            { emitted: false }
           );
           if (!decl) {
             violations.push(
-              `non-emitted ask ${toolCallId} is genuinely pending with NO declaration — fixture must declare an answer or terminal outcome`,
+              `non-emitted ask ${toolCallId} is genuinely pending with NO declaration — fixture must declare an answer or terminal outcome`
             );
             // Unblock rather than deadlock to the 45s production timeout.
-            built.entry.pendingAsks.resolve(toolCallId, { answered: false, reason: 'user_moved_on' });
+            built.entry.pendingAsks.resolve(toolCallId, {
+              answered: false,
+              reason: 'user_moved_on',
+            });
             return;
           }
           if (decl.answer_channel === 'pending_registry' && decl.answer?.answered) {
@@ -392,8 +514,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           } else if (decl.answer_channel === 'terminal' && decl.terminal_outcome === 'timeout') {
             declaredTimeoutAskIds.add(toolCallId);
           } else if (decl.answer_channel === 'terminal') {
-            violations.push(`terminal outcome ${decl.terminal_outcome} is not supported in v1 (unsupported_pending)`);
-            built.entry.pendingAsks.resolve(toolCallId, { answered: false, reason: 'user_moved_on' });
+            violations.push(
+              `terminal outcome ${decl.terminal_outcome} is not supported in v1 (unsupported_pending)`
+            );
+            built.entry.pendingAsks.resolve(toolCallId, {
+              answered: false,
+              reason: 'user_moved_on',
+            });
           }
         });
         return true;
@@ -423,7 +550,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         const family = turn.dialogue_ingress.family;
         const runIngress = modules?.dialogueScriptIngress?.[family];
         if (typeof runIngress !== 'function') {
-          violations.push(`dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`);
+          violations.push(
+            `dialogue-script ingress runner for family '${family}' unavailable (modules.dialogueScriptIngress not injected)`
+          );
         } else {
           let outcome = null;
           let ingressThrew = false;
@@ -449,8 +578,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           // handled-and-consumed envelope — an invalid ingress premise must
           // never fall through to the semantic oracle's ordinary FAILs, where
           // it could masquerade as the expected RED.
-          if (!ingressThrew && (outcome == null || outcome.handled !== true || outcome.fallthrough === true)) {
-            violations.push(`dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`);
+          if (
+            !ingressThrew &&
+            (outcome == null || outcome.handled !== true || outcome.fallthrough === true)
+          ) {
+            violations.push(
+              `dialogue-script ingress did not consume the turn (outcome=${outcome == null ? 'null' : `handled=${outcome?.handled ?? null}, fallthrough=${outcome?.fallthrough ?? null}`}) — the fixture's ingress premise did not hold`
+            );
           }
         }
         const captured = {
@@ -464,11 +598,13 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           toReadingWireField: modules?.toReadingWireField ?? null,
           readCircuitDesignation:
             typeof modules?.readCircuitDesignation === 'function'
-              ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+              ? (circuitRef, boardId) =>
+                  modules.readCircuitDesignation(built.session, circuitRef, boardId)
               : null,
           readCircuitField:
             typeof modules?.readCircuitField === 'function'
-              ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+              ? (circuitRef, boardId, field) =>
+                  modules.readCircuitField(built.session, circuitRef, boardId, field)
               : null,
         };
         const failures = evaluateTurn(turn, captured);
@@ -516,7 +652,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       while (!settled) {
         pumpIterations += 1;
         if (pumpIterations > PUMP_CAP) {
-          violations.push('clock pump exceeded iteration cap — genuinely stuck turn (infrastructure)');
+          violations.push(
+            'clock pump exceeded iteration cap — genuinely stuck turn (infrastructure)'
+          );
           break;
         }
         if (clockCtl) await clockCtl.drainMicrotasks();
@@ -529,7 +667,10 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
             user_text: ans.user_text,
           });
           if (resolved) {
-            turnState.backendAsksAnswered.push({ toolCallId: ans.toolCallId, user_text: ans.user_text });
+            turnState.backendAsksAnswered.push({
+              toolCallId: ans.toolCallId,
+              user_text: ans.user_text,
+            });
           }
         }
         if (settled) break;
@@ -573,7 +714,9 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
           await new Promise((res) => setImmediate(res));
         }
         if (!settled) {
-          violations.push('harness promise never settled even after recovery — abandoning the turn (infrastructure)');
+          violations.push(
+            'harness promise never settled even after recovery — abandoning the turn (infrastructure)'
+          );
         }
       }
       if (settled) await harnessPromise;
@@ -589,6 +732,23 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
       // turn resolves as infrastructure_error, never a crash.
       if (settled) {
         client.assertFullyConsumed();
+        // PLAN-B — every free empty round the client handed out must be a
+        // net-site helper call that the harness itself logged
+        // (`stage6.noop_retry_round`). Which calls a turn SHOULD make is
+        // declared separately (net-helper-expectations.json, checked in
+        // runCorpus); this only proves the two observations agree.
+        const accounting = netHelperAccountingViolation({
+          served: client._netHelperRequests,
+          turnRows: rows.slice(rowStart),
+          turnIndex: turn.turn_index,
+          corpusId: fixture.corpus_id,
+        });
+        if (accounting) violations.push(accounting);
+        const helperNets = rows
+          .slice(rowStart)
+          .filter((r) => r.name === 'stage6.noop_retry_round')
+          .map((r) => r.meta?.netKind ?? null);
+        if (helperNets.length > 0) helperLog.push({ turn: turn.turn_index, nets: helperNets });
         if (client._branchTaken) {
           branchLog.push({ turn: turn.turn_index, branch: client._branchTaken });
         }
@@ -618,7 +778,8 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         // oracle latches INFRASTRUCTURE rather than passing un-checked.
         readCircuitDesignation:
           typeof modules?.readCircuitDesignation === 'function'
-            ? (circuitRef, boardId) => modules.readCircuitDesignation(built.session, circuitRef, boardId)
+            ? (circuitRef, boardId) =>
+                modules.readCircuitDesignation(built.session, circuitRef, boardId)
             : null,
         // PLAN-B (id 131) — symmetric injection on the harness path too (the
         // script_entry_resolution oracle is schema-bound to dialogue_ingress
@@ -626,7 +787,8 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
         toReadingWireField: modules?.toReadingWireField ?? null,
         readCircuitField:
           typeof modules?.readCircuitField === 'function'
-            ? (circuitRef, boardId, field) => modules.readCircuitField(built.session, circuitRef, boardId, field)
+            ? (circuitRef, boardId, field) =>
+                modules.readCircuitField(built.session, circuitRef, boardId, field)
             : null,
       };
       const failures = evaluateTurn(turn, captured);
@@ -646,7 +808,14 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
     }
   }
 
-  return { corpusId: fixture.corpus_id, allFailures, turnResults, branchLog, logRows: rows };
+  return {
+    corpusId: fixture.corpus_id,
+    allFailures,
+    turnResults,
+    branchLog,
+    helperLog,
+    logRows: rows,
+  };
 }
 
 /**
@@ -655,9 +824,25 @@ export async function runFixture({ fixture, modules, clockCtl = null, wallClockN
  * blocking step with ZERO fixtures — exit-2-on-empty would deadlock the
  * Foundation PR's own gate).
  */
-export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, proofState = null, fixtureFilter = null, wallClockNowMs }) {
+export async function runCorpus({
+  corpusRoot,
+  modules,
+  clockCtl,
+  loadFixture,
+  proofState = null,
+  fixtureFilter = null,
+  wallClockNowMs,
+  netHelperExpectations = loadNetHelperExpectations(),
+}) {
   const found = discoverFixtures(corpusRoot);
-  const summary = { discovered: found.length, executed: 0, passed: 0, failed: 0, unsupported: 0, results: [] };
+  const summary = {
+    discovered: found.length,
+    executed: 0,
+    passed: 0,
+    failed: 0,
+    unsupported: 0,
+    results: [],
+  };
   if (found.length === 0) {
     summary.message = `0 fixtures discovered under ${corpusRoot} (${FIXTURE_BASENAME}) — field-corpus lane PASS`;
     summary.exitCode = 0;
@@ -700,18 +885,40 @@ export async function runCorpus({ corpusRoot, modules, clockCtl, loadFixture, pr
     if (['unsupported_pending', 'superseded', 'privacy_quarantined'].includes(f.doc.gate_state)) {
       // Validate-but-never-execute states: REPORTED every run.
       summary.unsupported += 1;
-      summary.results.push({ corpusId: f.doc.corpus_id, verdict: 'reported', detail: f.doc.gate_state });
+      summary.results.push({
+        corpusId: f.doc.corpus_id,
+        verdict: 'reported',
+        detail: f.doc.gate_state,
+      });
       continue;
     }
     summary.executed += 1;
     const run = await runFixture({ fixture: f.doc, modules, clockCtl, wallClockNowMs });
     // A terminal verdict (e.g. an expired expected_red freeze) short-circuits
     // gate evaluation — it never produced an allFailures set to evaluate.
-    const gate = run.terminal ?? evaluateGateState(f.doc, run.allFailures, { proofState });
+    let gate = run.terminal ?? evaluateGateState(f.doc, run.allFailures, { proofState });
+    // PLAN-B — a helper-call mismatch fails the fixture whatever its gate
+    // state: it is a statement about the harness under test, not about the
+    // captured session's expected-red findings.
+    const helperMismatch = run.terminal
+      ? null
+      : netHelperExpectationMismatch({
+          corpusId: f.doc.corpus_id,
+          helperLog: run.helperLog,
+          expectations: netHelperExpectations,
+        });
+    if (helperMismatch) gate = { verdict: 'fail', detail: helperMismatch };
     const pass = gate.verdict === 'pass';
     if (pass) summary.passed += 1;
     else summary.failed += 1;
-    summary.results.push({ corpusId: f.doc.corpus_id, verdict: gate.verdict, detail: gate.detail, turns: run.turnResults, branches: run.branchLog });
+    summary.results.push({
+      corpusId: f.doc.corpus_id,
+      verdict: gate.verdict,
+      detail: gate.detail,
+      turns: run.turnResults,
+      branches: run.branchLog,
+      netHelperCalls: run.helperLog,
+    });
   }
   summary.exitCode = summary.failed === 0 ? 0 : 1;
   return summary;

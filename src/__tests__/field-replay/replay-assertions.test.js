@@ -488,7 +488,7 @@ describe('matchToolExpectations', () => {
     expect(matchToolExpectations(turnWith(tc), captured)).toHaveLength(0);
   });
 
-  test('ask_user declared accept but GATED (answer_outcome ask_budget_exhausted) FAILS', () => {
+  test('ask_user declared accept but GATED (answer_outcome afdd_flow_violation) FAILS', () => {
     const tc = { id: 'toolu_ask3', name: 'ask_user', input: {}, dispatcher_expectation: 'accept' };
     const captured = {
       validateToolInput: acceptValidator,
@@ -496,7 +496,7 @@ describe('matchToolExpectations', () => {
       logRows: [
         {
           name: 'stage6.ask_user',
-          meta: { tool_call_id: 'toolu_ask3', answer_outcome: 'ask_budget_exhausted' },
+          meta: { tool_call_id: 'toolu_ask3', answer_outcome: 'afdd_flow_violation' },
         },
       ],
     };
@@ -533,7 +533,7 @@ describe('matchToolExpectations', () => {
       logRows: [
         {
           name: 'stage6.ask_user',
-          meta: { tool_call_id: 'toolu_ask5', answer_outcome: 'ask_budget_exhausted' },
+          meta: { tool_call_id: 'toolu_ask5', answer_outcome: 'afdd_flow_violation' },
         },
       ],
     };

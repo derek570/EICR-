@@ -695,20 +695,15 @@ const askUser = makeTool({
         'PLAN-3 AFDD decision questions only. Select the required fact; the server replaces question with the canonical wording and owns chain progression. Canonical AFDD wording without its declared kind is a validation error. Use null/omit for every other ask, including generic C2/C3 severity clarification.',
     },
     clarification_chain_id: {
-      // §D2 (field-feedback-2026-07-14) — per-OBSERVATION ask-budget
-      // identity for observation_clarify chains. The budget key was
-      // previously only context_field/context_circuit/board — session-wide
-      // per scope — so one initial ask + one continuation for the FIRST
-      // ambiguous observation on a circuit exhausted the default cap of two
-      // and the NEXT ambiguous observation on that circuit short-circuited
-      // as ask_budget_exhausted (silent, wrong). The server ASSIGNS a chain
-      // id on each observation_clarify ask that arrives WITHOUT one (the
-      // initial ask of a new observation) and echoes it in the tool_result;
-      // the model echoes it back ONLY on that observation's single bounded
-      // continuation. Distinct observations therefore get distinct budget
-      // buckets, while a chain's own third ask hits its exhausted bucket.
-      // NOT ctx.turnId — two ambiguous observations can share one
-      // extraction turn.
+      // §D2 (field-feedback-2026-07-14) — per-OBSERVATION identity for
+      // observation_clarify chains. The server ASSIGNS a chain id on each
+      // observation_clarify ask that arrives WITHOUT one (the initial ask of
+      // a new observation) and echoes it in the tool_result; the model
+      // echoes it back ONLY on that observation's single bounded
+      // continuation, and on the resolving record_observation. NOT
+      // ctx.turnId — two ambiguous observations can share one extraction
+      // turn. (The id also keyed the per-chain ask budget until PLAN-B
+      // retired the budget; it still keys the AFDD flow.)
       anyOf: [{ type: 'string' }, { type: 'null' }],
       description:
         "observation_clarify chains ONLY. Leave null/absent on the INITIAL severity-clarification ask for an observation — the server assigns a chain id and returns it in the tool_result as clarification_chain_id. Echo that id VERBATIM on the single bounded continuation ask for the SAME observation AND on the eventual record_observation that resolves it; never on an unrelated observation. Never invent one; never reuse another observation's id.",
@@ -1368,7 +1363,7 @@ const addBoard = makeTool({
 const answerUser = makeTool({
   name: 'answer_user',
   description:
-    'Speak a short answer to a question the inspector asked about this session or certificate (e.g. "what\'s missing on circuit 4?", "did you get that?"). At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.',
+    'Speak a short answer to a question the inspector asked about this session or certificate (e.g. "what\'s missing on circuit 4?", "did you get that?"). On a turn with no write and no ask, also the ONE short line that fits what was heard — a one-line redirect for an off-topic question, or a neutral acknowledgment of speech not addressed to you ("Okay — carry on when you\'re ready"); never an invented reading, never a generic apology. At most 2 sentences; terse and factual. NEVER use it to acknowledge, confirm, or narrate a write (read-backs are server-owned), and NEVER in place of ask_user when you need information FROM the inspector. At most one answer per turn.',
   properties: {
     answer_text: {
       type: 'string',

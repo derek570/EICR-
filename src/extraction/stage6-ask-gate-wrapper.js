@@ -1,18 +1,26 @@
 /**
  * Stage 6 Phase 5 Plan 05-01 — higher-order ask-dispatcher gate wrapper.
  *
- * WHAT: Composes the four Phase 5 gates around the unmodified Plan 03-05
- * `createAskDispatcher` return value. The four gates fire in strict order
- * for every model-emitted ask_user tool_use:
+ * WHAT: Composes the ask gates around the unmodified Plan 03-05
+ * `createAskDispatcher` return value. They fire in strict order for every
+ * model-emitted ask_user tool_use:
  *
  *   1. filledSlotsShadow (Plan 05-02 — side-effect logging only)
- *   2. restrainedMode.isActive() short-circuit (Plan 05-04)
- *   3. askBudget.isExhausted(key) short-circuit (Plan 05-03)
- *   4. gate.gateOrFire — 1500ms debounce; same-key replacement
+ *   2. the AFDD clarification-chain guard (PLAN-3) — an `observation_clarify`
+ *      ask while an AFDD decision is active must be the flow's canonical next
+ *      question; anything else resolves `afdd_flow_violation`
+ *   3. gate.gateOrFire — 1500ms debounce; same-key replacement
  *      resolves the FIRST call with reason='gated'
- *   5. Counters increment ONLY on a successful inner-dispatcher fire
- *      (Pitfall 4) — short-circuited asks must NOT consume budget or
- *      restrained-window slot.
+ *   4. AFDD chain progress is recorded ONLY on a real, answered fire.
+ *
+ * PLAN-B (feedback-2026-09-17, Decision 3) removed the per-key ask budget and
+ * restrained mode that used to sit between gates 1 and 3. Derek's reasoning:
+ * "If the model is deciding it should stop the garble storm, shouldn't it?" —
+ * the model sees its own asks and their answers, and the cap dated from when
+ * it could not speak. What replaces it is information, not a gate: a
+ * `repeat_ask` server note on the second unusable reply (stage6-repeat-ask.js).
+ * If the field shows the model ignoring that, the lever is the prompt or the
+ * model, never a new cap.
  *
  * WHY composition-over-mutation: STB-05 demands "no existing guard
  * weakened". Editing stage6-dispatcher-ask.js would re-open Codex's
@@ -215,7 +223,7 @@ export function deriveAskKey(input) {
  * Also emits one `stage6.ask_user` STO-02 log row per attempted ask so
  * the Phase 8 analyzer sees a complete audit trail — every reason the
  * wrapper short-circuits is already a reserved value in
- * ASK_USER_ANSWER_OUTCOMES (`gated`, `restrained_mode`, `ask_budget_exhausted`,
+ * ASK_USER_ANSWER_OUTCOMES (`gated`, `afdd_flow_violation`, `validation_error`,
  * `session_terminated`).
  *
  * Reads `tool_call_id` from BOTH `call.tool_call_id` and `call.id` to match
@@ -264,8 +272,8 @@ function synthResultWrapped(call, reason, ctx, logger, sessionId, mode) {
  * envelope WITHOUT calling `logAskUser`.
  *
  * WHY a separate helper: every wrapper-OWNED short-circuit reason
- * (`gated`, `restrained_mode`, `ask_budget_exhausted`,
- * `session_terminated`) has the wrapper as the SOLE emitter — the
+ * (`gated`, `afdd_flow_violation`, `session_terminated`) has the wrapper as
+ * the SOLE emitter — the
  * inner dispatcher never sees those calls, so the wrapper logs the
  * one and only `stage6.ask_user` row for that ask. `synthResultWrapped`
  * is the right helper for those paths.
@@ -661,44 +669,30 @@ export function createAskGateWrapper({
 /**
  * Higher-order composer. Returns a new dispatcher with the same signature
  * as `createAskDispatcher`'s closure (`(call, ctx) => Promise<{tool_use_id,
- * content, is_error}>`) but with the four Phase 5 gates bolted on in the
- * order documented at the module top.
+ * content, is_error}>`) but with the gates bolted on in the order documented
+ * at the module top.
  *
- * The branch that wires this composer is in stage6-shadow-harness.js —
- * runShadowHarness wraps `createAskDispatcher(...)` ONLY when
- * `options.askBudget` AND `options.restrainedMode` are both truthy, so
- * existing Phase 1/2/3/4 callers (which thread neither) keep their
- * pre-Phase-5 behaviour unchanged.
+ * runShadowHarness composes this UNCONDITIONALLY at both of its ask-dispatcher
+ * sites (PLAN-B): the debounce gate and the AFDD guard carry no per-session
+ * state that a caller must thread, so there is nothing left to opt into.
  *
- * Plan 05-07 r1-#3: `mode` opt added — defaults to 'live' so every existing
- * caller's behaviour is unchanged. runShadowHarness passes mode:'shadow'
- * so wrapper-emitted `restrained_mode` + `ask_budget_exhausted` log rows
- * carry the correct mode (Phase 8 dashboards split by mode).
+ * Plan 05-07 r1-#3: `mode` opt added — defaults to 'live'. runShadowHarness
+ * passes mode:'shadow' on the shadow path so wrapper-emitted log rows carry
+ * the correct mode (Phase 8 dashboards split by mode).
  *
  * @param {(call, ctx) => Promise<{tool_use_id: string, content: string, is_error: boolean}>} innerDispatcher
  * @param {object} opts
- * @param {{ isExhausted: (key:string)=>boolean, increment: (key:string)=>void, getCount: (key:string)=>number }} opts.askBudget
- * @param {{ isActive: ()=>boolean, recordAsk: (turnId:string)=>void }} opts.restrainedMode
  * @param {{ gateOrFire: Function, destroy: Function }} opts.gate
  * @param {(call, ctx)=>void} [opts.filledSlotsShadow]  Side-effect-only logger; defaults to no-op.
  * @param {object} opts.logger
  * @param {string} opts.sessionId
  * @param {'live'|'shadow'} [opts.mode='live']  Threaded into wrapper-emitted
- *   log rows (`restrained_mode`, `ask_budget_exhausted`). Defaults to 'live'.
+ *   log rows. Defaults to 'live'.
  * @returns {(call, ctx) => Promise<{tool_use_id: string, content: string, is_error: boolean}>}
  */
 export function wrapAskDispatcherWithGates(
   innerDispatcher,
-  {
-    askBudget,
-    restrainedMode,
-    gate,
-    filledSlotsShadow,
-    logger,
-    sessionId,
-    mode = 'live',
-    obsClarifyChains = null,
-  }
+  { gate, filledSlotsShadow, logger, sessionId, mode = 'live', obsClarifyChains = null }
 ) {
   return async function dispatchAskUserGated(call, ctx) {
     // PLAN-3 kind rendering must precede even the shadow-log hook: no
@@ -723,24 +717,17 @@ export function wrapAskDispatcherWithGates(
       return synthResultWrapped(call, 'validation_error', ctx, logger, sessionId, mode);
     }
 
-    let key = deriveAskKey(call.input);
-
     // §D2 (field-feedback-2026-07-14) — per-OBSERVATION clarification-chain
-    // budget identity. The scope key above is session-wide per
-    // (field, circuit, board): one initial ask + one continuation for the
-    // FIRST ambiguous observation on a circuit exhausts the cap of two, and
-    // the NEXT ambiguous observation there short-circuits
-    // ask_budget_exhausted (silent, wrong). For observation_clarify asks the
-    // budget key becomes `observation_clarify#<chain id>` — a SERVER-
-    // assigned id minted on each initial ask (no id supplied) and echoed by
-    // the model on that observation's single bounded continuation via
-    // `clarification_chain_id` (stamped onto the input here so the
-    // dispatcher can echo it in the tool_result). Distinct observations —
-    // even two ambiguous ones sharing one extraction turn (NOT ctx.turnId,
-    // which they'd share) — get distinct buckets; a chain's own THIRD ask
-    // arrives carrying its id, lands in the exhausted bucket, and is
-    // blocked. An unknown/invented id mints a fresh chain (defensive —
-    // never lets a wrong echo join another observation's bucket).
+    // identity. For observation_clarify asks the server assigns a chain id,
+    // minted on each initial ask (no id supplied) and echoed by the model on
+    // that observation's bounded continuation via `clarification_chain_id`
+    // (stamped onto the input here so the dispatcher can echo it in the
+    // tool_result). Distinct observations — even two ambiguous ones sharing
+    // one extraction turn — get distinct chains. An unknown/invented id mints
+    // a fresh chain (defensive — never lets a wrong echo join another
+    // observation's chain). The id used to key the per-chain ask budget; the
+    // budget is gone (PLAN-B), and the id now serves the AFDD flow's identity
+    // and the tool_result echo.
     const activeAfddFlow = obsClarifyChains?.getActiveAfddFlow?.() ?? null;
     const afddFlowRejectsAsk =
       call.input?.context_field === 'observation_clarify' &&
@@ -758,40 +745,28 @@ export function wrapAskDispatcherWithGates(
           ? provided
           : obsClarifyChains.mint();
       call.input.clarification_chain_id = chainId;
-      key = `observation_clarify#${chainId}`;
       observationChainId = chainId;
     }
 
-    // (2) Restrained-mode short-circuit. The state machine in Plan 05-04
-    // is session-wide (not per-turn), so isActive() takes no arg.
-    if (restrainedMode.isActive()) {
-      return synthResultWrapped(call, 'restrained_mode', ctx, logger, sessionId, mode);
+    // (2) AFDD clarification-chain guard (PLAN-3). While an AFDD decision is
+    // active, the server owns the flow: only the canonical next question may
+    // be asked. A generic severity ask, paraphrase, or out-of-order question
+    // resolves `afdd_flow_violation` and never reaches the inspector. This
+    // used to share the budget's `ask_budget_exhausted` outcome; with the
+    // budget removed (PLAN-B, Decision 3) it is its own reason, so the model
+    // is told precisely why the ask did not fire and can rephrase in-chain.
+    if (afddFlowRejectsAsk) {
+      return synthResultWrapped(call, 'afdd_flow_violation', ctx, logger, sessionId, mode);
     }
 
-    // (3) Per-key budget short-circuit. STA-06 remains cap=2. PLAN-3 permits
-    // exactly one narrow third slot when the same answered chain has already
-    // established topic then circuit applicability and now asks the canonical
-    // premises question. A generic severity ask, paraphrase, retry, different
-    // order, or fourth question stays exhausted.
-    const answeredAfddKinds = activeAfddFlow?.kinds ?? [];
-    const permitsAfddThird =
-      afddKind === 'premises' &&
-      askBudget.getCount?.(key) === 2 &&
-      answeredAfddKinds.length === 2 &&
-      answeredAfddKinds[0] === 'topic' &&
-      answeredAfddKinds[1] === 'applicability';
-    if (afddFlowRejectsAsk || (askBudget.isExhausted(key) && !permitsAfddThird)) {
-      return synthResultWrapped(call, 'ask_budget_exhausted', ctx, logger, sessionId, mode);
-    }
-
-    // (4) Debounce gate. Inside gateOrFire, the inner dispatcher runs on
+    // (3) Debounce gate. Inside gateOrFire, the inner dispatcher runs on
     // timer expiry — or the outer Promise short-circuits with reason='gated'
     // if a same-key call replaces this one within delayMs.
     const gated = await gate.gateOrFire(call, ctx, innerDispatcher);
 
-    // (5) Post-dispatch counter updates — Pitfall 4 protection.
-    // Non-fire reasons MUST NOT consume budget or restrained-window slot.
-    // Two categories of non-fire (see `isRealFire` below):
+    // (4) Post-dispatch AFDD chain progress — Pitfall 4 protection.
+    // Non-fire reasons MUST NOT advance the chain. Two categories of non-fire
+    // (see `isRealFire` below):
     //   - Wrapper short-circuit non-fires: `gated`, `session_terminated`,
     //     `gate_dispatcher_error` (reserved). Wrapper emits these from
     //     its own pre-dispatch / pre-emit code paths.
@@ -806,11 +781,9 @@ export function wrapAskDispatcherWithGates(
     //     `dispatcher_error_post_emit` lives in NEITHER pre-emit set
     //     → fire-default for any future post-emit code.
     // Real fires are everything else: `answered:true`, `timeout`,
-    // `user_moved_on`, `session_*`, `transcript_already_*` — Sonnet
-    // probed the user, so the budget slot is consumed.
+    // `user_moved_on`, `session_*`, `transcript_already_*` — the model
+    // probed the user.
     if (isRealFire(gated)) {
-      askBudget.increment(key);
-      restrainedMode.recordAsk(ctx.turnId);
       if (observationChainId && afddKind && askWasAnswered(gated)) {
         obsClarifyChains?.noteAnsweredAfddQuestion?.(observationChainId, afddKind);
       }
@@ -821,20 +794,21 @@ export function wrapAskDispatcherWithGates(
 }
 
 /**
- * Classify a wrapper-return envelope as a "real fire" (counters increment)
- * vs a wrapper-emitted short-circuit (counters DO NOT increment).
+ * Classify a wrapper-return envelope as a "real fire" vs a wrapper-emitted
+ * short-circuit. Since PLAN-B removed the ask budget, the only consumer is
+ * the AFDD chain-progress update: a non-fire must not advance the chain.
  *
  * Real fire iff: the envelope's content parses to `answered:true`, OR the
  * `reason` is NOT one of the wrapper's own short-circuit reasons. Inner
  * dispatcher reasons like `timeout`, `user_moved_on`, `session_stopped`
- * count as real fires — Sonnet probed the user, so the budget slot is
- * consumed (otherwise a timeout-loop Sonnet could spam asks past the cap).
+ * count as real fires — the model probed the user.
  *
  * The wrapper-emitted set (post-r5-#2 + post-r6 + post-r7): `gated`,
  * `session_terminated`, `gate_dispatcher_error` (reserved for future
- * wrapper-internal catches). `restrained_mode` and
- * `ask_budget_exhausted` never reach this classifier because their
- * code paths return synth envelopes BEFORE the post-dispatch step.
+ * wrapper-internal catches). `afdd_flow_violation` and `validation_error`
+ * from the wrapper's own pre-dispatch checks never reach this classifier
+ * because their code paths return synth envelopes BEFORE the post-dispatch
+ * step.
  *
  * `dispatcher_error_pre_emit` (Plan 05-13 r7) lives in
  * `_PRE_EMIT_NON_FIRE_REASONS` alongside other inner-dispatcher
@@ -1091,14 +1065,11 @@ export function wrapAskDispatcherWithGates(
 // internal try/catch, the classification is already wired correctly.
 // r6 keeps this reservation unchanged.
 //
-// Note: `restrained_mode` and `ask_budget_exhausted` are ALSO
-// wrapper-emitted synth reasons BUT they live in pre-dispatch
-// branches of wrapAskDispatcherWithGates (NOT in isRealFire's
-// classifier path). The harness's accounting layer (envelopes only,
-// no wrapper internals) treats them as wrapper-suppressed too — but
-// it composes them ON TOP of the wrapper's predicate, not inside
-// this internal Set. See scripts/stage6-over-ask-exit-gate.js
-// `isHarnessWrapperShortCircuitReason` for the harness composition.
+// Note: `afdd_flow_violation` is ALSO a wrapper-emitted synth reason BUT it
+// lives in a pre-dispatch branch of wrapAskDispatcherWithGates (NOT in
+// isRealFire's classifier path). (Until PLAN-B the budget's
+// `ask_budget_exhausted` and restrained mode's `restrained_mode` sat there
+// too; both mechanisms and their offline exit-gate script are retired.)
 // =============================================================================
 const _WRAPPER_SHORT_CIRCUIT_REASONS = new Set([
   'gated',

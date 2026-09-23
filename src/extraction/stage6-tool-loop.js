@@ -376,6 +376,30 @@ export async function runToolLoop({
    * pre-C1 caller / test.
    */
   allowRound1ModelOverride = true,
+  /**
+   * PLAN-B (feedback-2026-09-17, B2) — tool-result augmentation hook.
+   * `(call, result) => string|null|undefined`, invoked once per dispatched
+   * record in the normal dispatch branch. A non-empty string is appended (on
+   * its own line) to the tool_result content the MODEL sees in its next
+   * round. The dispatcher's own envelope — what the caller receives in
+   * `tool_calls[].result` — is never changed, because callers JSON-parse it.
+   * The repeat_ask server note rides this seam. A throw is logged and
+   * ignored. Omitted = byte-identical to before.
+   */
+  augmentToolResult,
+  /**
+   * PLAN-B (feedback-2026-09-17, B3) — dispatch the cap round instead of
+   * aborting it. Default false: the cap-hit branch below answers every
+   * pending tool_use with a synthetic `loop_cap` abort and dispatches
+   * nothing. With `dispatchAtCap: true` the cap round goes through the
+   * NORMAL dispatch branch — every pending tool-use record of the response,
+   * in index order — and the loop then ends because the round budget is
+   * spent. The net-site helper (stage6-model-authored-line.js) runs exactly
+   * one round (`maxRounds: 1`), so without this its only round could never
+   * dispatch its `net_response`. No `tool_loop_cap_hit` row is logged for a
+   * dispatched cap round (it is not a runaway loop).
+   */
+  dispatchAtCap = false,
 }) {
   let rounds = 0;
   let stopReason = null;
@@ -810,7 +834,7 @@ export async function runToolLoop({
     //   is_error = true
     // and exit cleanly. No further model invocation. Log tool_loop_cap_hit
     // for the Phase 8 stage6.tool_loop_cap_hit_rate CloudWatch metric.
-    if (rounds >= maxRounds) {
+    if (rounds >= maxRounds && !dispatchAtCap) {
       const abortResults = [];
       const answeredCap = new Set();
       for (const rec of records) {
@@ -881,7 +905,8 @@ export async function runToolLoop({
       break;
     }
 
-    // NORMAL DISPATCH BRANCH: rounds < maxRounds. Dispatch each tool call in
+    // NORMAL DISPATCH BRANCH: rounds < maxRounds (or the cap round under
+    // `dispatchAtCap`, after which the loop ends). Dispatch each tool call in
     // the assembler's index-ascending order (finalize() already sorts), then
     // append one user-role message whose content is the array of tool_result
     // content blocks (one per dispatched call). Anthropic expects all of a
@@ -1101,10 +1126,30 @@ export async function runToolLoop({
             tool_name: rec.name,
           });
         }
+        let modelContent = res.content;
+        if (typeof augmentToolResult === 'function' && typeof res.content === 'string') {
+          try {
+            const extra = augmentToolResult(
+              { tool_call_id: rec.tool_call_id, name: rec.name, input: rec.input },
+              res
+            );
+            if (typeof extra === 'string' && extra.trim().length > 0) {
+              modelContent = `${res.content}\n${extra}`;
+            }
+          } catch (augmentErr) {
+            logger?.warn?.('stage6.tool_result_augment_error', {
+              sessionId: ctx?.sessionId,
+              turnId: ctx?.turnId,
+              tool_call_id: rec.tool_call_id,
+              tool_name: rec.name,
+              error: augmentErr?.message,
+            });
+          }
+        }
         toolResults.push({
           type: 'tool_result',
           tool_use_id: rec.tool_call_id,
-          content: res.content,
+          content: modelContent,
           is_error: res.is_error,
         });
         // F7 Item 2 — carry the authoritative assembler tool_call_id onto the

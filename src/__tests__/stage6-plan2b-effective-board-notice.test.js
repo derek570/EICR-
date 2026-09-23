@@ -96,13 +96,17 @@ async function driveAnsweredAsk(
     utteranceId: 'u-plan2b-effective-board',
   });
 
+  // The ask gate's 1500 ms debounce composes unconditionally since PLAN-B
+  // (feedback-2026-09-17), so the ask registers only after that real delay.
+  // Poll on wall-clock time, bounded, rather than on a microtask count.
   let answered = false;
-  for (let attempt = 0; attempt < 100 && !answered; attempt += 1) {
+  const deadline = Date.now() + 5000;
+  while (!answered && Date.now() < deadline) {
     answered = pendingAsks.resolve(ASK_ID, {
       answered: true,
       user_text: userText,
     });
-    if (!answered) await new Promise((resolve) => setImmediate(resolve));
+    if (!answered) await new Promise((resolve) => setTimeout(resolve, 20));
   }
   if (!answered) throw new Error('PLAN-2B test ask never registered');
 
@@ -134,13 +138,16 @@ async function driveBrokeredBoardAsk(session, askInput) {
     }
   );
 
+  // Wall-clock poll: the ask gate's 1500 ms debounce composes
+  // unconditionally since PLAN-B.
   let answered = false;
-  for (let attempt = 0; attempt < 100 && !answered; attempt += 1) {
+  const deadline = Date.now() + 5000;
+  while (!answered && Date.now() < deadline) {
     answered = pendingAsks.resolve(ASK_ID, {
       answered: true,
       user_text: 'the smoke alarm, upstars lights, and the attic circuit',
     });
-    if (!answered) await new Promise((resolve) => setImmediate(resolve));
+    if (!answered) await new Promise((resolve) => setTimeout(resolve, 20));
   }
   if (!answered) throw new Error('PLAN-2B broker test initial ask never registered');
 

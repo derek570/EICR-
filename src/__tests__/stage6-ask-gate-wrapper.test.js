@@ -1,30 +1,31 @@
 /**
  * Stage 6 Phase 5 Plan 05-01 — ask-gate-wrapper unit tests.
  *
- * WHAT: Locks the higher-order composition that wires all four Phase 5 gates
- * (filled-slots shadow / restrained-mode / per-key budget / 1500ms debounce)
- * around the unmodified Plan 03-05 createAskDispatcher. Composition only;
- * the inner dispatcher is a black box.
+ * WHAT: Locks the higher-order composition that wires the ask gates around
+ * the unmodified Plan 03-05 createAskDispatcher. Composition only; the inner
+ * dispatcher is a black box. The gates, in order:
+ *   1. filledSlotsShadow — side-effect logging on EVERY attempted ask.
+ *   1b. undeclared reserved AFDD wording → `validation_error` (pre-dispatch).
+ *   2. AFDD clarification-chain guard — an `observation_clarify` ask while an
+ *      AFDD flow is active that is not the canonical next question →
+ *      `afdd_flow_violation` (pre-dispatch).
+ *   3. 1500ms debounce — same-key replacement resolves the first call with
+ *      reason='gated'.
+ *   4. AFDD chain progress is recorded only on a real, answered fire.
  *
- * WHY these tests ARE the gate (RED step of the Plan 05-01 TDD pair):
- *   - STB-01 short-circuit ordering — gate.gateOrFire wraps every ask_user
- *     dispatch; restrained / budget short-circuit BEFORE the gate timer
- *     starts; gated replacements resolve with reason='gated'.
- *   - STB-04 — per-key budget enforced AHEAD of the inner dispatcher.
- *   - STB-05 — no existing guard weakened: composition does not mutate
- *     stage6-dispatcher-ask.js. The Codex grep at /verification/ proves
- *     this; the tests prove the wrapper achieves the same effect via
- *     pure composition.
- *   - Pitfall 4 (Plan 05-03 + 05-04 carry-over) — counters increment
- *     ONLY on successful fire; short-circuited asks (gated /
- *     restrained_mode / ask_budget_exhausted) MUST NOT consume budget.
+ * PLAN-B (feedback-2026-09-17, Decision 3) retired the per-key ask budget and
+ * restrained mode. Nothing caps repeat asks on a key any more; the model
+ * decides. These tests lock that a third and fourth same-key ask dispatch,
+ * and that the wrapper composes with no budget or restrained-mode options.
+ *
+ * STB-05 — no existing guard weakened: composition does not mutate
+ * stage6-dispatcher-ask.js; the tests prove the wrapper achieves its effect
+ * via pure composition.
  *
  * Fake-timer pattern: doNotFake Promise + queueMicrotask + nextTick is
  * the Stage 6 frozen pattern (Decision 03-09). It lets jest.advanceTimersByTime
  * step the 1500ms debounce deterministically while keeping async/await
  * scheduling real.
- *
- * REQUIREMENTS covered: STB-01, STB-04, STB-05.
  */
 
 import { jest } from '@jest/globals';
@@ -34,9 +35,9 @@ import {
   deriveAskKey,
   isWrapperShortCircuitReason,
   isPreEmitNonFireReason,
+  createObsClarifyChainBroker,
 } from '../extraction/stage6-ask-gate-wrapper.js';
 import * as wrapperModule from '../extraction/stage6-ask-gate-wrapper.js';
-import { createAskBudget } from '../extraction/stage6-ask-budget.js';
 import { QUESTION_GATE_DELAY_MS } from '../extraction/question-gate.js';
 
 beforeEach(() => {
@@ -54,22 +55,6 @@ afterEach(() => {
 
 function makeLogger() {
   return { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-}
-
-function makeBudget({ exhausted = false } = {}) {
-  return {
-    isExhausted: jest.fn(() => exhausted),
-    increment: jest.fn(),
-    getCount: jest.fn(() => 0),
-  };
-}
-
-function makeRestrained({ active = false } = {}) {
-  return {
-    isActive: jest.fn(() => active),
-    recordAsk: jest.fn(),
-    destroy: jest.fn(),
-  };
 }
 
 function makeInnerDispatcher(outcome = { answered: true, user_text: 'ok' }) {
@@ -98,6 +83,62 @@ function makeCtx(turnId = 'sess-1-turn-1') {
   return { sessionId: 'sess-1', turnId };
 }
 
+// A broker whose AFDD flow is ACTIVE (topic already answered). Any
+// observation_clarify ask that is not the canonical next AFDD question is
+// then rejected pre-dispatch with `afdd_flow_violation`.
+function makeActiveAfddBroker() {
+  const broker = createObsClarifyChainBroker();
+  const chainId = broker.mint();
+  broker.noteAnsweredAfddQuestion(chainId, 'topic');
+  return { broker, chainId };
+}
+
+// A generic severity clarification (no declared AFDD kind). During an active
+// AFDD flow it is never the canonical next question.
+function makeSeverityCall(id) {
+  return {
+    id,
+    name: 'ask_user',
+    input: {
+      question: 'Is the damage cosmetic, or does it expose live parts?',
+      reason: 'observation_confirmation',
+      context_field: 'observation_clarify',
+      context_circuit: 3,
+      expected_answer_shape: 'free_text',
+    },
+  };
+}
+
+// A declared AFDD clarification; the wrapper renders the canonical wording.
+function makeAfddCall(id, declaredKind) {
+  return {
+    id,
+    name: 'ask_user',
+    input: {
+      question: 'model wording is ignored',
+      reason: 'missing_context',
+      context_field: 'observation_clarify',
+      expected_answer_shape: 'free_text',
+      observation_clarification_kind: declaredKind,
+    },
+  };
+}
+
+// Canonical AFDD wording WITHOUT the declared-kind enum — rejected
+// pre-dispatch with `validation_error`.
+function makeUndeclaredReservedAfddCall(id) {
+  return {
+    id,
+    name: 'ask_user',
+    input: {
+      question: 'Is this observation about AFDD protection or surge protection?',
+      reason: 'missing_context',
+      context_field: 'observation_clarify',
+      expected_answer_shape: 'free_text',
+    },
+  };
+}
+
 // =============================================================================
 // Group 1: deriveAskKey — sentinel normalisation (Pitfall 3)
 // =============================================================================
@@ -109,14 +150,13 @@ describe('deriveAskKey', () => {
   test('null field + null circuit collapse to sentinel "_:_" (NOT "null:null")', () => {
     // Pitfall 3 — null bypass. Without the sentinel collapse, a null-context
     // ask would derive a different key from a 0-circuit ask, side-stepping
-    // the budget for the same logical question.
+    // the same-key debounce for the same logical question.
     expect(deriveAskKey({ context_field: null, context_circuit: null })).toBe('_:_');
   });
 
   test('undefined / missing keys also collapse to sentinel', () => {
-    // undefined === null in sentinel semantics — Map<key,...> in
-    // stage6-ask-budget.js treats them identically once the key is
-    // normalised.
+    // undefined === null in sentinel semantics — the debounce gate's
+    // Map<key,...> treats them identically once the key is normalised.
     expect(deriveAskKey({})).toBe('_:_');
   });
 
@@ -193,8 +233,8 @@ describe('deriveAskKey', () => {
   test('"none" (canonical sentinel) collapses to "_" — same as null', () => {
     expect(deriveAskKey({ context_field: 'none', context_circuit: null })).toBe('_:_');
     expect(deriveAskKey({ context_field: null, context_circuit: null })).toBe('_:_');
-    // Both expressions above must match for the per-key budget to bucket
-    // them together.
+    // Both expressions above must match for the same-key debounce to
+    // bucket them together.
     expect(deriveAskKey({ context_field: 'none', context_circuit: null })).toBe(
       deriveAskKey({ context_field: null, context_circuit: null })
     );
@@ -222,8 +262,8 @@ describe('deriveAskKey', () => {
   //
   // Concrete bypass surface (pre-r4-#1):
   //   1. Sonnet emits ask_user with context_field:'NONE', circuit 7.
-  //   2. Wrapper computes key 'NONE:7' and consults askBudget +
-  //      gate.gateOrFire — bucket is empty, allow.
+  //   2. Wrapper computes key 'NONE:7' and consults the (since-retired)
+  //      per-key budget + gate.gateOrFire — bucket is empty, allow.
   //   3. Inner dispatcher rejects with validation_error.
   //   4. Wrapper post-step: isRealFire returns false (validation_error
   //      is in PRE_EMIT_NON_FIRE_REASONS — Plans 05-08 r2-#1 + 05-09
@@ -264,8 +304,8 @@ describe('deriveAskKey', () => {
   test('"NONE"/"None"/"nOnE" DO collapse to "_" — case-insensitive sentinel match (r4-#1)', () => {
     // Pre-r4-#1 (after r3-#3 narrowed): each upper-case form derived a
     // distinct key. Post-r4-#1: all three collapse to '_:_' so the
-    // wrapper's same-key debounce + per-key budget catch case-
-    // alternation BEFORE the inner dispatcher's validator runs.
+    // wrapper's same-key debounce catches case-alternation BEFORE the
+    // inner dispatcher's validator runs.
     expect(deriveAskKey({ context_field: 'NONE', context_circuit: null })).toBe('_:_');
     expect(deriveAskKey({ context_field: 'None', context_circuit: null })).toBe('_:_');
     expect(deriveAskKey({ context_field: 'nOnE', context_circuit: null })).toBe('_:_');
@@ -285,8 +325,8 @@ describe('deriveAskKey', () => {
 
   test('field collapse preserves real circuit number (sentinel forms only — case-insensitive)', () => {
     // Every sentinel form (null and any case of 'none') with the same
-    // circuit number must hit the same bucket so per-key budget cannot
-    // be bypassed by alternating sentinel representations at the
+    // circuit number must hit the same bucket so the same-key debounce
+    // cannot be bypassed by alternating sentinel representations at the
     // wrapper layer (which runs BEFORE the validator).
     expect(deriveAskKey({ context_field: 'none', context_circuit: 3 })).toBe('_:3');
     expect(deriveAskKey({ context_field: null, context_circuit: 3 })).toBe('_:3');
@@ -391,9 +431,9 @@ describe('deriveAskKey', () => {
 
   test('Plan 05-11 r5-#1 — " none " (leading + trailing space) collapses to "_"', () => {
     // Whitespace-padded sentinel must collapse to the same bucket as
-    // null / 'none' / 'NONE' so the wrapper's same-key debounce +
-    // per-key budget catch padding-alternation BEFORE the validator
-    // rejects the malformed form.
+    // null / 'none' / 'NONE' so the wrapper's same-key debounce
+    // catches padding-alternation BEFORE the validator rejects the
+    // malformed form.
     expect(deriveAskKey({ context_field: ' none ', context_circuit: null })).toBe('_:_');
   });
 
@@ -621,87 +661,83 @@ describe('createAskGateWrapper — debounce', () => {
 // Group 3: wrapAskDispatcherWithGates — short-circuit ordering
 // =============================================================================
 describe('wrapAskDispatcherWithGates — short-circuit ordering', () => {
-  test('restrainedMode active → inner NEVER called; filledSlotsShadow STILL called; reason="restrained_mode"; counters NOT incremented', async () => {
+  test('active AFDD flow + generic severity ask → inner NEVER called; filledSlotsShadow STILL called; reason="afdd_flow_violation"; one log row', async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained({ active: true });
+    const { broker, chainId } = makeActiveAfddBroker();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
     const filledSlotsShadow = jest.fn();
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow,
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const call = makeCall('call-1', 'ze', 0);
+    const call = makeSeverityCall('call-1');
     const ctx = makeCtx();
     const result = await wrapped(call, ctx);
 
     expect(filledSlotsShadow).toHaveBeenCalledTimes(1);
     expect(filledSlotsShadow).toHaveBeenCalledWith(call, ctx);
     expect(inner).not.toHaveBeenCalled();
-    expect(JSON.parse(result.content)).toEqual({ answered: false, reason: 'restrained_mode' });
+    expect(JSON.parse(result.content)).toEqual({ answered: false, reason: 'afdd_flow_violation' });
     expect(result.tool_use_id).toBe('call-1');
     expect(result.is_error).toBe(false);
+    // Short-circuits BEFORE the debounce gate: no timer was started.
+    expect(jest.getTimerCount()).toBe(0);
 
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls).toHaveLength(1);
+    expect(askUserCalls[0][1].answer_outcome).toBe('afdd_flow_violation');
+    expect(askUserCalls[0][1].tool_call_id).toBe('call-1');
+
+    // The rejected ask does not advance or retire the active flow.
+    expect(broker.getActiveAfddFlow()).toEqual({ chainId, kinds: ['topic'] });
 
     gate.destroy();
   });
 
-  test('restrained inactive + budget exhausted → inner NEVER called; filledSlotsShadow STILL called; reason="ask_budget_exhausted"; counters NOT incremented', async () => {
+  test('undeclared reserved AFDD wording → inner NEVER called; filledSlotsShadow STILL called; reason="validation_error"', async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget({ exhausted: true });
-    const restrainedMode = makeRestrained({ active: false });
+    const broker = createObsClarifyChainBroker();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
     const filledSlotsShadow = jest.fn();
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow,
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const call = makeCall('call-1', 'ze', 0);
-    const ctx = makeCtx();
-    const result = await wrapped(call, ctx);
+    const call = makeUndeclaredReservedAfddCall('call-1');
+    const result = await wrapped(call, makeCtx());
 
     expect(filledSlotsShadow).toHaveBeenCalledTimes(1);
     expect(inner).not.toHaveBeenCalled();
     expect(JSON.parse(result.content)).toEqual({
       answered: false,
-      reason: 'ask_budget_exhausted',
+      reason: 'validation_error',
     });
-    // Budget check happened — but the post-dispatch increment must NOT fire
-    // for a short-circuited ask (Pitfall 4).
-    expect(askBudget.isExhausted).toHaveBeenCalledWith('ze:0');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+    // Copied canonical wording cannot start an AFDD flow.
+    expect(broker.getActiveAfddFlow()).toBeNull();
 
     gate.destroy();
   });
 
-  test('both inactive → gate debounces; replaced ask resolves reason="gated"; replacement fires inner; only the SUCCESSFUL fire increments counters', async () => {
+  test('no short-circuit → gate debounces; replaced ask resolves reason="gated"; replacement fires inner', async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
     const filledSlotsShadow = jest.fn();
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow,
       logger,
@@ -718,20 +754,13 @@ describe('wrapAskDispatcherWithGates — short-circuit ordering', () => {
 
     const r1 = await p1;
     expect(JSON.parse(r1.content).reason).toBe('gated');
-    // Pitfall 4: gated short-circuit must NOT consume budget or
-    // restrained-window slot.
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    expect(inner).not.toHaveBeenCalled();
 
     jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
     const r2 = await p2;
     expect(JSON.parse(r2.content).answered).toBe(true);
-
-    // Only the successful fire counts.
-    expect(askBudget.increment).toHaveBeenCalledTimes(1);
-    expect(askBudget.increment).toHaveBeenCalledWith('ze:0');
-    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
-    expect(restrainedMode.recordAsk).toHaveBeenCalledWith(ctx.turnId);
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(inner).toHaveBeenCalledWith(call2, ctx);
 
     // filledSlotsShadow ran on EACH attempted ask — twice.
     expect(filledSlotsShadow).toHaveBeenCalledTimes(2);
@@ -742,36 +771,243 @@ describe('wrapAskDispatcherWithGates — short-circuit ordering', () => {
   test('filledSlotsShadow is invoked on EVERY attempted ask (regardless of subsequent short-circuit)', async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
     const filledSlotsShadow = jest.fn();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
-    // First attempt — restrained ON, short-circuits.
-    const restrainedActive = makeRestrained({ active: true });
+    // First attempt — active AFDD flow, generic severity ask short-circuits.
+    const { broker } = makeActiveAfddBroker();
     const wrappedActive = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode: restrainedActive,
       gate,
       filledSlotsShadow,
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
-    await wrappedActive(makeCall('call-1', 'ze', 0), makeCtx());
+    await wrappedActive(makeSeverityCall('call-1'), makeCtx());
     expect(filledSlotsShadow).toHaveBeenCalledTimes(1);
 
-    // Second attempt — budget exhausted, short-circuits.
-    const restrainedInactive = makeRestrained({ active: false });
-    const askBudgetExhausted = makeBudget({ exhausted: true });
-    const wrappedExhausted = wrapAskDispatcherWithGates(inner, {
-      askBudget: askBudgetExhausted,
-      restrainedMode: restrainedInactive,
+    // Second attempt — undeclared reserved AFDD wording short-circuits.
+    const wrappedFresh = wrapAskDispatcherWithGates(inner, {
       gate,
       filledSlotsShadow,
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: createObsClarifyChainBroker(),
     });
-    await wrappedExhausted(makeCall('call-2', 'pfc', 0), makeCtx());
+    await wrappedFresh(makeUndeclaredReservedAfddCall('call-2'), makeCtx());
     expect(filledSlotsShadow).toHaveBeenCalledTimes(2);
+    expect(inner).not.toHaveBeenCalled();
+
+    gate.destroy();
+  });
+});
+
+// =============================================================================
+// Group 3b: PLAN-B — no ask budget, unconditional composition
+// =============================================================================
+// PLAN-B (feedback-2026-09-17, Decision 3) removed the per-key ask budget and
+// restrained mode. A repeated ask on the same key is the model's decision;
+// only the debounce and the AFDD guard remain.
+// =============================================================================
+describe('PLAN-B — no ask budget; the wrapper composes unconditionally', () => {
+  test('third and fourth same-key asks (no AFDD flow) each dispatch the inner dispatcher', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      obsClarifyChains: createObsClarifyChainBroker(),
+    });
+
+    const results = [];
+    for (let i = 1; i <= 4; i += 1) {
+      const p = wrapped(makeCall(`call-${i}`, 'ze', 0), makeCtx(`sess-1-turn-${i}`));
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+      results.push(await p);
+    }
+
+    expect(inner).toHaveBeenCalledTimes(4);
+    for (const [i, r] of results.entries()) {
+      expect(r.tool_use_id).toBe(`call-${i + 1}`);
+      expect(JSON.parse(r.content)).toEqual({ answered: true, user_text: 'ok' });
+    }
+    const outcomes = logger.info.mock.calls
+      .filter((c) => c[0] === 'stage6.ask_user')
+      .map((c) => c[1].answer_outcome);
+    expect(outcomes).toEqual([]); // no wrapper short-circuit row for any of the four
+  });
+
+  test('third and fourth asks on the SAME observation_clarify chain (no AFDD flow) each dispatch', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const broker = createObsClarifyChainBroker();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      obsClarifyChains: broker,
+    });
+
+    let chainId = null;
+    for (let i = 1; i <= 4; i += 1) {
+      const call = makeSeverityCall(`call-${i}`);
+      if (chainId) call.input.clarification_chain_id = chainId;
+      const p = wrapped(call, makeCtx());
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+      const r = await p;
+      expect(JSON.parse(r.content).answered).toBe(true);
+      chainId ??= call.input.clarification_chain_id;
+      expect(call.input.clarification_chain_id).toBe(chainId);
+    }
+    expect(inner).toHaveBeenCalledTimes(4);
+  });
+
+  test('composes with only gate + logger + sessionId (no budget, restrained-mode, shadow or chain options); debounce still applies', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const wrapped = wrapAskDispatcherWithGates(inner, { gate, logger, sessionId: 'sess-1' });
+
+    const ctx = makeCtx();
+    const p1 = wrapped(makeCall('call-1', 'ze', 0), ctx);
+    jest.advanceTimersByTime(400);
+    const p2 = wrapped(makeCall('call-2', 'ze', 0), ctx);
+
+    const r1 = await p1;
+    expect(JSON.parse(r1.content)).toEqual({ answered: false, reason: 'gated' });
+
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const r2 = await p2;
+    expect(r2.tool_use_id).toBe('call-2');
+    expect(JSON.parse(r2.content)).toEqual({ answered: true, user_text: 'ok' });
+    expect(inner).toHaveBeenCalledTimes(1);
+
+    // An observation_clarify ask with no broker threaded dispatches untouched.
+    const p3 = wrapped(makeSeverityCall('call-3'), ctx);
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const r3 = await p3;
+    expect(JSON.parse(r3.content).answered).toBe(true);
+    expect(inner).toHaveBeenCalledTimes(2);
+
+    gate.destroy();
+  });
+
+  test('afdd_flow_violation → synth envelope, inner never called, shadow still called, exactly one stage6.ask_user row', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const { broker, chainId } = makeActiveAfddBroker();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const filledSlotsShadow = jest.fn();
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      gate,
+      filledSlotsShadow,
+      logger,
+      sessionId: 'sess-1',
+      obsClarifyChains: broker,
+    });
+
+    // Out of order: after topic, the flow accepts applicability or premises,
+    // never a second topic question.
+    const call = makeAfddCall('call-1', 'afdd_topic');
+    const result = await wrapped(call, makeCtx());
+
+    expect(result).toEqual({
+      tool_use_id: 'call-1',
+      content: JSON.stringify({ answered: false, reason: 'afdd_flow_violation' }),
+      is_error: false,
+    });
+    expect(inner).not.toHaveBeenCalled();
+    expect(filledSlotsShadow).toHaveBeenCalledTimes(1);
+    expect(filledSlotsShadow).toHaveBeenCalledWith(call, expect.any(Object));
+
+    const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
+    expect(askUserCalls).toHaveLength(1);
+    expect(askUserCalls[0][1]).toMatchObject({
+      answer_outcome: 'afdd_flow_violation',
+      wait_duration_ms: 0,
+      tool_call_id: 'call-1',
+      context_field: 'observation_clarify',
+    });
+    // The server owns the active chain: the rejected ask is stamped onto it.
+    expect(call.input.clarification_chain_id).toBe(chainId);
+    expect(broker.getActiveAfddFlow()).toEqual({ chainId, kinds: ['topic'] });
+
+    gate.destroy();
+  });
+
+  test('canonical AFDD sequence topic → applicability → premises dispatches all three; a fourth generic ask is afdd_flow_violation', async () => {
+    const logger = makeLogger();
+    const inner = makeInnerDispatcher();
+    const broker = createObsClarifyChainBroker();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const wrapped = wrapAskDispatcherWithGates(inner, {
+      gate,
+      filledSlotsShadow: () => {},
+      logger,
+      sessionId: 'sess-1',
+      obsClarifyChains: broker,
+    });
+
+    let chainId = null;
+    for (const kind of ['afdd_topic', 'afdd_applicability', 'afdd_premises']) {
+      const call = makeAfddCall(`call-${kind}`, kind);
+      const p = wrapped(call, makeCtx());
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+      expect(JSON.parse((await p).content).answered).toBe(true);
+      chainId ??= call.input.clarification_chain_id;
+      expect(call.input.clarification_chain_id).toBe(chainId);
+    }
+    expect(inner).toHaveBeenCalledTimes(3);
+    expect(broker.getActiveAfddFlow()).toEqual({
+      chainId,
+      kinds: ['topic', 'applicability', 'premises'],
+    });
+
+    const severity = await wrapped(makeSeverityCall('call-severity'), makeCtx());
+    expect(JSON.parse(severity.content)).toEqual({
+      answered: false,
+      reason: 'afdd_flow_violation',
+    });
+    expect(inner).toHaveBeenCalledTimes(3);
+
+    gate.destroy();
+  });
+
+  test('AFDD chain progress is recorded only on an ANSWERED fire', async () => {
+    const logger = makeLogger();
+    const broker = createObsClarifyChainBroker();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+
+    // A topic ask that times out does not start the flow…
+    const timedOut = wrapAskDispatcherWithGates(
+      makeInnerDispatcher({ answered: false, reason: 'timeout' }),
+      { gate, logger, sessionId: 'sess-1', obsClarifyChains: broker }
+    );
+    const p1 = timedOut(makeAfddCall('call-1', 'afdd_topic'), makeCtx());
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await p1;
+    expect(broker.getActiveAfddFlow()).toBeNull();
+
+    // …an answered one does.
+    const answered = wrapAskDispatcherWithGates(makeInnerDispatcher(), {
+      gate,
+      logger,
+      sessionId: 'sess-1',
+      obsClarifyChains: broker,
+    });
+    const call2 = makeAfddCall('call-2', 'afdd_topic');
+    const p2 = answered(call2, makeCtx());
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    await p2;
+    expect(broker.getActiveAfddFlow()).toEqual({
+      chainId: call2.input.clarification_chain_id,
+      kinds: ['topic'],
+    });
 
     gate.destroy();
   });
@@ -786,15 +1022,14 @@ describe('wrapAskDispatcherWithGates — synthResult shape and logging', () => {
     const inner = makeInnerDispatcher();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget: makeBudget(),
-      restrainedMode: makeRestrained({ active: true }),
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: makeActiveAfddBroker().broker,
     });
 
-    const call = makeCall('call-1', 'ze', 0);
+    const call = makeSeverityCall('call-1');
     const result = await wrapped(call, makeCtx());
 
     expect(result.tool_use_id).toBe('call-1');
@@ -812,21 +1047,20 @@ describe('wrapAskDispatcherWithGates — synthResult shape and logging', () => {
     const inner = makeInnerDispatcher();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget: makeBudget(),
-      restrainedMode: makeRestrained({ active: true }),
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: makeActiveAfddBroker().broker,
     });
 
-    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+    await wrapped(makeSeverityCall('call-1'), makeCtx());
 
     // logAskUser uses logger.info with first arg 'stage6.ask_user' — find it.
     const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserCalls).toHaveLength(1);
     const payload = askUserCalls[0][1];
-    expect(payload.answer_outcome).toBe('restrained_mode');
+    expect(payload.answer_outcome).toBe('afdd_flow_violation');
     expect(payload.wait_duration_ms).toBe(0);
     expect(payload.mode).toBe('live');
     expect(payload.tool_call_id).toBe('call-1');
@@ -838,90 +1072,19 @@ describe('wrapAskDispatcherWithGates — synthResult shape and logging', () => {
 });
 
 // =============================================================================
-// Group 5: Pitfall 4 — counters increment ONLY on successful fire
-// =============================================================================
-describe('wrapAskDispatcherWithGates — Pitfall 4: counters only on successful fire', () => {
-  test('happy path: gate fires inner, wrapper increments askBudget(key) + restrainedMode.recordAsk(turnId) exactly once', async () => {
-    const logger = makeLogger();
-    const inner = makeInnerDispatcher({ answered: true, user_text: 'yes' });
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const call = makeCall('call-1', 'ze', 0);
-    const ctx = makeCtx('sess-1-turn-7');
-    const promise = wrapped(call, ctx);
-
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    const result = await promise;
-
-    expect(JSON.parse(result.content).answered).toBe(true);
-    expect(inner).toHaveBeenCalledTimes(1);
-    expect(askBudget.increment).toHaveBeenCalledTimes(1);
-    expect(askBudget.increment).toHaveBeenCalledWith('ze:0');
-    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
-    expect(restrainedMode.recordAsk).toHaveBeenCalledWith('sess-1-turn-7');
-
-    gate.destroy();
-  });
-
-  test('inner dispatcher returning answered:false (e.g. timeout) STILL increments counters — counters track FIRES, not user-yes outcomes', async () => {
-    // Rationale: budget caps how many times Sonnet may PROBE the user for
-    // a given (field, circuit). A timeout used the budget slot just as
-    // surely as a real answer did — otherwise Sonnet could spam asks and
-    // cycle through every counter slot without ever burning one.
-    const logger = makeLogger();
-    const inner = makeInnerDispatcher({ answered: false, reason: 'timeout' });
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx());
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    await promise;
-
-    expect(askBudget.increment).toHaveBeenCalledTimes(1);
-    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
-
-    gate.destroy();
-  });
-});
-
-// =============================================================================
 // Group 6: Plan 05-07 r1-#3 — mode is threaded through wrapper short-circuits
 // =============================================================================
-// The wrapper emits one stage6.ask_user log row per attempted ask (with
-// answer_outcome set to the short-circuit reason or the inner dispatcher's
-// outcome). Plan 05-05 r19 closed the mode-typo gate with a closed enum
-// {shadow, live}. r1-#3 surfaced that the wrapper had hard-coded mode='live'
-// at synthResultWrapped, so when runShadowHarness composes the wrapper inside
-// the shadow path the rows mis-tagged shadow asks as live — Phase 8
-// dashboards split by mode, so this corrupts the split.
+// The wrapper emits one stage6.ask_user log row per short-circuited ask (with
+// answer_outcome set to the short-circuit reason). Plan 05-05 r19 closed the
+// mode-typo gate with a closed enum {shadow, live}. r1-#3 surfaced that the
+// wrapper had hard-coded mode='live' at synthResultWrapped, so when
+// runShadowHarness composes the wrapper inside the shadow path the rows
+// mis-tagged shadow asks as live — Phase 8 dashboards split by mode.
 //
 // Fix threads `mode` through both createAskGateWrapper opts (covers gated +
 // session_terminated + dispatcher_error paths) and wrapAskDispatcherWithGates
-// opts (covers restrained_mode + ask_budget_exhausted paths). Default 'live'
-// preserves every existing caller's behaviour. Production wiring in
-// stage6-shadow-harness.js explicitly passes mode:'shadow' so its rows
-// match the session's actual mode.
+// opts (covers the pre-dispatch afdd_flow_violation + validation_error
+// paths). Default 'live'.
 // =============================================================================
 
 describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to 'live')", () => {
@@ -946,55 +1109,49 @@ describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to
     }
   });
 
-  test("wrapAskDispatcherWithGates({mode:'shadow'}) + restrainedMode active → row carries mode:'shadow'", async () => {
+  test("wrapAskDispatcherWithGates({mode:'shadow'}) + afdd_flow_violation → row carries mode:'shadow'", async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained({ active: true });
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
       mode: 'shadow',
+      obsClarifyChains: makeActiveAfddBroker().broker,
     });
 
-    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+    await wrapped(makeSeverityCall('call-1'), makeCtx());
 
     const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserCalls).toHaveLength(1);
-    expect(askUserCalls[0][1].answer_outcome).toBe('restrained_mode');
+    expect(askUserCalls[0][1].answer_outcome).toBe('afdd_flow_violation');
     expect(askUserCalls[0][1].mode).toBe('shadow');
 
     gate.destroy();
   });
 
-  test("wrapAskDispatcherWithGates({mode:'shadow'}) + budget exhausted → row carries mode:'shadow'", async () => {
+  test("wrapAskDispatcherWithGates({mode:'shadow'}) + undeclared reserved AFDD wording → validation_error row carries mode:'shadow'", async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget({ exhausted: true });
-    const restrainedMode = makeRestrained({ active: false });
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
       mode: 'shadow',
+      obsClarifyChains: createObsClarifyChainBroker(),
     });
 
-    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+    await wrapped(makeUndeclaredReservedAfddCall('call-1'), makeCtx());
 
     const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserCalls).toHaveLength(1);
-    expect(askUserCalls[0][1].answer_outcome).toBe('ask_budget_exhausted');
+    expect(askUserCalls[0][1].answer_outcome).toBe('validation_error');
     expect(askUserCalls[0][1].mode).toBe('shadow');
 
     gate.destroy();
@@ -1003,13 +1160,9 @@ describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to
   test("gated short-circuit (same-key replacement) carries mode:'shadow' when wrapper composed in shadow", async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained({ active: false });
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1', mode: 'shadow' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
@@ -1043,25 +1196,22 @@ describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to
   test("default opts → mode:'live' (regression lock — every existing caller still emits live)", async () => {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained({ active: true });
     // No `mode` opt on either createAskGateWrapper or wrapAskDispatcherWithGates.
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: makeActiveAfddBroker().broker,
     });
 
-    await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
+    await wrapped(makeSeverityCall('call-1'), makeCtx());
 
     const askUserCalls = logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user');
     expect(askUserCalls).toHaveLength(1);
-    expect(askUserCalls[0][1].answer_outcome).toBe('restrained_mode');
+    expect(askUserCalls[0][1].answer_outcome).toBe('afdd_flow_violation');
     expect(askUserCalls[0][1].mode).toBe('live'); // default — every existing test relies on this
 
     gate.destroy();
@@ -1069,34 +1219,17 @@ describe("Plan 05-07 r1-#3 — synthResultWrapped honours opts.mode (defaults to
 });
 
 // =============================================================================
-// Group 7: Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires
+// Group 7: Plan 05-08 r2-#1 + r3-#1 — pre-emit non-fire envelopes
 // =============================================================================
-// The inner dispatcher (Plan 03-05 + 04-26) emits three reasons whose
-// envelopes signal "the ask never reached iOS / never registered with
-// pendingAsks":
-//
-//   - validation_error  (Plan 03-02 — invalid input rejected pre-dispatch)
-//   - duplicate_tool_call_id  (Plan 03-05 — SDK retry-replay caught at register)
-//   - prompt_leak_blocked  (Plan 04-26 — prompt-leak filter blocked pre-emit)
-//
-// Pre-fix the wrapper's isRealFire returned `true` for these (they aren't in
-// WRAPPER_SHORT_CIRCUIT_REASONS) so wrapAskDispatcherWithGates incremented
-// askBudget + restrainedMode.recordAsk for them. That is wrong — the budget
-// cap counts "Sonnet successfully probed the user", and these reasons mean
-// the user was never probed. Effects:
-//   - Budget burned on inputs that never reached the user.
-//   - Restrained-mode rolling-5-turn counter saw phantom asks, raising the
-//     false-positive activation rate.
-//
-// Fix: PRE_EMIT_NON_FIRE_REASONS frozen Set in stage6-ask-gate-wrapper.js;
-// isRealFire returns false when body.reason is in the set. Exported so the
-// offline harness can extend HARNESS_WRAPPER_SHORT_CIRCUIT_REASONS with the
-// same values (single source of truth — runtime budget AND offline askCount
-// share the classifier).
-//
-// Tests pass an inner dispatcher that returns the pre-emit envelope verbatim
-// (the inner dispatcher already emitted its STO-02 row before returning, so
-// the wrapper's job is purely to NOT consume budget on these).
+// The inner dispatcher emits five reasons whose envelopes signal "the ask
+// never reached the client / never registered with pendingAsks":
+// validation_error, duplicate_tool_call_id, prompt_leak_blocked, shadow_mode
+// (structurally pre-emit — r3-#1) and dispatcher_error. The wrapper passes
+// them through verbatim (the inner dispatcher already emitted its STO-02 row)
+// and must not treat them as a fire. Since PLAN-B removed the ask budget, the
+// only post-dispatch consequence of a fire is AFDD chain progress, so these
+// tests drive an AFDD topic ask and assert the flow does NOT start. The
+// classification itself is locked by the predicate tests in Group 9.
 // =============================================================================
 
 describe('Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires', () => {
@@ -1108,254 +1241,122 @@ describe('Plan 05-08 r2-#1 — PRE_EMIT_NON_FIRE_REASONS treated as non-fires', 
     }));
   }
 
-  test('validation_error → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
-    const logger = makeLogger();
-    // Real dispatcher returns is_error:true on validation_error (only outcome
-    // that does so) — the wrapper's accounting must still treat it as a
-    // pre-emit non-fire regardless of the is_error flag.
-    const inner = makeInnerDispatcherReturning('validation_error', true);
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+  // Real dispatcher returns is_error:true on validation_error (only outcome
+  // that does so) — the wrapper must still pass it through unchanged.
+  test.each([
+    ['validation_error', true],
+    ['duplicate_tool_call_id', false],
+    ['prompt_leak_blocked', false],
+    ['shadow_mode', false],
+  ])(
+    '%s → envelope passes through verbatim, wrapper logs nothing, AFDD chain NOT advanced',
+    async (reason, isError) => {
+      const logger = makeLogger();
+      const inner = makeInnerDispatcherReturning(reason, isError);
+      const broker = createObsClarifyChainBroker();
+      const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
+      const wrapped = wrapAskDispatcherWithGates(inner, {
+        gate,
+        filledSlotsShadow: () => {},
+        logger,
+        sessionId: 'sess-1',
+        obsClarifyChains: broker,
+      });
+
+      const promise = wrapped(makeAfddCall('call-1', 'afdd_topic'), makeCtx('sess-1-turn-1'));
+      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+      const result = await promise;
+
+      expect(inner).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(result.content)).toEqual({ answered: false, reason });
+      expect(result.is_error).toBe(isError);
+      expect(logger.info.mock.calls.filter((c) => c[0] === 'stage6.ask_user')).toHaveLength(0);
+      expect(broker.getActiveAfddFlow()).toBeNull();
+
+      gate.destroy();
+    }
+  );
+
+  test('contrast — an ANSWERED real fire on the same path DOES advance the AFDD chain', async () => {
+    // Keeps the non-fire tests above honest: the same composition with an
+    // answered inner envelope starts the flow, so a null flow above is caused
+    // by the envelope, not by a broken harness.
+    const logger = makeLogger();
+    const broker = createObsClarifyChainBroker();
+    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+    const wrapped = wrapAskDispatcherWithGates(makeInnerDispatcher(), {
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    const result = await promise;
-
-    expect(JSON.parse(result.content).reason).toBe('validation_error');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
-
-    gate.destroy();
-  });
-
-  test('duplicate_tool_call_id → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
-    const logger = makeLogger();
-    const inner = makeInnerDispatcherReturning('duplicate_tool_call_id', false);
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    const result = await promise;
-
-    expect(JSON.parse(result.content).reason).toBe('duplicate_tool_call_id');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
-
-    gate.destroy();
-  });
-
-  test('prompt_leak_blocked → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
-    const logger = makeLogger();
-    const inner = makeInnerDispatcherReturning('prompt_leak_blocked', false);
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    const result = await promise;
-
-    expect(JSON.parse(result.content).reason).toBe('prompt_leak_blocked');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
-
-    gate.destroy();
-  });
-
-  // ===========================================================================
-  // Plan 05-09 r3-#1 — shadow_mode is ALSO a pre-emit non-fire.
-  // ===========================================================================
-  // Codex r3 review of Plan 05-08's closure surface raised this finding:
-  // shadow_mode is structurally pre-emit. Inner dispatcher returns the
-  // shadow_mode envelope at stage6-dispatcher-ask.js:206-225 — that block
-  // is BEFORE step 3 (line 228+) where pendingAsks.register and
-  // ws.send(ask_user_started) run. So shadow_mode runs are no-iOS-emission,
-  // no-registry-register: identical pre-emit pattern to the other three
-  // reasons in PRE_EMIT_NON_FIRE_REASONS.
-  //
-  // Plan 05-08 D2 wording was wrong: it claimed "shadow_mode runs after
-  // validation + leak filter ... so it counts as a fire". Post-validation
-  // + post-leak-filter is true but irrelevant — the relevant predicate is
-  // "before register + ws.send", which holds for shadow_mode.
-  //
-  // Effect of the pre-fix bug (production):
-  //   - Shadow runs (Plan 05-02 + Plan 05-04 shadow harness) burned
-  //     askBudget on every shadow_mode envelope. Shadow's whole point is
-  //     observe-without-affect — burning shadow runs against the budget
-  //     cap is the OPPOSITE of that.
-  //   - Worse: shadow-mode rolling-5-turn restrained-mode counter accrued
-  //     phantom asks, contaminating the next live run's threshold
-  //     accounting.
-  //
-  // Fix: add 'shadow_mode' to PRE_EMIT_NON_FIRE_REASONS. The harness
-  // automatically inherits via the existing ...PRE_EMIT_NON_FIRE_REASONS
-  // spread (single source of truth).
-  // ===========================================================================
-  test('shadow_mode → askBudget.increment + restrainedMode.recordAsk NOT called', async () => {
-    const logger = makeLogger();
-    const inner = makeInnerDispatcherReturning('shadow_mode', false);
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
-    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-    const result = await promise;
-
-    expect(JSON.parse(result.content).reason).toBe('shadow_mode');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
-
-    gate.destroy();
-  });
-
-  test('regression lock — inner-dispatcher reasons NOT in PRE_EMIT_NON_FIRE_REASONS still count as fires', async () => {
-    // user_moved_on / timeout / etc are real fires (Sonnet did probe the
-    // user; the user just didn't engage). These MUST still increment.
-    // Same case lives in Group 5 but we keep an explicit r2-#1 lock so a
-    // future careless edit to PRE_EMIT_NON_FIRE_REASONS that accidentally
-    // includes user_moved_on flips this regression test red.
-    const logger = makeLogger();
-    const inner = makeInnerDispatcherReturning('user_moved_on', false);
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    const call = makeAfddCall('call-1', 'afdd_topic');
+    const promise = wrapped(call, makeCtx('sess-1-turn-1'));
     jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
     await promise;
 
-    expect(askBudget.increment).toHaveBeenCalledTimes(1);
-    expect(restrainedMode.recordAsk).toHaveBeenCalledTimes(1);
+    expect(broker.getActiveAfddFlow()).toEqual({
+      chainId: call.input.clarification_chain_id,
+      kinds: ['topic'],
+    });
 
     gate.destroy();
   });
 });
 
 // =============================================================================
-// Group 8: Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key budget
+// Group 8: Plan 05-08 r2-#2 + r5-#1 — sentinel alternation cannot bypass the
+// same-key debounce
 // =============================================================================
-// End-to-end lock: 4 calls with context_field alternating between
-// `[null, 'none', 'NONE', null]` for the same context_circuit must all
-// land in the same `'_:N'` bucket of the REAL askBudget. With cap=2 the
-// first two calls fire the inner dispatcher and the last two
-// short-circuit with reason='ask_budget_exhausted'.
-//
-// We use the REAL createAskBudget (not the mock from makeBudget()) so the
-// counters' bucket-by-key behaviour is exercised end-to-end.
+// End-to-end lock: calls whose context_field alternates between sentinel
+// forms (null / 'none' / 'NONE' / padded variants) for the same
+// context_circuit must all derive the same '_:N' key, so the wrapper's
+// same-key debounce collapses them. Until PLAN-B this was also asserted
+// through the per-key budget; the debounce is the gate that remains.
 // =============================================================================
 
-describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key budget', () => {
-  test('4-call alternation with same circuit hits same bucket; first 2 fire, last 2 short-circuit', async () => {
+describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass the same-key debounce', () => {
+  async function runAlternation(variants) {
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = createAskBudget({ maxAsksPerKey: 2 });
-    const restrainedMode = makeRestrained({ active: false });
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
-
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
     });
 
-    // Same circuit number across all 4 calls; field alternates between
-    // the four sentinel forms (null + 'none' + 'NONE' + null). Every
-    // form MUST resolve to the same budget key '_:7'.
-    //
-    // Plan 05-10 r4-#1 — Codex r4 surfaced that Plan 05-09 r3-#3
-    // had narrowed deriveAskKey to verbatim case-sensitive matching,
-    // arguing that the validator catches upper-case forms first and
-    // case-insensitivity at the wrapper was dead code. That argument
-    // was wrong because deriveAskKey runs at the WRAPPER layer
-    // (wrapAskDispatcherWithGates line ~317) BEFORE the inner
-    // dispatcher's validateAskUser. So case-sensitive matching at the
-    // wrapper let alternating cases ([null, 'none', 'NONE', null])
-    // derive 4 distinct keys, bypassing the wrapper's same-key
-    // debounce + per-key budget gates BEFORE the validator could
-    // reject. The validator still rejected each malformed call; but
-    // the wrapper's protective gates were bypassed.
-    //
-    // r4-#1 reverts to case-insensitive sentinel matching — every case
-    // variant of 'none' collapses to '_'. The variants list goes back
-    // to its r2-#2 form: 4 calls, same logical scope, same per-key
-    // budget bucket '_:7'. With cap=2: first 2 fire, last 2
-    // short-circuit ask_budget_exhausted. Pre-r4-#1 (under r3-#3's
-    // case-sensitive matching) call 3 would have its own 'NONE:7'
-    // bucket and fire freely — this test FAILS pre-r4-#1.
-    const variants = [null, 'none', 'NONE', null];
-    const results = [];
-    for (let i = 0; i < variants.length; i++) {
-      const call = makeCall(`call-${i + 1}`, variants[i], 7);
-      const ctx = makeCtx(`sess-1-turn-${i + 1}`);
-      const p = wrapped(call, ctx);
-      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-
-      results.push(await p);
+    // Every call lands inside the previous call's debounce window, so each
+    // same-key arrival replaces the pending one.
+    const ctx = makeCtx();
+    const promises = [];
+    for (let i = 0; i < variants.length; i += 1) {
+      promises.push(wrapped(makeCall(`call-${i + 1}`, variants[i], 7), ctx));
+      jest.advanceTimersByTime(100);
     }
-
-    // First two: real fires (inner dispatcher invoked, answered:true).
-    expect(JSON.parse(results[0].content).answered).toBe(true);
-    expect(JSON.parse(results[1].content).answered).toBe(true);
-    // Last two: ask_budget_exhausted short-circuit (the wrapper's pre-
-    // dispatch check sees isExhausted('_:7') === true).
-    expect(JSON.parse(results[2].content).reason).toBe('ask_budget_exhausted');
-    expect(JSON.parse(results[3].content).reason).toBe('ask_budget_exhausted');
-
-    expect(inner).toHaveBeenCalledTimes(2);
-
+    jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
+    const results = await Promise.all(promises);
     gate.destroy();
+    return { inner, results };
+  }
+
+  test('4-call case alternation with same circuit hits the same key; first 3 gated, last fires', async () => {
+    // Plan 05-10 r4-#1 — deriveAskKey runs at the WRAPPER layer BEFORE the
+    // inner dispatcher's validateAskUser, so case-sensitive matching would
+    // let [null, 'none', 'NONE', null] derive distinct keys and slip past the
+    // same-key debounce. Case-insensitive sentinel matching collapses them.
+    const { inner, results } = await runAlternation([null, 'none', 'NONE', null]);
+
+    for (const r of results.slice(0, 3)) {
+      expect(JSON.parse(r.content)).toEqual({ answered: false, reason: 'gated' });
+    }
+    expect(JSON.parse(results[3].content).answered).toBe(true);
+    expect(inner).toHaveBeenCalledTimes(1);
+    expect(inner.mock.calls[0][0].id).toBe('call-4');
   });
 
   test('regression lock — distinct REAL field values do NOT bypass each other', () => {
@@ -1370,53 +1371,16 @@ describe('Plan 05-08 r2-#2 — null/"none" alternation cannot bypass per-key bud
     );
   });
 
-  // =========================================================================
-  // Plan 05-11 r5-#1 — padded-sentinel alternation cannot bypass per-key
-  // budget end-to-end. Mirrors the r4-#1 alternation test but uses
-  // whitespace padding instead of case alternation.
-  // =========================================================================
-  test('Plan 05-11 r5-#1 — 4-call padded-sentinel alternation hits same bucket; first 2 fire, last 2 short-circuit', async () => {
-    const logger = makeLogger();
-    const inner = makeInnerDispatcher();
-    const askBudget = createAskBudget({ maxAsksPerKey: 2 });
-    const restrainedMode = makeRestrained({ active: false });
-    const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
+  test('Plan 05-11 r5-#1 — 4-call padded-sentinel alternation hits the same key; first 3 gated, last fires', async () => {
+    // Pre-r5-#1 each padded form derived its own distinct key (' none :7',
+    // '\tNONE\n:7', etc.), so the debounce never collapsed any of them.
+    const { inner, results } = await runAlternation([null, ' none ', '\tNONE\n', ' None']);
 
-    const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
-      gate,
-      filledSlotsShadow: () => {},
-      logger,
-      sessionId: 'sess-1',
-    });
-
-    // 4 sentinel variants, all whitespace-padded, every one mapping
-    // to the same '_:7' bucket post-r5-#1. Pre-r5-#1 each padded
-    // form derived its own distinct key (' none :7', '\tNONE\n:7',
-    // etc.) so the per-key budget had 4 independent buckets and the
-    // 1500ms debounce never collapsed any of them — Sonnet could
-    // freely retry by alternating padding within a single turn.
-    const variants = [null, ' none ', '\tNONE\n', ' None'];
-    const results = [];
-    for (let i = 0; i < variants.length; i += 1) {
-      const call = makeCall(`call-${i + 1}`, variants[i], 7);
-      const ctx = makeCtx(`sess-1-turn-${i + 1}`);
-      const p = wrapped(call, ctx);
-      jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
-      results.push(await p);
+    for (const r of results.slice(0, 3)) {
+      expect(JSON.parse(r.content)).toEqual({ answered: false, reason: 'gated' });
     }
-
-    // First two: real fires (inner dispatcher invoked, answered:true).
-    expect(JSON.parse(results[0].content).answered).toBe(true);
-    expect(JSON.parse(results[1].content).answered).toBe(true);
-    // Last two: ask_budget_exhausted (cap=2 hit, all 4 in same bucket).
-    expect(JSON.parse(results[2].content).reason).toBe('ask_budget_exhausted');
-    expect(JSON.parse(results[3].content).reason).toBe('ask_budget_exhausted');
-
-    expect(inner).toHaveBeenCalledTimes(2);
-
-    gate.destroy();
+    expect(JSON.parse(results[3].content).answered).toBe(true);
+    expect(inner).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1489,11 +1453,9 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     // reasons — they live in a separate set.
     expect(isWrapperShortCircuitReason('validation_error')).toBe(false);
     expect(isWrapperShortCircuitReason('shadow_mode')).toBe(false);
-    // Wrapper-emitted but post-dispatch synth (handled in
-    // wrapAskDispatcherWithGates pre-dispatch branches, not in
-    // isRealFire's classifier path):
-    expect(isWrapperShortCircuitReason('restrained_mode')).toBe(false);
-    expect(isWrapperShortCircuitReason('ask_budget_exhausted')).toBe(false);
+    // Wrapper-emitted synth handled in a wrapAskDispatcherWithGates
+    // pre-dispatch branch, not in isRealFire's classifier path:
+    expect(isWrapperShortCircuitReason('afdd_flow_violation')).toBe(false);
     // Plan 05-11 r5-#2 → Plan 05-12 r6 — `dispatcher_error` is
     // NOT a wrapper short-circuit reason. r5-#2 removed it from
     // this set (was a wrapper short-circuit pre-r5-#2). r6
@@ -1544,8 +1506,7 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(isPreEmitNonFireReason('user_moved_on')).toBe(false);
     expect(isPreEmitNonFireReason('timeout')).toBe(false);
     expect(isPreEmitNonFireReason('gated')).toBe(false);
-    expect(isPreEmitNonFireReason('restrained_mode')).toBe(false);
-    expect(isPreEmitNonFireReason('ask_budget_exhausted')).toBe(false);
+    expect(isPreEmitNonFireReason('afdd_flow_violation')).toBe(false);
     //
     // Plan 05-11 r5-#2 — `gate_dispatcher_error` is wrapper-internal
     // (lives in WRAPPER_SHORT_CIRCUIT_REASONS), NOT pre-emit. The
@@ -1585,34 +1546,29 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
     expect(wrapperModule.isPreEmitNonFireReason).toBe(isPreEmitNonFireReason);
   });
 
-  test('regression lock — restrained_mode / ask_budget_exhausted still excluded at HARNESS layer', async () => {
-    // The wrapper module's predicates do NOT include restrained_mode /
-    // ask_budget_exhausted (those are wrapper-emitted but live in
-    // pre-dispatch branches, not in isRealFire's classifier). The
-    // HARNESS layer is what unions those into its accounting set.
-    // We assert that semantics via behaviour — a wrapper run with
-    // restrainedMode active must NOT increment counters (gated by
-    // wrapAskDispatcherWithGates' restrainedMode branch which short-
-    // circuits BEFORE the post-dispatch counter step).
+  test('regression lock — afdd_flow_violation is outside both predicates yet short-circuits BEFORE the gate', async () => {
+    // afdd_flow_violation is wrapper-emitted but lives in a pre-dispatch
+    // branch, not in isRealFire's classifier. Lock that via behaviour: the
+    // ask never starts a debounce timer, never reaches the inner dispatcher,
+    // and never advances the active AFDD flow.
     const logger = makeLogger();
     const inner = makeInnerDispatcher();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained({ active: true });
+    const { broker, chainId } = makeActiveAfddBroker();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const result = await wrapped(makeCall('call-1', 'ze', 0), makeCtx());
-    expect(JSON.parse(result.content).reason).toBe('restrained_mode');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    const result = await wrapped(makeSeverityCall('call-1'), makeCtx());
+    expect(JSON.parse(result.content).reason).toBe('afdd_flow_violation');
+    expect(jest.getTimerCount()).toBe(0);
+    expect(inner).not.toHaveBeenCalled();
+    expect(broker.getActiveAfddFlow()).toEqual({ chainId, kinds: ['topic'] });
 
     gate.destroy();
   });
@@ -1683,14 +1639,15 @@ describe('Plan 05-10 r4-#2 — predicate helpers replace mutable Set exports', (
 // introduces a wrapper-internal catch, the classification is
 // already in place.
 //
-// Tests:
+// Tests (since PLAN-B retired the ask budget, the only post-dispatch
+// consequence of a fire is AFDD chain progress, so the envelope tests drive
+// an AFDD topic ask and assert the flow does not start):
 //   - End-to-end: inner dispatcher throws → wrapper's timer catch
-//     fires → resolves with `dispatcher_error` envelope →
-//     askBudget.increment + restrainedMode.recordAsk ARE called
-//     (post-r5-#2 fire classification).
+//     fires → resolves with `dispatcher_error` envelope → non-fire
+//     (Plan 05-14 r8-#2 classification).
 //   - Synthesised gate_dispatcher_error envelope (mock inner
-//     returns the reason directly) → counters NOT incremented
-//     (wrapper-internal non-fire reservation).
+//     returns the reason directly) → non-fire (wrapper-internal
+//     reservation).
 // =============================================================================
 
 describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', () => {
@@ -1708,7 +1665,7 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     }));
   }
 
-  test('inner dispatcher throws → wrapper resolves dispatcher_error → counters NOT incremented (Plan 05-14 r8-#2 reverted r7 lifecycle split — wire-schema preserved)', async () => {
+  test('inner dispatcher throws → wrapper resolves dispatcher_error → AFDD chain NOT advanced (Plan 05-14 r8-#2 reverted r7 lifecycle split — wire-schema preserved)', async () => {
     // The wrapper's timer block catches inner throws and resolves the
     // outer Promise with synthResultWithoutLog(call, 'dispatcher_error')
     // (Plan 05-14 r8-#1 + r8-#2 — was synthResultWrapped(...)
@@ -1755,29 +1712,26 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     //     row for the inner-throw path.
     const logger = makeLogger();
     const inner = makeThrowingInner();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
+    const broker = createObsClarifyChainBroker();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    const promise = wrapped(makeAfddCall('call-1', 'afdd_topic'), makeCtx('sess-1-turn-1'));
     jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
     const result = await promise;
 
     expect(JSON.parse(result.content).reason).toBe('dispatcher_error');
     // Plan 05-14 r8-#2 classification: `dispatcher_error` is back in
     // `_PRE_EMIT_NON_FIRE_REASONS` (r6 placement preserved post-r8).
-    // Neither counter increments — the ask never reached iOS.
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    // The ask never reached the client, so the AFDD flow does not start.
+    expect(broker.getActiveAfddFlow()).toBeNull();
 
     gate.destroy();
   });
@@ -1812,13 +1766,9 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     // exactly 1 row; wrapper emits 0 rows; total = 1 (post-r8-#1).
     const logger = makeLogger();
     const inner = makeThrowingInner();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
@@ -1839,36 +1789,31 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
     gate.destroy();
   });
 
-  test('synthesised gate_dispatcher_error envelope → counters NOT incremented (wrapper-internal non-fire)', async () => {
+  test('synthesised gate_dispatcher_error envelope → passes through; AFDD chain NOT advanced (wrapper-internal non-fire)', async () => {
     // gate_dispatcher_error is RESERVED for future wrapper-internal
     // catches. At r5-#2 closure there is no emit site — to test the
-    // classifier we synthesise a mock inner dispatcher that returns
-    // the gate_dispatcher_error envelope directly. The wrapper's
-    // isRealFire must return false (consults the private
-    // _WRAPPER_SHORT_CIRCUIT_REASONS Set via .has()) so neither
-    // counter increments.
+    // path we synthesise a mock inner dispatcher that returns the
+    // gate_dispatcher_error envelope directly. The classification
+    // itself is locked by the predicate test below.
     const logger = makeLogger();
     const inner = makeInnerReturning('gate_dispatcher_error');
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
+    const broker = createObsClarifyChainBroker();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
       sessionId: 'sess-1',
+      obsClarifyChains: broker,
     });
 
-    const promise = wrapped(makeCall('call-1', 'ze', 0), makeCtx('sess-1-turn-1'));
+    const promise = wrapped(makeAfddCall('call-1', 'afdd_topic'), makeCtx('sess-1-turn-1'));
     jest.advanceTimersByTime(QUESTION_GATE_DELAY_MS);
     const result = await promise;
 
     expect(JSON.parse(result.content).reason).toBe('gate_dispatcher_error');
-    expect(askBudget.increment).not.toHaveBeenCalled();
-    expect(restrainedMode.recordAsk).not.toHaveBeenCalled();
+    expect(broker.getActiveAfddFlow()).toBeNull();
 
     gate.destroy();
   });
@@ -1884,9 +1829,8 @@ describe('Plan 05-11 r5-#2 — dispatcher_error / gate_dispatcher_error split', 
 
   test('predicate: isWrapperShortCircuitReason("dispatcher_error") === false', () => {
     // r5-#2 reclassification lock: dispatcher_error is removed from
-    // the wrapper-short-circuit set. isRealFire returns true for
-    // these envelopes (default branch, no Set.has() match) so the
-    // budget + restrained-window slot are consumed.
+    // the wrapper-short-circuit set (r6/r8-#2 place it in the pre-emit
+    // set instead — see the next test).
     expect(isWrapperShortCircuitReason('dispatcher_error')).toBe(false);
   });
 
@@ -1953,13 +1897,9 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     // duplicate. This regression-locks the default-true semantics.
     const logger = makeLogger();
     const inner = makeThrowingInner();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
     const gate = createAskGateWrapper({ logger, sessionId: 'sess-1' });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
@@ -1992,8 +1932,6 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     // path closed.
     const logger = makeLogger();
     const inner = makeThrowingInner();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
     const gate = createAskGateWrapper({
       logger,
       sessionId: 'sess-1',
@@ -2001,8 +1939,6 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,
@@ -2028,8 +1964,6 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     // outer catch + logAskUser call.
     const logger = makeLogger();
     const inner = makeThrowingInner();
-    const askBudget = makeBudget();
-    const restrainedMode = makeRestrained();
     const gate = createAskGateWrapper({
       logger,
       sessionId: 'sess-1',
@@ -2037,8 +1971,6 @@ describe('Plan 05-15 r9-#3 — innerAlreadyLogs flag for inner-throw logging', (
     });
 
     const wrapped = wrapAskDispatcherWithGates(inner, {
-      askBudget,
-      restrainedMode,
       gate,
       filledSlotsShadow: () => {},
       logger,

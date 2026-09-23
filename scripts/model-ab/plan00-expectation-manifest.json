@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "8885688074a89735147b5ee1eb1638f4f1ea44eeaf9d39005b9c8539769b8ca3",
+  "semantic_oracle_digest": "aa44c4b7973ddc8599229c9c969269a9ad48a67e59f07acd00ee62433175abfa",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -517,11 +517,11 @@
     },
     {
       "path": "src/extraction/sonnet-stream.js",
-      "sha256": "36a54fa7b11c1eb7450660f6e20bc7c2341f74c0afd3cc949a3fd6fa20bb2cce"
+      "sha256": "4d40f649aa130869d1d2086e7fd2cfb105dd660569d1ef498167bbc7c87a87e8"
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
-      "sha256": "bd8bfa88a27782fdeccbbd861aa03c5933dd1133e4fea3e7abe1e29310ca8ce5"
+      "sha256": "953993bcb46bf99a5f9946da1ca0621a573b37330d9780ac5140a1a5f97114c1"
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
@@ -529,7 +529,7 @@
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "73b2276304b9f4a086588b25a018716dac7c9ac7ed5f036154c63ef56cb37b6f"
+      "sha256": "cfd43706274691c4210cc307478341d1fbcbc8658764bdfd7cabb75fc0f88da9"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "78ea21db7f85d9bbdbf01401cb027cf9042735c1017f0f253b89a4fb40bdc683"
+      "sha256": "dae5a5757ee5dd633f1bfa66217bbe14e6fbf67c9a73e7fd127e53b978afd0e4"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
@@ -581,7 +581,7 @@
     },
     {
       "path": "scripts/field-replay/lib/replay-runner-core.mjs",
-      "sha256": "68547b395419d3f190e30b9efcd1b7857b6bb334c0427cf2b98f5b9dd06df72a"
+      "sha256": "2fbe2a502a67583f519346acc7563254cd02a0795ab6d79d2d1462973ba4a9c7"
     },
     {
       "path": "scripts/field-replay/lib/replay-clock.mjs",
@@ -597,7 +597,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "fb1009397f8c6ebae9bc407b0be2773d6a10b693e56a0c54075e7338afed7565"
+      "sha256": "009328320b405a4735eee4c4ba36143da06622a898d61a8264f353e4dbb466a9"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",
@@ -613,7 +613,7 @@
     },
     {
       "path": "src/extraction/stage6-tool-loop.js",
-      "sha256": "769b046bea7940073f1c701c32a1a625432b18474de82ccce03f2209c5c45464"
+      "sha256": "2c378594da40f89b3a6f24f864a65c0b0440d75a98379a448fcd1a1c373b44e8"
     },
     {
       "path": "src/extraction/openai-tooluse-adapter.js",

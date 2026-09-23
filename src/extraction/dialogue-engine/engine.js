@@ -84,10 +84,7 @@ import { canonicaliseNumericReadingField } from '../value-enum-validator.js';
 // `stage6-dispatch-validation.js`, which would evaluate `stage6-tool-schemas.js`
 // while `ALL_DIALOGUE_SCHEMA_NAMES` is still uninitialised — see the leaf's own
 // header, and the executable import-closure assertion that enforces it.
-import {
-  advisoryForFieldValue,
-  describeSlotValidation,
-} from '../circuit-value-descriptors.js';
+import { advisoryForFieldValue, describeSlotValidation } from '../circuit-value-descriptors.js';
 // PLAN-A (feedback-2026-09-17) — the handoff tombstone. A ZERO-IMPORT leaf, so
 // the two re-entry readers that live outside this module (the rename dispatcher
 // and the harness entry hook) can reach the same key builder without importing
@@ -3534,7 +3531,15 @@ function runActivePath({
           source: 'confirmation_5b_named_amend',
           circuit_ref: state.circuit_ref,
         });
-        const r = applyWriteWithDerivations(session, schema, slot, state.circuit_ref, w.value, now, op);
+        const r = applyWriteWithDerivations(
+          session,
+          schema,
+          slot,
+          state.circuit_ref,
+          w.value,
+          now,
+          op
+        );
         markWritten(op, r.effectiveValue, state.circuit_ref);
         // Plan D Seam B — the raw `state.values[w.field] = w.value` that used to
         // sit here is DELETED. applyWrite has already written the CLAMPED value;
@@ -5544,9 +5549,7 @@ export function composeFinishSummary(spec, values, omittedFields = new Set()) {
   }
   return {
     text:
-      rendered.length > 0
-        ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}`
-        : null,
+      rendered.length > 0 ? `${spec.prefix} ${rendered.join(spec.joiner)}${spec.terminator}` : null,
     fields,
   };
 }
@@ -6354,7 +6357,15 @@ export function enterScriptByName({
       // canonical-DIFFERENT → fall through and overwrite.
     }
     if (resolvedCircuitRef !== null) {
-      const r = applyWriteWithDerivations(session, schema, slot, resolvedCircuitRef, w.value, now, op);
+      const r = applyWriteWithDerivations(
+        session,
+        schema,
+        slot,
+        resolvedCircuitRef,
+        w.value,
+        now,
+        op
+      );
       // Plan D — PROPAGATE Seam A's provenance (applyWrite's own re-clamp of the
       // already-corrected value reports null and would retire it), and strip the
       // `correction` key from the outgoing entries so it can never appear on the

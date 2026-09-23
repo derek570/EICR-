@@ -32,7 +32,7 @@ Jargon used below (defined once):
 | Did my change break voice extraction behaviour | `npm run voice-regression` (offline, direct) | §2 |
 | Full WS-protocol replay incl. auth/persistence | `npm run voice-test` (transcript-replay vs a running backend) | §2 |
 | Raw model/vendor latency floor | `sonnet-ttft-bench.mjs`, `elevenlabs-ttfb-bench.mjs`, `elevenlabs-multi-context-bench.mjs` | §3 |
-| Stage 6 pipeline divergence / over-ask regression | `stage6-golden-divergence.js`, `stage6-over-ask-exit-gate.js` | §4 |
+| Stage 6 pipeline divergence | `stage6-golden-divergence.js` (the over-ask exit gate was retired with the ask budget, PLAN-B 2026-09-23) | §4 |
 | Second-opinion Codex review of a phase | `scripts/stage6-review.sh` | §4 |
 | CCU extraction behaviour on a local photo | `scripts/ccu-local-run.mjs` + corpus harnesses (LEGACY-path caveat!) | §5 |
 | Whether AI spend numbers are real | `src/extraction/cost-tracker.js` + `cost_summary.json` | §6 |
@@ -143,7 +143,6 @@ ElevenLabs key fetch: `ELEVENLABS_API_KEY=$(aws secretsmanager get-secret-value 
 | Script | Purpose | Invocation | Exit contract |
 |---|---|---|---|
 | `scripts/stage6-golden-divergence.js` | deterministic offline replay of golden-session fixtures through legacy vs tool-call pipelines; measures post-canonicalisation divergence. Offline (canned SSE, no API calls). Its point: if this is 0% and a live shadow diverges, the divergence is MODEL behaviour, not pipeline. | `node scripts/stage6-golden-divergence.js` (see `--help`/header for fixture-dir flags) | 0 = rate ≤ threshold, 1 = breach |
-| `scripts/stage6-over-ask-exit-gate.js` | replays 12 over-ask fixtures through the real ask-gate/budget/restrained-mode composition; computes median / p95 ask counts + restrained-activation rate | `node scripts/stage6-over-ask-exit-gate.js [--json]` | 0 pass, 1 ANY threshold breach (conjunctive), 2 runtime error |
 | `scripts/stage6-strict-mode-probe.js` | ad-hoc probe: does the Anthropic API enforce tool-schema enums strictly? | `ANTHROPIC_API_KEY=… node scripts/stage6-strict-mode-probe.js` | 0 conclusive-strict, 1 hard fail, 2 no key, 3 AMBIGUOUS (deliberately loud — investigate, don't treat as pass) |
 | `scripts/stage6-review.sh` | Codex second-reviewer half of the dual-reviewer phase gate: bundles PROJECT.md + REQUIREMENTS.md + phase PLANs + git diff vs base, pipes into `codex exec -s read-only --skip-git-repo-check -` (frozen invocation, verified 2026-04-21 vs codex-cli 0.116.0) | `./scripts/stage6-review.sh <phase-dir>`; env: `STAGE6_BASE_BRANCH` (default `main`), `PLANNING_TREE`, `STAGE6_SKIP_CODEX` | 0 review ran (or manual fallback), 2 bad phase-dir, 3 missing planning artefact |
 

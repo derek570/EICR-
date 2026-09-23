@@ -222,7 +222,12 @@ describe('Phase 3 — tool dispatcher composition (pendingAsks provided)', () =>
     expect(createToolDispatcherSpy).toHaveBeenCalledTimes(1);
     const [writesArg, asksArg] = createToolDispatcherSpy.mock.calls[0];
     expect(writesArg).toBe(writeSentinel);
-    expect(asksArg).toBe(askSentinel);
+    // PLAN-B — the ask gates compose unconditionally, so the ask dispatcher
+    // reaching the composer is the gate wrapper around the factory's output,
+    // never the bare factory output.
+    expect(typeof asksArg).toBe('function');
+    expect(asksArg).not.toBe(askSentinel);
+    expect(asksArg.name).toBe('dispatchAskUserGated');
   });
 
   test('runToolLoop receives the composed dispatcher (not the writes dispatcher)', async () => {

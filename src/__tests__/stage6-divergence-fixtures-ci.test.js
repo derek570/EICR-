@@ -7,50 +7,32 @@
  *   1. Fixture pool size: 5 in stage6-golden-sessions/ + 7 in
  *      stage6-phase5-golden-sessions/ = 12 total.
  *   2. Phase 5 fixtures all carry the `_fixture_shape: "phase5-over-ask"`
- *      marker (matches scripts/stage6-over-ask-exit-gate.js's TIER 1
- *      strict-gate marker — Plan 05-15 r9-#1).
- *   3. Phase 4 fixtures have a minimal session shape (jobId +
- *      transcript_summary) — they pre-date the phase5-over-ask marker
- *      and feed the legacy zero-ask path in the harness.
- *   4. The exit-gate harness against the main fixtures dir produces
- *      exit_code=0 with aggregate.median≤1, p95≤4, restrained_rate≤0.10
- *      (Plan 05-07 r1-#2 calibrated thresholds for the 12-fixture pool).
+ *      marker and a non-empty session.jobId + transcript_summary.
+ *   3. Phase 4 fixtures carry the dual-SSE shape they feed into the
+ *      divergence-comparison harness.
  *
- * WHY a NEW test even though stage6-over-ask-exit-gate.test.js already
- * runs the harness against this same fixture pool: that test checks
- * the harness's behavioural surface (exit codes, digest contracts,
- * fixture-shape gates). This test checks the FIXTURE POOL ITSELF as
- * a structural artefact:
- *   - "did anyone delete a fixture?"  → pool size assertion fails
- *   - "did anyone rename _fixture_shape?" → marker assertion fails
- *   - "did the calibrated thresholds change?" → digest threshold fails
+ * PLAN-B (feedback-2026-09-17, Decision 3) retired the ask budget and
+ * restrained mode, and with them `scripts/stage6-over-ask-exit-gate.js`,
+ * which replayed the Phase 5 pool through those gates and asserted a
+ * median / p95 / restrained_rate digest. The gate it measured no longer
+ * exists, so that digest lock is gone; the Phase 5 fixtures stay as archival
+ * evidence of the over-ask behaviour the gates were built against, and this
+ * test keeps them from disappearing silently.
  *
- * Phase 8 ROADMAP §SC #5 explicitly: "STT-11 golden-session fixtures
- * added to the CI suite so divergence regressions fail PRs, not only
- * prod rollouts." The 5+7=12 pool was scope-reduced from the original
- * 20 at Phase 5 close (see STATE.md "scope-reduced 12-fixture variant")
- * — the test re-derives the pool size from disk so any future
- * expansion to the original 20 fails the count assertion deliberately
- * (forcing a deliberate update of the test alongside the fixture add).
- *
- * Backward compatibility with stage6-over-ask-exit-gate.test.js: that
- * test loads the SAME script as a child process; this test calls the
- * SAME exit-gate but via direct require (not spawn) for fast feedback
- * AND extracts the digest from the script's exit-code surface. The
- * two tests are complementary, not redundant — over-ask-exit-gate
- * exercises the harness; this exercises the fixture pool.
+ * Phase 8 ROADMAP §SC #5: "STT-11 golden-session fixtures added to the CI
+ * suite so divergence regressions fail PRs, not only prod rollouts." The
+ * 5+7=12 pool was scope-reduced from the original 20 at Phase 5 close — the
+ * test re-derives the pool size from disk so any future change fails the
+ * count assertion deliberately.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(here, '..', '..');
 const PHASE4_DIR = path.join(here, 'fixtures', 'stage6-golden-sessions');
 const PHASE5_DIR = path.join(here, 'fixtures', 'stage6-phase5-golden-sessions');
-const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'stage6-over-ask-exit-gate.js');
 
 function listJsonFixtures(dir) {
   return readdirSync(dir).filter((f) => f.endsWith('.json'));
@@ -61,9 +43,6 @@ describe('Plan 08-01 SC #5 — STT-11 fixture-pool CI regression-lock', () => {
     test('stage6-golden-sessions/ has exactly 5 Phase 4 fixtures', () => {
       const files = listJsonFixtures(PHASE4_DIR);
       // Plan 05-06 baseline: sample-01 through sample-05.
-      // If this count changes, the harness's calibrated thresholds
-      // (Plan 05-07 r1-#2) need re-deriving — bump the count
-      // deliberately AND update the digest threshold tests below.
       expect(files.length).toBe(5);
     });
 
@@ -81,11 +60,9 @@ describe('Plan 08-01 SC #5 — STT-11 fixture-pool CI regression-lock', () => {
 
   describe('fixture marker discipline (Plan 05-15 r9-#1 strict-gate contract)', () => {
     test('every Phase 5 fixture carries _fixture_shape: "phase5-over-ask" marker', () => {
-      // The harness's TIER 1 strict-gate (scripts/stage6-over-ask-exit-gate.js:349)
-      // requires this marker on every PHASE5_FIXTURES_DIR entry. A fixture
-      // missing it would fall through to the Phase-4-compat zero-ask path
-      // and silently contribute zero asks instead of failing closed.
-      // This test catches the omission at fixture-add time.
+      // The retired exit-gate's TIER 1 strict-gate required this marker on
+      // every Phase 5 entry; the shape-schema test
+      // (stage6-phase5-fixture-schema.test.js) still keys on it.
       const files = listJsonFixtures(PHASE5_DIR);
       for (const f of files) {
         const content = JSON.parse(readFileSync(path.join(PHASE5_DIR, f), 'utf8'));
@@ -119,43 +96,6 @@ describe('Plan 08-01 SC #5 — STT-11 fixture-pool CI regression-lock', () => {
         expect(content.pre_turn_state).toBeDefined();
         expect(Array.isArray(content.sse_events_legacy)).toBe(true);
       }
-    });
-  });
-
-  describe('exit-gate digest threshold lock (Plan 05-07 r1-#2 calibrated values)', () => {
-    test('default mode against main fixtures dir exits 0 with calibrated digest thresholds', () => {
-      // Spawn the harness like stage6-over-ask-exit-gate.test.js does
-      // and parse its stdout digest. Asserts the calibrated thresholds
-      // for the 12-fixture variant: median≤1, p95≤4, restrained_rate≤0.10.
-      // Locked here as a CI gate so a future fixture add that breaks
-      // these calibrations fails PR review explicitly (with a pointer
-      // to recalibrate, not silently flap the harness).
-      //
-      // --json flag emits compact JSON to stdout (no human-readable
-      // progress lines) — easiest stable contract for the test consumer.
-      const out = execFileSync(process.execPath, [SCRIPT_PATH, '--json'], {
-        encoding: 'utf8',
-        cwd: REPO_ROOT,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      // The harness emits Winston structured-log lines on stdout during
-      // execution (e.g. "suppressed_refill_question" warns from the
-      // filled-slots-filter ran by the dispatcher). The --json digest is
-      // the LAST line of stdout — pick that line specifically rather than
-      // assuming the entire stdout is JSON.
-      const lines = out
-        .split('\n')
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-      const lastLine = lines[lines.length - 1];
-      const digest = JSON.parse(lastLine);
-      // Plan 05-07 r1-#2 calibrated thresholds for the 12-fixture variant:
-      // median≤1, p95≤4, restrained_rate≤0.10. The harness's exit_code
-      // is 0 when ALL three thresholds pass.
-      expect(digest.median).toBeLessThanOrEqual(1);
-      expect(digest.p95).toBeLessThanOrEqual(4);
-      expect(digest.restrained_rate).toBeLessThanOrEqual(0.1);
-      expect(digest.exit_code).toBe(0);
     });
   });
 });

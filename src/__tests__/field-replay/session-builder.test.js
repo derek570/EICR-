@@ -8,9 +8,9 @@
  *      present with production shape; the registry identity preserved);
  *   3. blocking behaviour tests through the REAL harness:
  *      `low_conf_readback_v1` presence flips a sub-0.5 write, and an ask
- *      traverses wrapAskDispatcherWithGates (budget short-circuit proves
- *      the gate stack composed — without askBudget + restrainedMode the
- *      wrapper never composes).
+ *      traverses wrapAskDispatcherWithGates (the wrapper-only reserved-AFDD
+ *      short-circuit proves the gate stack composed; since PLAN-B the harness
+ *      composes it unconditionally).
  */
 
 import fs from 'node:fs';
@@ -28,8 +28,6 @@ import { toolUseRound, endTurnRound, makeOpenWs } from '../helpers/f7-audibility
 import { EICRExtractionSession } from '../../extraction/eicr-extraction-session.js';
 import { activeSessions } from '../../extraction/active-sessions.js';
 import { createPendingAsksRegistry } from '../../extraction/stage6-pending-asks-registry.js';
-import { createAskBudget } from '../../extraction/stage6-ask-budget.js';
-import { deriveAskKey } from '../../extraction/stage6-ask-gate-wrapper.js';
 import {
   snapshotFlagsForSession,
   parseVoiceLatencyCapabilities,
@@ -41,7 +39,6 @@ const modules = {
   EICRExtractionSession,
   activeSessions,
   createPendingAsksRegistry,
-  createAskBudget,
   snapshotFlagsForSession,
   parseVoiceLatencyCapabilities,
   createFilledSlotsShadowLogger,
@@ -49,14 +46,25 @@ const modules = {
 
 function makeLogger() {
   const rows = [];
-  const sink = (level) => (msg, meta) => rows.push({ level, name: typeof msg === 'string' ? msg : msg?.message, meta });
-  return { info: sink('info'), warn: sink('warn'), error: sink('error'), debug: sink('debug'), rows };
+  const sink = (level) => (msg, meta) =>
+    rows.push({ level, name: typeof msg === 'string' ? msg : msg?.message, meta });
+  return {
+    info: sink('info'),
+    warn: sink('warn'),
+    error: sink('error'),
+    debug: sink('debug'),
+    rows,
+  };
 }
 
 function baseFixture(overrides = {}) {
   return {
     corpus_id: 'frc_0123456789abcdef0123456789abcdef',
-    job_state: { certificateType: 'eicr', boards: [{ id: 'main', board_type: 'main' }], circuits: [{ number: 2 }] },
+    job_state: {
+      certificateType: 'eicr',
+      boards: [{ id: 'main', board_type: 'main' }],
+      circuits: [{ number: 2 }],
+    },
     client_capabilities: { value: ['low_conf_readback_v1'], provenance: 'recorded_full' },
     fallback_to_legacy: { value: false, provenance: 'recorded_full' },
     ...overrides,
@@ -132,7 +140,6 @@ describe('builder composition', () => {
       expect(built.entry.broadcastIntentByTurn).toBeInstanceOf(Map);
       expect(built.entry.voiceLatency.lastAudioSeqByCorrelation).toBeInstanceOf(Map);
       expect(built.entry.consumedAskUtterances).toBeInstanceOf(Set);
-      expect(built.entry.restrainedMode.isActive()).toBe(false);
       expect(activeSessions.get(built.sessionId)).toBe(built.entry);
     } finally {
       built.teardown();
@@ -262,9 +269,12 @@ describe('blocking behaviour through the REAL harness', () => {
     const withCap = buildReplaySession({ modules, fixture: baseFixture(), logger });
     let withWrite;
     try {
-      const { result } = await runTurn(withCap, { rounds: rounds(), transcript: 'zs nought point three five circuit two' });
+      const { result } = await runTurn(withCap, {
+        rounds: rounds(),
+        transcript: 'zs nought point three five circuit two',
+      });
       withWrite = (result?.extracted_readings ?? []).some(
-        (r) => r.field === 'measured_zs_ohm' && String(r.circuit) === '2',
+        (r) => r.field === 'measured_zs_ohm' && String(r.circuit) === '2'
       );
     } finally {
       withCap.teardown();
@@ -280,9 +290,12 @@ describe('blocking behaviour through the REAL harness', () => {
     });
     let withoutWrite;
     try {
-      const { result } = await runTurn(without, { rounds: rounds(), transcript: 'zs nought point three five circuit two' });
+      const { result } = await runTurn(without, {
+        rounds: rounds(),
+        transcript: 'zs nought point three five circuit two',
+      });
       withoutWrite = (result?.extracted_readings ?? []).some(
-        (r) => r.field === 'measured_zs_ohm' && String(r.circuit) === '2',
+        (r) => r.field === 'measured_zs_ohm' && String(r.circuit) === '2'
       );
     } finally {
       without.teardown();
@@ -292,25 +305,21 @@ describe('blocking behaviour through the REAL harness', () => {
     expect(withoutWrite).toBe(false);
   });
 
-  test('an ask traverses wrapAskDispatcherWithGates: a pre-exhausted budget short-circuits with ask_budget_exhausted', async () => {
+  test('an ask traverses wrapAskDispatcherWithGates: a reserved AFDD question without its declared kind short-circuits pre-dispatch', async () => {
     const logger = makeLogger();
     const built = buildReplaySession({ modules, fixture: baseFixture(), logger });
     try {
+      // Canonical AFDD wording is reserved server output; copying it without
+      // the declared `observation_clarification_kind` is rejected by the gate
+      // WRAPPER before the inner dispatcher runs, so the ask never registers
+      // or emits. Only the wrapper produces this outcome — its presence
+      // proves the replay composes the same gate stack as production.
       const askInput = {
-        question: 'Which circuit was that reading for?',
-        reason: 'ambiguous_circuit',
-        context_field: 'measured_zs_ohm',
-        context_circuit: 2,
+        question: 'Is this observation about AFDD protection or surge protection?',
+        reason: 'observation_confirmation',
+        context_field: 'observation_clarify',
+        expected_answer_shape: 'free_text',
       };
-      // Exhaust the per-(field, circuit) budget (default cap 2) BEFORE the
-      // turn — the wrapper's isExhausted check fires pre-dispatch, so the
-      // injected ask short-circuits WITHOUT registering or emitting. Only
-      // the gate wrapper produces this outcome — its presence proves
-      // askBudget + restrainedMode composed the gate stack.
-      const key = deriveAskKey(askInput);
-      built.entry.askBudget.increment(key);
-      built.entry.askBudget.increment(key);
-      expect(built.entry.askBudget.isExhausted(key)).toBe(true);
 
       const { result, ws } = await runTurn(built, {
         rounds: [
@@ -349,7 +358,11 @@ describe('blocking behaviour through the REAL harness', () => {
     // the ENRICHED "[In response to TTS question…]" form); `rawTranscript` is
     // the untouched inspector text buildTurnOptions threads as
     // rawInspectorTranscript. Default: identical (a normal recorded turn).
-    async function routeModelFor({ harnessTranscript, rawTranscript = harnessTranscript, corpusId }) {
+    async function routeModelFor({
+      harnessTranscript,
+      rawTranscript = harnessTranscript,
+      corpusId,
+    }) {
       const built = buildReplaySession({
         modules,
         fixture: baseFixture({ corpus_id: corpusId }),

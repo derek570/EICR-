@@ -726,11 +726,11 @@ function buildToolCallTraffic() {
       const count = outcomes[key] || 0;
       const widthPct = (count / maxOutcome) * 100;
       const isZero = count === 0;
-      // Outcome category colouring — answered=green, gated/restrained=amber,
+      // Outcome category colouring — answered=green, gated/afdd=amber,
       // dispatcher_error=red, everything else=neutral. Visual cue lets the
       // reviewer spot a regression at a glance.
       const colour = key === "answered" ? "#22c55e"
-        : key === "gated" || key === "restrained_mode" || key === "ask_budget_exhausted" ? "#eab308"
+        : key === "gated" || key === "afdd_flow_violation" ? "#eab308"
         : key === "dispatcher_error" || key === "validation_error" || key === "prompt_leak_blocked" ? "#ef4444"
         : "#6b7280";
       return `

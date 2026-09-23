@@ -349,14 +349,13 @@ describe('logAskUser()', () => {
     expect(row.context_circuit).toBeNull();
   });
 
-  test("ASK_USER_ANSWER_OUTCOMES exports all 15 Phase 3+ values (Plan 05-14 r8-#2 revert of r7 split — wire-schema name preserved as 'dispatcher_error', lifecycle carried as a separate log-row field)", () => {
+  test("ASK_USER_ANSWER_OUTCOMES exports all 14 values (Plan 05-14 r8-#2 wire-schema name preserved as 'dispatcher_error'; PLAN-B retired restrained_mode + ask_budget_exhausted and added afdd_flow_violation)", () => {
     expect(ASK_USER_ANSWER_OUTCOMES).toEqual([
       'answered',
       'timeout',
       'user_moved_on',
-      'restrained_mode',
-      'ask_budget_exhausted',
       'gated',
+      'afdd_flow_violation',
       'shadow_mode',
       'validation_error',
       'session_terminated',
@@ -421,9 +420,8 @@ describe('logAskUser()', () => {
 // and undercount the canonical pre_emit / post_emit rows.
 //
 // Same discipline the codebase enforces for answer_outcome
-// (ASK_USER_ANSWER_OUTCOMES), mode (ASK_USER_MODES), and event on
-// restrained_mode (RESTRAINED_MODE_EVENTS): closed enum + throw at emit
-// site. Adding the enum-and-throw at logAskUser is consistent with three
+// (ASK_USER_ANSWER_OUTCOMES), mode (ASK_USER_MODES), and — until PLAN-B
+// retired it — event on restrained_mode: closed enum + throw at emit site. Adding the enum-and-throw at logAskUser is consistent with three
 // prior Phase-3+5 fixes under the exact same pattern.
 // =============================================================================
 
