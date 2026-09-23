@@ -135,9 +135,12 @@ export function useOcpdStandardDraft(
  * way past.
  *
  * `preventDefault` on mousedown stops the focus move, so no blur commit
- * happens and the click commits the selection alone. It is applied to every
- * control inside the picker, including the tier toggle, because the toggle
- * blurs exactly the same way and committing a prefix there would be no better.
+ * happens and the click commits the selection alone. It is applied to EVERY
+ * button in both components — suggestions, Clear, the tier toggles and the
+ * grid cell's chevron — because each blurs exactly the same way, and opening
+ * a list or revealing a tier is no more a commit than choosing. A test presses
+ * every rendered button, so a new one without it fails. Tab-away still
+ * commits: leaving the field is a real commit under Decision 28.
  */
 const keepFocusOnPress = (e: React.MouseEvent) => e.preventDefault();
 
@@ -363,6 +366,10 @@ export function OcpdStandardComboCell({
         />
         <button
           type="button"
+          // Round 10 — opening the list is not a commit. Without this the
+          // press blurred the input and committed a half-typed `60947` as
+          // `BS EN 60947` before a single suggestion had been chosen.
+          onMouseDown={keepFocusOnPress}
           onClick={() => (isOpen ? onClose() : onOpen())}
           aria-haspopup="listbox"
           aria-expanded={isOpen}

@@ -51,7 +51,8 @@ vi.mock('lucide-react', async () => {
   return { ChevronDown: stub, default: stub };
 });
 
-const { OcpdStandardField } = await import('@/components/job/ocpd-standard-field');
+const { OcpdStandardField, OcpdStandardComboCell } =
+  await import('@/components/job/ocpd-standard-field');
 const { noteExternalOcpdWrite, purgeOcpdWriteEpochs } = await import('@/lib/ocpd-external-writes');
 
 let container: HTMLDivElement;
@@ -203,6 +204,97 @@ describe('PLAN-CC Decision 28 — web never commits an interrupted draft', () =>
     expect(onCommit).toHaveBeenCalledTimes(1);
     expect(onCommit).toHaveBeenCalledWith('BS EN 60947-2');
     expect(onCommit).not.toHaveBeenCalledWith('BS EN 60947');
+  });
+
+  it('pressing the grid cell chevron after typing a prefix commits nothing', () => {
+    // Round 10 BLOCKER: the chevron was the one control without the handler,
+    // so opening the list committed `60947` as `BS EN 60947`.
+    const onCommit = vi.fn();
+    const onOpen = vi.fn();
+    act(() => {
+      root.render(
+        React.createElement(OcpdStandardComboCell, {
+          value: '',
+          onCommit,
+          circuitId: 'circuit-1',
+          ariaLabel: 'OCPD BS EN',
+          isOpen: false,
+          onOpen,
+          onClose: () => {},
+        })
+      );
+    });
+    const input = container.querySelector('input');
+    if (!input) throw new Error('no input');
+    typeInto(input, '60947');
+    const chevron = container.querySelector('button[aria-haspopup="listbox"]');
+    if (!chevron) throw new Error('no chevron');
+
+    const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    act(() => {
+      chevron.dispatchEvent(down);
+    });
+    if (!down.defaultPrevented) {
+      act(() => {
+        input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      });
+    }
+    act(() => {
+      chevron.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it('EVERY button in both picker components keeps focus in the input on press', () => {
+    // The card field is one surface; the combo cell is the other two (sticky
+    // table and desktop schedule). Rendered with the list OPEN and the second
+    // tier shown, so every control that exists is pressed. A button added
+    // later without `keepFocusOnPress` fails here, not in the field.
+    const pressAll = (buttons: HTMLButtonElement[]) =>
+      buttons.map((b) => {
+        const down = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+        b.dispatchEvent(down);
+        return {
+          label: b.textContent || b.getAttribute('aria-label'),
+          kept: down.defaultPrevented,
+        };
+      });
+
+    act(() => {
+      root.render(React.createElement(OcpdStandardField, { value: '', onCommit: () => {} }));
+    });
+    const tierToggle = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-expanded') === 'false'
+    );
+    act(() => {
+      tierToggle?.click();
+    });
+    const card = pressAll(Array.from(container.querySelectorAll('button')));
+    expect(card.length).toBeGreaterThan(8);
+    expect(card.filter((r) => !r.kept)).toEqual([]);
+
+    act(() => {
+      root.render(
+        React.createElement(OcpdStandardComboCell, {
+          value: '',
+          onCommit: () => {},
+          ariaLabel: 'OCPD BS EN',
+          isOpen: true,
+          onOpen: () => {},
+          onClose: () => {},
+        })
+      );
+    });
+    const listbox = document.body.querySelector('ul[role="listbox"]');
+    if (!listbox) throw new Error('the open list did not render');
+    const grid = pressAll([
+      ...Array.from(container.querySelectorAll('button')),
+      ...Array.from(listbox.querySelectorAll('button')),
+    ]);
+    expect(grid.length).toBeGreaterThan(8);
+    expect(grid.filter((r) => !r.kept)).toEqual([]);
   });
 
   it('an external write mid-typing replaces the draft — the correction wins', () => {

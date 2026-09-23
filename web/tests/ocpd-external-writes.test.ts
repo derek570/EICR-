@@ -35,6 +35,7 @@ import { fileURLToPath } from 'url';
 import {
   _ocpdWriteEpochCount,
   noteExternalOcpdWrite,
+  noteOcpdWritesFromVoiceOutcome,
   ocpdWriteEpoch,
   purgeOcpdWriteEpochs,
   subscribeToOcpdWrites,
@@ -148,51 +149,84 @@ describe('the epoch registry', () => {
   });
 });
 
-describe('a voice command announces an OCPD write only when it WROTE one', () => {
-  // Decision 32 (Derek, 2026-09-23): "the dictation should win" — and a
-  // dictation that wrote nothing has nothing to win with, so the typing stays.
-  // `recording-context.tsx` gates the announcement on `outcome.patch`; these
-  // pin both what that gate reads and where it sits.
+describe('a voice command announces an OCPD write for exactly the rows it WROTE', () => {
+  // Decision 32 (Derek, 2026-09-23): "the dictation should win", and one that
+  // wrote nothing has nothing to win with. The announcement is read from the
+  // writer's own `appliedResults`, so it cannot disagree with what was
+  // written: not for a rejected value, not for a bulk scope that skipped a
+  // spare, and not for a correction that re-applied the stored value.
+  const STORED = 'BS EN 60898';
   const JOB: VoiceCommandJob = {
-    circuits: [{ id: 'c1', circuit_ref: '1', ocpd_bs_en: 'BS EN 60898' }],
+    circuits: [
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Cooker', ocpd_bs_en: STORED },
+      { id: 'c2', circuit_ref: '2', circuit_designation: 'Sockets', ocpd_bs_en: STORED },
+      { id: 'c3', circuit_ref: '3', circuit_designation: 'Spare', ocpd_bs_en: '' },
+    ],
+  };
+  const epochs = () => ['c1', 'c2', 'c3'].map((id) => ocpdWriteEpoch(id));
+  const run = (command: Parameters<typeof applyVoiceCommand>[0]) => {
+    purgeOcpdWriteEpochs();
+    noteOcpdWritesFromVoiceOutcome(applyVoiceCommand(command, JOB), JOB);
+    return epochs();
   };
 
-  it('a rejected standard produces no patch, so nothing is announced', () => {
+  it('a rejected standard announces nothing', () => {
     // Bare `88` cannot be told from BS 88-1/-2/-3/-6; the grammar refuses it.
-    const out = applyVoiceCommand(
-      { type: 'update_field', field: 'ocpd_bs_en', value: '88', circuit: 1 },
-      JOB
-    );
-    expect(out.patch).toBeUndefined();
+    expect(run({ type: 'update_field', field: 'ocpd_bs_en', value: '88', circuit: 1 })).toEqual([
+      0, 0, 0,
+    ]);
   });
 
-  it('a correction re-applying the STORED value still produces a patch', () => {
-    // Round 7: a same-value correction must still discard an open draft. If
-    // the writer ever skipped the patch for an unchanged value, gating on
-    // `outcome.patch` would silently undo that fix — this is the guard on it.
-    const out = applyVoiceCommand(
-      { type: 'update_field', field: 'ocpd_bs_en', value: '60898', circuit: 1 },
-      JOB
-    );
-    expect(out.patch).toBeDefined();
+  it('a single-circuit correction re-applying the STORED value still announces', () => {
+    // Round 7: no value comparison can see this write.
+    expect(run({ type: 'update_field', field: 'ocpd_bs_en', value: '60898', circuit: 1 })).toEqual([
+      1, 0, 0,
+    ]);
   });
 
-  it('both dispatch sites announce AFTER applying, and only on a patch', () => {
+  it('a bulk apply announces every row it wrote, same-value rows included', () => {
+    // Round 10 BLOCKER: `apply_field` carries its target in `scope`, not
+    // `circuit`, so the old command-shaped helper announced nothing at all.
+    expect(
+      run({
+        type: 'apply_field',
+        field: 'ocpd_bs_en',
+        value: '60898',
+        scope: { kind: 'all' },
+        sparePolicy: 'include',
+      })
+    ).toEqual([1, 1, 1]);
+  });
+
+  it('a bulk apply that skips a spare leaves the spare unannounced', () => {
+    expect(
+      run({
+        type: 'apply_field',
+        field: 'ocpd_bs_en',
+        value: '60898',
+        scope: { kind: 'all' },
+        sparePolicy: 'exclude',
+      })
+    ).toEqual([1, 1, 0]);
+  });
+
+  it('a write to another field announces nothing', () => {
+    expect(run({ type: 'update_field', field: 'ocpd_type', value: 'B', circuit: 1 })).toEqual([
+      0, 0, 0,
+    ]);
+  });
+
+  it('both dispatch sites announce from the outcome, after applying', () => {
     const src = readFileSync(path.join(SRC, 'lib', 'recording-context.tsx'), 'utf8');
-    const calls = [...src.matchAll(/noteOcpdWriteForCommandCircuit\(command, jobRef\.current\)/g)];
+    const calls = [...src.matchAll(/noteOcpdWritesFromVoiceOutcome\(outcome, jobRef\.current\)/g)];
     expect(calls).toHaveLength(2);
     for (const call of calls) {
       const before = src.slice(0, call.index);
       const applyAt = before.lastIndexOf('applyVoiceCommand(');
-      const gateAt = before.lastIndexOf(
-        'if (outcome.patch && voiceCommandTargetsOcpdStandard(command))'
-      );
-      // The nearest preceding gate is the one guarding this call, and the
-      // command was applied before it.
-      expect(gateAt).toBeGreaterThan(-1);
-      expect(call.index! - gateAt).toBeLessThan(200);
       expect(applyAt).toBeGreaterThan(-1);
-      expect(applyAt).toBeLessThan(gateAt);
+      // No other statement in between could have been the one announcing.
+      expect(before.slice(applyAt)).not.toContain('noteExternalOcpdWrite');
+      expect(call.index! - applyAt).toBeLessThan(900);
     }
   });
 });

@@ -202,7 +202,6 @@ import {
   jobBoardCount,
   parseVoiceCommand,
   voiceCommandTargetsDesignation,
-  voiceCommandTargetsOcpdStandard,
   type ClientCommandMarker,
   type JobZeLike,
   type VoiceCommandJob,
@@ -235,7 +234,7 @@ import {
   persistRecordingState,
   type PersistedRecordingState,
 } from './recording/session-resume';
-import { noteExternalOcpdWrite } from '@/lib/ocpd-external-writes';
+import { noteOcpdWritesFromVoiceOutcome } from '@/lib/ocpd-external-writes';
 
 /**
  * Recording context.
@@ -464,26 +463,6 @@ function isTrailingCircuitNamingPattern(text: string): boolean {
  *  supported (and shouldn't be — recording context wires up state
  *  refs at session start that wouldn't reconfigure cleanly). */
 const SILERO_VAD_ENABLED = process.env.NEXT_PUBLIC_SILERO_VAD !== '0';
-
-/** PLAN-CC (Decision 28 rule 2) — announce an OCPD-standard write for whatever
- *  circuit a voice command targets, so the editing control drops an open draft
- *  for it. Matches by circuit REF because that is what a command carries, and
- *  a ref identifies exactly one circuit: `stage6-dispatchers-circuit.js`
- *  rejects a duplicate `circuit_ref` with `circuit_already_exists`, so numbers
- *  are unique even though NAMES may repeat. A command with no circuit is a
- *  board-scope write and targets nothing here. */
-function noteOcpdWriteForCommandCircuit(command: unknown, job: unknown): void {
-  const ref = (command as { circuit?: number | null } | null)?.circuit;
-  if (ref == null) return;
-  const circuits = (job as { circuits?: Array<Record<string, unknown>> } | null)?.circuits;
-  if (!Array.isArray(circuits)) return;
-  for (const row of circuits) {
-    const rowRef = row.circuit_ref ?? row.number;
-    if (rowRef != null && String(rowRef) === String(ref)) {
-      noteExternalOcpdWrite(row.id == null ? null : String(row.id));
-    }
-  }
-}
 
 export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const { job, updateJobFromRecording, subscribeJobMutations, flushDraftsAndGetSnapshot } =
@@ -2317,19 +2296,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           const localDispatchedAt = nowMs();
           const outcome = applyVoiceCommand(command, jobRef.current as unknown as VoiceCommandJob);
           // Decision 28 rule 2 — a spoken write to the standard outranks an
-          // open draft on that circuit, announced by OPERATION because a
-          // command re-applying the stored value changes nothing a value
-          // comparison could notice.
-          //
-          // AFTER the command, and only when it produced a patch. Derek,
-          // 2026-09-23: "the dictation should win" — and a dictation that
-          // wrote nothing has nothing to win with. The canonicaliser refuses a
-          // bare `88` (indistinguishable from BS 88-1/-2/-3/-6), so the
-          // command names the field, applies nothing, and used to take the
-          // inspector's typing with it.
-          if (outcome.patch && voiceCommandTargetsOcpdStandard(command)) {
-            noteOcpdWriteForCommandCircuit(command, jobRef.current);
-          }
+          // open draft on the circuits it WROTE. After the command, from the
+          // writer's own record; see `noteOcpdWritesFromVoiceOutcome`.
+          noteOcpdWritesFromVoiceOutcome(outcome, jobRef.current);
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
             jobRef.current = {
@@ -4326,10 +4295,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               command,
               jobRef.current as unknown as VoiceCommandJob
             );
-            // Announced AFTER, and only on a real write — see the sibling site.
-            if (outcome.patch && voiceCommandTargetsOcpdStandard(command)) {
-              noteOcpdWriteForCommandCircuit(command, jobRef.current);
-            }
+            // Announced AFTER, for the rows written — see the sibling site.
+            noteOcpdWritesFromVoiceOutcome(outcome, jobRef.current);
             if (outcome.patch) {
               updateJobRef.current(outcome.patch);
               jobRef.current = {

@@ -1884,19 +1884,6 @@ function applyAddCircuit(
  * response must be the LOCALLY constructed canonical text (the server's
  * raw `spoken_response` may carry the banned word verbatim).
  */
-/** PLAN-CC (Decision 28 rule 2) — does this command WRITE the OCPD standard?
- *  Asked so a client can discard an open draft for the targeted circuit by
- *  OPERATION, whether or not the applied value differs from the one already
- *  stored. Sibling of `voiceCommandTargetsDesignation` and deliberately shaped
- *  the same way, so the two cannot drift. */
-export function voiceCommandTargetsOcpdStandard(command: VoiceCommand): boolean {
-  if (command.type === 'update_field' || command.type === 'apply_field') {
-    const resolved = resolveField(command.field, /* hasCircuit */ true);
-    return resolved?.circuitField === 'ocpd_bs_en';
-  }
-  return false;
-}
-
 export function voiceCommandTargetsDesignation(command: VoiceCommand): boolean {
   if (command.type === 'add_circuit') return true;
   if (command.type === 'update_field' || command.type === 'apply_field') {

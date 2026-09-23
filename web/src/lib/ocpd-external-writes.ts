@@ -22,6 +22,8 @@
  * instruction that was forgotten twice on the iOS side of this plan.
  */
 
+import type { VoiceCommandOutcome } from '@certmate/shared-utils';
+
 type Listener = () => void;
 
 const epochs = new Map<string, number>();
@@ -67,4 +69,36 @@ export function purgeOcpdWriteEpochs(): void {
 /** Test seam. */
 export function _ocpdWriteEpochCount(): number {
   return epochs.size;
+}
+
+/** PLAN-CC (Decision 28 rule 2, Decision 32) — announce an OCPD-standard
+ *  write for every circuit the command ACTUALLY wrote, so the editing control
+ *  drops an open draft there. Read from the writer's own `appliedResults`, not
+ *  from the command's target: a bulk `apply_field` carries its target in
+ *  `scope`, may skip spares, and may run past the last circuit, and a rejected
+ *  value (a bare `88`, indistinguishable from BS 88-1/-2/-3/-6) writes nothing
+ *  and has nothing to win with. A correction re-applying the stored value is
+ *  still in `appliedResults`, which is why this is by operation and not by
+ *  comparing values. Matched by circuit REF, which identifies exactly one
+ *  circuit: `stage6-dispatchers-circuit.js` rejects a duplicate `circuit_ref`,
+ *  so numbers are unique even though NAMES may repeat. */
+export function noteOcpdWritesFromVoiceOutcome(
+  outcome: Pick<VoiceCommandOutcome, 'patch' | 'appliedResults'>,
+  job: unknown
+): void {
+  if (!outcome.patch) return;
+  const refs = new Set(
+    (outcome.appliedResults ?? [])
+      .filter((r) => r.field === 'ocpd_bs_en')
+      .map((r) => String(r.circuit))
+  );
+  if (refs.size === 0) return;
+  const circuits = (job as { circuits?: Array<Record<string, unknown>> } | null)?.circuits;
+  if (!Array.isArray(circuits)) return;
+  for (const row of circuits) {
+    const rowRef = row.circuit_ref ?? row.number;
+    if (rowRef != null && refs.has(String(rowRef))) {
+      noteExternalOcpdWrite(row.id == null ? null : String(row.id));
+    }
+  }
 }
