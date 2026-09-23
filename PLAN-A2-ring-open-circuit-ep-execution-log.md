@@ -190,3 +190,65 @@ patched here.**
    (`processRingContinuityTurn` before `runShadowHarness`) and persist authoritative per-round response
    model/tier/effort rather than reconstructing them from the routing row and environment.
 4. Cases (f) and (g) have one sample each; the other five have three.
+
+---
+
+# Attempt 2 — authorized recovery, 2026-09-23 (afternoon)
+
+- **Authority:** the RECOVERY DISPATCH block in `PLAN-A2-v10.md.ep-queue`, written by the wave coordinator
+  (`eicr-automation-a7`), under `lifecycle-records.md` § Outcome records rule 4. Attempt 1's `.ep-done` and
+  HELD outcome are preserved as history. New claim generation `attempt: 2`, claimed 2026-09-23T14:48:06Z.
+- **Session:** `claunch-opus-high-80620`, Claude Opus 5 at claim; the session was resumed after a host
+  disk-full outage and continued on Opus 5.5, effort high. Recorded in the claim's `runtime_events`.
+- **Hold reason 1 (PLAN-A tombstone) resolved:** PR #227 merged as `7dc4cd94` and deployed (`eicr-backend:439`).
+- **Hold reason 2 (acceptance 4) settled by Decision 29** (Derek, 2026-09-23): the deterministic gates are the
+  gate; the seven live cases are dated evidence; the model-side rule is a follow-up plan.
+
+## Rebase onto `7dc4cd94`
+
+Four conflicts, all resolved by hand:
+
+- `engine.js`: an import line. PLAN-A's three imports kept; `speakSentinelValue` added to the
+  `confirmation-text.js` import.
+- `CLAUDE.md` and `docs/reference/changelog.md`: both plans added a top row. Both kept, A2 above PLAN-A.
+- `plan00-expectation-manifest.json`: taken from the base, then regenerated with
+  `computeSemanticOracleDigest` (only the `engine.js` row and the combined digest move).
+
+The hub then sat 582 chars over budget; the oldest row (2026-08-27 PLAN-E1B2 + PLAN-E1B) was dropped, its detail
+already in `changelog.md`.
+
+## Acceptance 3, now checkable
+
+New tests show a model `∞` write after the first-miss handoff returns `handed_off` from the entry hook, emits no
+script frame, and is read back once by the bundler as "Circuit 1, ring r2 infinity". Red-proved by
+short-circuiting the entry-hook fence.
+
+## Review cycle 3 (Codex gpt-5.6-sol/high) — one BLOCKER, real
+
+The first attempt of this lane died on `No space left on device` during the host outage and produced no verdict;
+it was retried with the identical prompt and bundle (log kept as `ep-r3-rebase-verify.attempt1-enospc.log`).
+
+Items 1, 2, 4 and 5 CONFIRMED (conflict resolutions, drift digest, no other A2/PLAN-A collision, no cycle-1/2
+regression). Item 3 DISPUTED as a BLOCKER: PLAN-A's second tombstone reader fences `start_dialogue_script` only
+when the circuit is known. With `circuit: null` nothing checked the tombstone when the answer resolved it, so a
+handed-off ring circuit walked to its own "R2 infinity. All correct?" — a second audible `∞` when the model had
+also written it the ordinary way.
+
+**Reproduced independently before fixing**, with the exact sequence the reviewer described.
+
+**Fix (`engine.js`):** `enterScriptByName` marks a model-started, circuit-less episode
+(`state.deferred_model_entry`); `runActivePath` checks the tombstone the moment the circuit resolves and, if the
+circuit was handed off, ends the walk through `terminateWithHandoff` with a new `deferred_entry` note kind.
+Queued values are abandoned, never written by the script. Any not already on the certificate return to the model
+under `unapplied`, so a dictated reading is never silently dropped; one that IS already there (a same-turn
+ordinary write, already read back) is left out, so it is not written or spoken twice.
+
+**Deliberately not fenced:** an inspector's named trigger with no circuit that resolves to a handed-off circuit.
+PLAN-A lets an inspector's explicit request override a handoff; the fence is scoped to model starts.
+
+**Tests:** four cases — same-turn write plus deferred start (the bundler line is the only "infinity"), deferred
+start alone (value returned under `unapplied`, nothing written by the script), and the two scope controls.
+Red-proved: with the fence disabled the two write cases fail and the two controls pass.
+
+This fix changes PLAN-A's shipped code. It is within A2's intent because acceptance 3 states the tombstone
+"fences both re-entry paths", and A2 cannot pass that item while one path is open.
