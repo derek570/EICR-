@@ -20,17 +20,24 @@ import {
 } from '../../ring-continuity-timeout.js';
 // id-100(b) — the shared correction wording, so the ring triple read-back and
 // the dispatcher read-backs can never phrase a clamp differently.
-import { formatCorrectionClause } from '../../confirmation-text.js';
+// PLAN-A2 — and, for the same reason, the shared spoken form of the "∞"
+// discontinuity sentinel.
+import { formatCorrectionClause, speakSentinelValue } from '../../confirmation-text.js';
 
 // Value-alternation matches the legacy script's pattern exactly,
-// including the sentinel words ("infinite", "open", etc). The parser
-// (parseOhms) returns null on those sentinels — meaning they capture
-// in the regex but don't write — which is the existing tested
-// behaviour. Restoring the sentinels' write semantics is out of PR1
-// scope; the byte-identical replay corpus depends on this match.
+// including the sentinel words ("infinite", "open", etc).
+// PLAN-A2 (2026-09-23, feedback id 141) — those sentinels now WRITE. They
+// always captured here; `parseOhms` used to return null on them, so the ring
+// loop consumed a dictated "Open circuit" and wrote nothing, then re-asked for
+// the same leg. parseOhms returns "∞" for the six forms this group and the
+// legacy twin both recognise, and a three-grammar parity test pins the three
+// spellings together.
 // P3 — the four LIM forms added so a ring-leg "limitation" reply is captured by
 // the namedExtractor and canonicalised to "LIM" by parseOhms.
-const RING_VALUE_GROUP =
+// Exported (PLAN-A2) so the three-grammar parity test can assert that what this
+// group CAPTURES is exactly what parseOhms and the legacy twin WRITE. A capture
+// with no write is the id-141 bug; a write with no capture is unreachable.
+export const RING_VALUE_GROUP =
   '\\d*\\.?\\d+|infinite|open|discontinuous|infinity|lim|limb|limp|limitation';
 
 // Value-first connector words (feedback ids 109/110b, 2026-07-29 — the
@@ -226,10 +233,20 @@ const topicSwitchTriggers = [
 // byte-identically to before, and only a clamped loop grows the extra sentence.
 // Multiple corrected slots in one loop are listed in slot order, since each is a
 // separate safety-relevant fact the inspector may want to reject.
+// PLAN-A2 (2026-09-23, feedback id 141) — every leg goes through the shared
+// `speakSentinelValue`, so a stored "∞" is SPOKEN as "infinity" here exactly as
+// it is in the dispatcher read-backs. This is the only ring path that speaks a
+// stored value, and since parseOhms now writes "∞" it is also the only place a
+// ring leg can reach TTS as an unpronounceable character: without this the
+// inspector hears "R1 0.43, Rn 0.43, R2." and cannot tell an accepted
+// open-circuit reading from a dropped one. Legs the loop has not filled still
+// render as "?" — that is the pre-existing partial-triple shape and is
+// untouched. Every numeric leg renders byte-identically to before, so the
+// replay corpus's byte-pinned triples do not move.
 function buildRingContinuityConfirmation({ values, corrections = null }) {
-  const r1 = values.ring_r1_ohm ?? '?';
-  const rn = values.ring_rn_ohm ?? '?';
-  const r2 = values.ring_r2_ohm ?? '?';
+  const r1 = speakSentinelValue(values.ring_r1_ohm ?? '?');
+  const rn = speakSentinelValue(values.ring_rn_ohm ?? '?');
+  const r2 = speakSentinelValue(values.ring_r2_ohm ?? '?');
   const triple = `R1 ${r1}, Rn ${rn}, R2 ${r2}.`;
   const clauses = [];
   if (corrections) {
