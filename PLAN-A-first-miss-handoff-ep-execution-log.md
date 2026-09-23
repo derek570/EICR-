@@ -164,4 +164,91 @@ note specifies), launched concurrently against base `f20ff152` head `11b48491`:
 
 Inputs, prompts, raw logs and findings: `PLAN-A-ep-reviews/` in the handoff directory.
 
-<!-- REVIEW OUTCOME APPENDED BELOW -->
+### Round 1 — two concurrent lanes, ten findings
+
+| # | Lane | Severity | Finding | Disposition |
+|---|---|---|---|---|
+| 1 | comprehensive | BLOCKER | A fenced reading `return`ed from the per-reading loop, so a turn writing board A circuit 3 AND board B circuit 3 stopped at the first, tombstoned reading and the eligible board-B write never entered. Entry depended on READING ORDER. | FIXED |
+| 2 | both | BLOCKER | `readExistingValues` read the SELECTED board while the hook had resolved the WRITE's board, so another board's pre-existing values were seeded into the episode and surfaced in `recorded` as though this walk had captured them. | FIXED |
+| 3 | specialist | BLOCKER | Three other fallthrough exits discarded the terminal tri-state, so a DEFINITE non-delivery there lost the rendered line with no recovery. | FIXED |
+| 4 | comprehensive | IMPORTANT | `findLatestOperationForWrite` could not find, or mis-credited, the operation at both pending-write drain sites, where the derivation runs before the circuit is bound. | FIXED |
+| 5 | comprehensive | IMPORTANT | A `sets` target appeared in both `recorded[].derived` and non-clearable `existing_values` — two contradictory instructions about one field. | FIXED |
+| 6 | comprehensive | IMPORTANT | A same-turn derivation that FILLED the asked slot was read as a miss, ending the walk on a slot that was no longer missing. | FIXED |
+| 7 | comprehensive | IMPORTANT | The fence matrix asserted a local replica of the comparison rather than the production fence. | FIXED |
+| 8 | specialist | IMPORTANT | With `VOICE_MID_STREAM_FILTER` on, a filtered canonical confirmation plus Decision 17's `spoken_owner` omission can leave a value never read back. | RECORDED, not fixed |
+| 9 | specialist | OUT_OF_INTENT | The fence discards an answer carrying information beyond the clears. | REFUSED, carried to Derek |
+
+Both BLOCKER board findings are the same class as the defect the executor found independently before
+the lanes reported (`150aa151`): the plan's one-board-normalisation rule was applied at every READER
+and missed on the WRITER's side of the same seam. Three separate sites, one root cause.
+
+**Finding 7 is worth naming as a pattern.** It is the third time in this plan that a test asserted a
+REPLICA of production logic instead of production logic — after the carrier fold and before it, the
+fence. Each was fixed by extracting the rule to one exported function that both the caller and the
+test use. The lesson is in the ledger.
+
+**Finding 8's justification, stated so it can be checked rather than believed.** The plan's own omit
+predicate says: "It is the exact predicate the engine already uses at the two sites that decide NOT to
+speak something … if `spoken_owner = 'bundler'` can ever be set without the bundler speaking, two
+shipped rules are already wrong and this one fails no worse." The finding is real; the class was
+considered and accepted; the flag is default-off; and closing it means changing two already-shipped
+rules. Carried to the follow-up queue with the finding attached rather than fixed under this plan.
+
+### Round 2 — fix verification
+
+One fresh lane against the fix diff (`11b48491` → `117cb01d`), asking three questions: does each fix
+close its finding, did any fix introduce a new defect, and are the new tests real (would they fail
+against the pre-fix behaviour, or pass either way).
+
+**Verdict on round 1.** Of the ten findings, the lane closed eight, confirmed the two recorded
+dispositions as deliberate rather than missed, and found three new defects — two BLOCKERs and one
+IMPORTANT. It also reported that the three new tests it was asked to check are real: each fails
+against the pre-fix behaviour.
+
+| # | Severity | Finding | Disposition |
+|---|---|---|---|
+| 11 | BLOCKER | The entry-hook fix stamps the episode with the write's own board, but every snapshot write the episode then made went through the BARE mutator, which writes main's bucket whatever board the episode is on. A board-B walk set MAIN's circuit 3 while the note and the tombstone named board B. Closing the re-ask loop opened a cross-board write. | FIXED |
+| 12 | BLOCKER | A `sets` derivation that OVERWROTE a pre-existing value made that field episode-owned, so it left `existing_values` and the directive permitted clearing it. Following the note would blank a certificate value that predates the walk, with nothing in the note saying it had existed. | FIXED |
+| 13 | IMPORTANT | The fence-harness suite asserted log rows and in-memory `stagedText`, never the result delivered for speech, so a later finalizer or bundler change could drop an unfenced answer with every assertion still green. | FIXED |
+
+Finding 11 is the FOURTH site of the one-board-normalisation class in this plan, and the first on the
+WRITE path rather than the read path. The rule now holds as one sentence: inside an episode, every
+read and every write resolves through `state.effectiveBoardId`.
+
+Finding 12 needed a decision, not just a patch. The replaced value cannot travel in `existing_values`
+— the value in that slot now is the derived one, and calling that pre-existing would be false — so it
+travels in its own `derived_replaced` key and the directive gained one clause: restore it rather than
+clear it. Ownership is now asked in two places (the note's filter and the baseline guard), so it is
+ONE exported function in a zero-import leaf, not a predicate copied twice. That is the same pattern
+finding 7 named, applied before a reviewer had to find it again.
+
+Both fixes are red-proofed, and each reversion fails only its own test.
+
+## Acceptance 9 — the live lane
+
+Run 2026-09-23 against the real endpoint (`gpt-6-luna`, tier `fast`, effort `low`). Six cases: the
+handoff notes from acceptance 1, 3 and 8, the device-absence case from acceptance 2, and both id-140
+utterances. Full evidence, including the provenance table and the raw results, in
+`PLAN-A-acceptance-9-live-lane.md` and `PLAN-A-live-probe-results-2026-09-23.json` in the handoff
+directory.
+
+Every case produced an audible outcome — zero SILENT turns, and both id-140 utterances, the reported
+dead ends, now speak. Zero `start_dialogue_script` calls for a handed-off circuit (0 attempts, 0
+re-entries). Zero applied writes of a value the dispatcher rejected. No pre-existing value cleared:
+the device-absence turn cleared the one entry under `recorded` and left `existing_values` alone, and
+the IR all-filled turn cleared nothing and read none of its three values back.
+
+The probe drives production's ingress order — wrapper first, then the harness on the transcript the
+wrapper handed forward. PLAN-A2's probe called the harness directly and its own review recorded that
+as a limit; here it would have been fatal, because the note only exists because the wrapper made it.
+
+One deviation is recorded and not fixed: on the id-140 "None." case the model dispatched THREE asks
+in one turn where the directive says ask ONE. The turn was audible, so it is not the reported defect,
+and the ask budget is not this plan's surface. It is in the repo todo queue with its evidence.
+
+Two earlier probe runs reported two correct turns as SILENT. The probe was reading `result.readings`,
+which does not exist, and filtering WS frames on keys the clears and the orphan prompt do not carry.
+The fault was the instrument, not the code under test; both were fixed and the run above is the
+corrected one. Recording it because a probe that under-reports success is the same hazard as one that
+over-reports it.
+
