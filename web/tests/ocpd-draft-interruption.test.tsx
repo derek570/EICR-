@@ -289,6 +289,17 @@ describe('PLAN-CC Decision 28 — web never commits an interrupted draft', () =>
     });
     const listbox = document.body.querySelector('ul[role="listbox"]');
     if (!listbox) throw new Error('the open list did not render');
+    // Reveal Tier 2 in the list too, or its options are never pressed (round
+    // 11 NIT: the first version of this test skipped them).
+    const listToggle = Array.from(listbox.querySelectorAll('button')).find(
+      (b) => b.getAttribute('aria-expanded') === 'false'
+    );
+    if (!listToggle) throw new Error('the list has no tier toggle');
+    const beforeTier2 = listbox.querySelectorAll('button').length;
+    act(() => {
+      listToggle.click();
+    });
+    expect(listbox.querySelectorAll('button').length).toBeGreaterThan(beforeTier2);
     const grid = pressAll([
       ...Array.from(container.querySelectorAll('button')),
       ...Array.from(listbox.querySelectorAll('button')),
