@@ -538,6 +538,13 @@ export const insulationResistanceSchema = {
       },
     ],
   },
+  // PLAN-A A4 (feedback-2026-09-17, id 143) — entering on a circuit whose IR
+  // slots are ALL already filled, with nothing in the utterance parsing as a
+  // reading, is a HANDOFF rather than an instant finish. Without this the
+  // script finished at once and read back STALE values as "Got it" — values
+  // the inspector never said this run, presented as though just confirmed.
+  // Opt-in per schema; IR is the one the field session surfaced it on.
+  handoffOnAllFilledNoParse: true,
   onWrite: (session, circuit_ref, now) => recordIrWrite(session, circuit_ref, now),
   onFinish: (session, circuit_ref) => clearIrState(session, circuit_ref),
   // M4 (2026-06-25): the engine calls this when the exclusive voltage slot is

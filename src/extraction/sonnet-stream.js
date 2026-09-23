@@ -6557,6 +6557,46 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
       //     undefined; latching on "the call didn't throw" would set the flag
       //     after a REFUSED enter and the finally would then clear a
       //     CONCURRENT turn's scope.
+      // ── PLAN-A terminal read-back CARRIER (feedback-2026-09-17) ────────
+      //
+      // The three dialogue wrappers below run BEFORE `runShadowHarness`
+      // creates the harness-local `perTurnWrites`, and a wrapper outcome of
+      // `handled && !fallthrough` RETURNS without ever running the harness.
+      // So nothing that depends on a harness drain can be the recovery for a
+      // script read-back — the producer's own result has to travel.
+      //
+      // Four values are combined across the three calls and passed as
+      // `runShadowHarness` options:
+      //
+      //   terminalReadbackBuilt    OR  — true if ANY call built a read-back.
+      //   terminalReadbackEmitted  AND over the calls that BUILT — never a
+      //     uniform OR, because ORing lets one successful wrapper mask
+      //     another's failed send. ZERO-BUILT FLOOR: when NO call built,
+      //     `emitted` is FALSE, not vacuously true. (`Array.every()` over an
+      //     empty array returns true, which would silence every downstream
+      //     net on a turn that captured nothing.)
+      //   terminalReadbackLostTexts  concatenated in WRAPPER-CALL ORDER; a
+      //     call contributes its already-rendered line ONLY when that call
+      //     was `built && !emitted`.
+      //   handoff  the one non-null `{boardId, schema, circuit_ref}`.
+      let terminalReadbackBuilt = false;
+      let terminalReadbackAllEmitted = true;
+      let terminalReadbackAnyBuilt = false;
+      const terminalReadbackLostTexts = [];
+      let scriptHandoff = null;
+      const absorbScriptOutcome = (outcome) => {
+        if (!outcome) return;
+        if (outcome.terminalReadbackBuilt === true) {
+          terminalReadbackBuilt = true;
+          terminalReadbackAnyBuilt = true;
+          if (outcome.terminalReadbackEmitted !== true) terminalReadbackAllEmitted = false;
+        }
+        if (typeof outcome.terminalReadbackLostText === 'string') {
+          terminalReadbackLostTexts.push(outcome.terminalReadbackLostText);
+        }
+        if (outcome.handoff && !scriptHandoff) scriptHandoff = outcome.handoff;
+      };
+
       const plan00Tier2Ctx = entry[EVALUATION_CONTEXT] ?? null;
       let plan00Tier2TurnScopeEntered = false;
       try {
@@ -6595,6 +6635,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // for guarded schemas when true).
           suppressDestructiveEntry,
         });
+        absorbScriptOutcome(ringScriptOutcome);
         if (ringScriptOutcome.handled && !ringScriptOutcome.fallthrough) {
           // Script handled the turn end-to-end. Return — the finally block
           // at line ~3290 clears the watchdog, flips isExtracting, and
@@ -6649,6 +6690,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // token before the IR/PD families are evaluated.
           suppressDestructiveEntry,
         });
+        absorbScriptOutcome(irScriptOutcome);
         if (irScriptOutcome.handled && !irScriptOutcome.fallthrough) {
           plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
             utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -6684,6 +6726,7 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
           // schema in this three-schema registry).
           suppressDestructiveEntry,
         });
+        absorbScriptOutcome(pdScriptOutcome);
         if (pdScriptOutcome.handled && !pdScriptOutcome.fallthrough) {
           plan00Tier2Ctx?.resolveSrvEngineConsumption?.({
             utteranceId: typeof msg.utterance_id === 'string' ? msg.utterance_id : null,
@@ -7327,6 +7370,13 @@ export function initSonnetStream(httpServer, getAnthropicKey, verifyToken, initO
         // observation tier. Server-context isolation.
         rawInspectorTranscript: msg.text,
         postcodeHintState: msg[POSTCODE_HINT_STATE] ?? postcodeHintState,
+        // PLAN-A — the terminal read-back carrier, combined across the three
+        // wrapper calls above. See the accumulator's own comment for the
+        // combination rules and why `emitted` is an AND with a zero-built floor.
+        terminalReadbackBuilt,
+        terminalReadbackEmitted: terminalReadbackAnyBuilt && terminalReadbackAllEmitted,
+        terminalReadbackLostTexts,
+        handoff: scriptHandoff,
       });
 
       await finalizeLegacyAddressMirrorDirect(entry, result);

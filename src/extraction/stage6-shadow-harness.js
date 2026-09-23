@@ -148,6 +148,7 @@ import {
   rawCircuitSlot,
   projectBoardReadingWinners,
   projectReadingWinners,
+  survivingClears,
   readEffectiveOpBoard,
   readingSlotPartsOf,
 } from './stage6-per-turn-writes.js';
@@ -2631,9 +2632,79 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // Deliberately derived from turnAnswerState alone, never by re-parsing
     // toolLoopOut.tool_calls (undefined on cancelled turns); runs on
     // cancelled turns too (cancelled-turn policy).
+    // ── PLAN-A device-absence FENCE (feedback-2026-09-17) ──────────────────
+    //
+    // ONE step immediately BEFORE the answer finalizer, on the NORMAL and the
+    // CANCELLED path alike. Ordering at this seam is load-bearing:
+    //   fence → PLAN-C3 notice reconciliation → ANSWER_FALLBACK_TEXT staging.
+    //
+    // WHY IT EXISTS. After a first-miss handoff the model owns the circuit, and
+    // "there is no RCD" makes it clear what the walk recorded — one
+    // `clear_reading` per field, each with its own `field_cleared` read-back.
+    // Those lines ARE the turn's spoken outcome. `answer_user` text is
+    // unconstrained, so the model could narrate the same clears on top of them;
+    // Audio-First exactly-once holds per VALUE, so the answer is suppressed
+    // deterministically rather than by inspecting its text (no fuzziness, no
+    // word lists).
+    //
+    // PREDICATE: any `field_cleared` that SURVIVES the turn for the handed-off
+    // circuit — a cleared entry whose slot has no surviving write. Explicitly
+    // NOT `perTurnWrites.cleared.length` (would fence a REPLACED clear, the
+    // ordinary correction idiom) and NOT session tombstones (would fence an
+    // OLDER circuit's clear).
+    //
+    // SCOPE: a surviving clear counts only when its EFFECTIVE_CIRCUIT_SLOT
+    // {circuit, boardId} equals the handoff's, both sides resolved through the
+    // single board normalisation the tombstone uses. Another circuit, an older
+    // handed-off circuit, or the same ref on another board never fences.
+    //
+    // The flag is this rule's OWN: PLAN-C3 sets `fallbackSuppressedByNotice`,
+    // and the finalizer treats either as "no ANSWER_FALLBACK_TEXT". Each rule
+    // sets only its own.
+    try {
+      const handoff = options.handoff ?? null;
+      if (handoff && perTurnWrites.answer) {
+        const fencingClears = survivingClears(perTurnWrites).filter((c) => {
+          const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
+          const circuit = sym ? sym.circuit : (c?.circuit ?? null);
+          const boardId = sym ? (sym.boardId ?? null) : (c?.board_id ?? null);
+          return (
+            circuit === handoff.circuit_ref &&
+            (boardId ?? null) === (handoff.boardId ?? null)
+          );
+        });
+        if (fencingClears.length > 0) {
+          // The journaled answer text is discarded BEFORE C3 looks, so C3 can
+          // never stage a fenced answer.
+          perTurnWrites.answer.stagedText = null;
+          perTurnWrites.answer.stagedMeta = null;
+          perTurnWrites.answer.fencedByClears = true;
+          log.info?.('stage6.answer_fenced_by_clears', {
+            sessionId: session.sessionId,
+            turnId,
+            circuit: handoff.circuit_ref,
+            boardId: handoff.boardId ?? null,
+            fields: fencingClears.map((c) => c?.field ?? null),
+          });
+        }
+      }
+    } catch (fenceErr) {
+      log.warn?.('stage6.answer_fence_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: fenceErr?.message ?? String(fenceErr),
+      });
+    }
+
     try {
       const answerState = perTurnWrites.answer;
-      if (answerState?.featureTouched === true && answerState.stagedText == null) {
+      if (
+        answerState?.featureTouched === true &&
+        answerState.stagedText == null &&
+        // PLAN-A — a fenced turn's spoken outcome is its surviving
+        // `field_cleared` lines, so the fixed fallback must not fire either.
+        answerState.fencedByClears !== true
+      ) {
         const hadSuccessfulWrite =
           (perTurnWrites.readings?.size ?? 0) > 0 ||
           (perTurnWrites.boardReadings?.size ?? 0) > 0 ||
@@ -3160,6 +3231,32 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // See session 904344CD turn-10 (2026-05-26) repro.
           fieldAliases: FIELD_CORRECTIONS,
           logger: log,
+          // PLAN-A (feedback-2026-09-17) — the per-reading EFFECTIVE board, for
+          // the handoff-tombstone lookup and the circuit-existence check.
+          //
+          // Taken from the matching per-turn write's EFFECTIVE_CIRCUIT_SLOT
+          // marker, which is stamped at DISPATCH time and BEFORE projection —
+          // never from the projected reading's optional `board_id`, because
+          // enrichment omits that on ordinary single-effective-board turns. When
+          // the marker is absent the fallback is `resolveEffectiveBoardId(session,
+          // null)`, NEVER a raw `currentBoardId` read: the raw read can be null
+          // where the resolver cannot, and a reader that keys the tombstone
+          // differently from its writer would MISS it and restart a script the
+          // model already owns.
+          effectiveBoardIdForReading: (field, circuitRef) => {
+            for (const { value } of projectReadingWinners(perTurnWrites)) {
+              const sym = value?.[EFFECTIVE_CIRCUIT_SLOT];
+              if (sym && sym.field === field && sym.circuit === circuitRef) {
+                return sym.boardId ?? null;
+              }
+            }
+            return null;
+          },
+          // A3 — a model write in a turn where the model ALSO asked or answered
+          // must never start a walk-through on top of the model's own question.
+          // There is no resume hook for it to gate: the only entry path this
+          // reaches is this one.
+          modelHoldsFloor: emittedAskToolCallIds.size > 0 || isAudibleText(result.spoken_response),
         });
         // Audit-2026-06-02 Phase 2 — when the seed loop in
         // tryEnterScriptFromWrites fired a derivation mirror (RCBO
@@ -3497,6 +3594,89 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           cancelled ||
           toolLoopOut?.aborted === true ||
           toolLoopOut?.terminal_reason === 'tool_use_cap_hit',
+      });
+    }
+
+    // ── PLAN-A terminal-read-back RECOVERY (feedback-2026-09-17) ───────────
+    //
+    // THE CASE NO NET CAN REACH. A script value's terminal read-back is sent
+    // through the raw unbuffered `safeSend`. When that send DEFINITELY fails —
+    // socket closed, `ws.send` throwing — the rendered line is gone:
+    // `computeUncoveredReadback` stamps `covered_by` before the send and
+    // ignores its result, so a second call returns null and nothing else will
+    // ever speak those operations. Meanwhile every outcome-gated net (F7,
+    // marker-②, A3) requires "nothing audible survived", so on the ordinary
+    // fallthrough turn — the model successfully writes, asks or answers in the
+    // SAME turn — that other audible result suppresses all of them, and a
+    // certificate value is silently lost on a turn that speaks something else.
+    // That is the worst failure class in this wave, so the obligation moves to
+    // the PRODUCER: the rendered text travels out of the failed call and is
+    // spoken here.
+    //
+    // WHY EXACTLY HERE, and it is the only position satisfying all five
+    // constraints, each checked in source. AFTER the mid-stream-canonical
+    // filter and `applyConfirmationDebounce`, so the recovery can never be
+    // debounced away. AFTER the §3.3a per-turn READING accumulator, so a later
+    // bare "no" cannot bind to it. AFTER the speculator's
+    // `validateAgainstConfirmations`, so it is never mistaken for a servable
+    // speculation. BEFORE the A3 orphan net immediately below — A3's
+    // `producedNothing` includes `confirmations.length === 0`, so appending
+    // LATER would let A3 speak its generic apology and then be contradicted by
+    // the true read-back, two spoken outcomes for one turn. And OUTSIDE the
+    // `if (!cancelled)` guard further down, so it also runs on a cancelled
+    // generation, where pre-abort writes still reach `result.confirmations` and
+    // are still owed a read-back.
+    //
+    // It is ADDITIVE and never gated on whether anything else spoke: a turn may
+    // legitimately carry the model's own confirmation AND this recovery line,
+    // and both are owed.
+    //
+    // It cannot double-speak. The failed frame never reached the client, so it
+    // never started playback and never stamped a dedupe key. The distinct token
+    // is still required, but for the real reason: the original is an
+    // `ask_user_started` INFO frame on the non-blocking script-info path and
+    // never enters the confirmation store at all, so it leaves NO reservation
+    // to collide with. What the token buys is a stable recovery-specific key —
+    // it separates two different lost read-backs carrying the same text inside
+    // the 30-second `field: null` window, while giving a REPLAY of the same
+    // turn the same key so the replay is correctly suppressed.
+    //
+    // Unlike the raw frame, this line rides `result.confirmations`, which
+    // `sendResultFrameLedger` buffers into `entry.pendingExtractions` and
+    // replays on reconnect.
+    //
+    // THE GAP THIS DOES NOT CLOSE, stated plainly: a script-HANDLED turn
+    // returns from the wrapper before `runShadowHarness` is ever called, so
+    // there is no `result.confirmations` to append to and no harness to run
+    // this step. That silence is PRE-EXISTING — today's script turns use the
+    // same unbuffered `safeSend` — and closing it needs buffered redelivery,
+    // which is out of this plan's scope. This plan does not gate on it.
+    try {
+      const lostTexts = Array.isArray(options.terminalReadbackLostTexts)
+        ? options.terminalReadbackLostTexts.filter((t) => typeof t === 'string' && t.trim())
+        : [];
+      if (lostTexts.length > 0) {
+        if (!Array.isArray(result.confirmations)) result.confirmations = [];
+        const joined = lostTexts.join(' ');
+        result.confirmations.push({
+          text: joined,
+          expanded_text: expandForTTS(joined),
+          field: null,
+          circuit: null,
+          dedupe_token: `p4ack_${turnId}_terminal_lost`,
+        });
+        log.info?.('stage6.terminal_readback_recovered', {
+          sessionId: session.sessionId,
+          turnId,
+          cancelled,
+          count: lostTexts.length,
+        });
+      }
+    } catch (recoveryErr) {
+      log.warn?.('stage6.terminal_readback_recovery_error', {
+        sessionId: session.sessionId,
+        turnId,
+        error: recoveryErr?.message ?? String(recoveryErr),
       });
     }
 

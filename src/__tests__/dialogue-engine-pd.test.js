@@ -419,20 +419,25 @@ describe('RCD walk-through', () => {
         transcriptText: 'MCB on circuit 5.',
         now: 1000,
       });
-      // OCPD bs_en doesn't opt in — "fill later" should NOT defer here.
-      // The bs-code parser will fail to parse it, so the engine
-      // re-asks. Script state stays active.
-      processProtectiveDeviceTurn({
+      // OCPD bs_en doesn't opt in — "fill later" must NOT defer here.
+      const out = processProtectiveDeviceTurn({
         ws,
         session,
         sessionId: SESSION_ID,
         transcriptText: 'fill later',
         now: 2000,
       });
-      expect(session.dialogueScriptState).toBeTruthy();
-      expect(session.dialogueScriptState.active).toBe(true);
-      // No defer info TTS emitted.
+      // No defer, no defer TTS — the assertion this case exists for.
       expect(ws.sent.some((m) => m.question === "Okay, I'll come back to that later.")).toBe(false);
+      expect(session.dialogueScriptDeferredSlots?.size ?? 0).toBe(0);
+      // PLAN-A (feedback-2026-09-17, ids 140/141) — the bs-code parser fails on
+      // it, so this is an unanswered outstanding ask. It used to re-ask the same
+      // question with the script still active; that re-ask into silence is the
+      // reported defect. It is now a FIRST MISS: the walk-through ends for this
+      // circuit and the model gets the question and the context.
+      expect(out).toMatchObject({ handled: true, fallthrough: true });
+      expect(out.serverNote.asked_field).toBe('ocpd_bs_en');
+      expect(session.dialogueScriptState).toBeNull();
     });
 
     test('re-entering RCD after defer SKIPS the previously-deferred slot (Phase 6.2)', () => {

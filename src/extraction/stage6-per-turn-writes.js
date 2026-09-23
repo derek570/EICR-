@@ -1041,3 +1041,71 @@ export function decodeBoardReadingKey(key) {
     boardId: rightSegment === '' ? null : rightSegment,
   };
 }
+
+// ── PLAN-A (feedback-2026-09-17) — the SURVIVING-CLEAR predicate, EXTRACTED ──
+//
+// This is the bundler's P5 clear→write collapse, lifted out verbatim so a
+// SECOND caller can reach it: the device-absence fence, which runs at the
+// answer finalizer. The collapse lives inside `bundleToolCallsIntoResult`,
+// which runs AFTER that finalizer — so the finalizer cannot see it, and
+// extraction is exactly what makes it reachable.
+//
+// The bundler now calls these in place of its own inline loop. Output is
+// byte-identical and the existing P5 tests pin that.
+//
+// WHY THE FENCE NEEDS THIS PARTICULAR PREDICATE, and not a cheaper one:
+// `perTurnWrites.cleared.length` would fence a REPLACED clear — the ordinary
+// clear-then-write correction idiom, where the clear does not survive and the
+// write's own read-back is the turn's spoken outcome. Session tombstones would
+// fence an OLDER circuit's clear. Only "a cleared entry whose slot has no
+// surviving write" is the real predicate.
+
+/**
+ * Build the "does this cleared entry have a surviving same-turn write?"
+ * predicate for one turn.
+ *
+ * Identity is the EFFECTIVE slot key stamped at dispatch time; entries lacking
+ * the Symbol (legacy / hand-built fixtures) fall back to RAW decoded Map-key
+ * identity, and that fallback applies ONLY when BOTH compared sides lack the
+ * Symbol — a one-sided pair never infers ordering.
+ *
+ * Survival is read from the JOURNAL winners rather than a raw Map scan: a
+ * board-A write shadowed under a shared raw Map key still SURVIVED the turn.
+ */
+export function buildSurvivingWritePredicate(perTurnWrites) {
+  const survivingEffectiveSlots = new Set();
+  const survivingRawSlots = new Set();
+  for (const { rawKey: mapKey, value: val } of projectReadingWinners(perTurnWrites)) {
+    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    } else {
+      const d = decodeReadingKey(mapKey);
+      survivingRawSlots.add(rawCircuitSlot(d.field, d.circuit, d.boardId));
+    }
+  }
+  return (entry) => {
+    const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
+    if (sym) {
+      return survivingEffectiveSlots.has(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+    }
+    // Both-Symbol-less fallback: match against the RAW surviving set only.
+    return survivingRawSlots.has(
+      rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
+    );
+  };
+}
+
+/**
+ * The `cleared` entries whose slot has NO surviving write this turn — i.e. the
+ * clears that will actually be spoken.
+ *
+ * @param {object} perTurnWrites
+ * @returns {object[]} the surviving cleared entries, in order
+ */
+export function survivingClears(perTurnWrites) {
+  const cleared = Array.isArray(perTurnWrites?.cleared) ? perTurnWrites.cleared : [];
+  if (cleared.length === 0) return [];
+  const hasSurvivingWrite = buildSurvivingWritePredicate(perTurnWrites);
+  return cleared.filter((c) => !hasSurvivingWrite(c));
+}

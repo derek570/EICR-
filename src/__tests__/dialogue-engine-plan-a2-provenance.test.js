@@ -224,33 +224,32 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'RCD on circuit 5.',
       now: 1000,
     });
+    // PLAN-A (feedback-2026-09-17) — the re-dictation rides the SAME turn as
+    // the answer to the slot the engine actually asked. BS is snapshot-seeded,
+    // so the walk skips it and asks `rcd_type`; re-dictating BS on a turn of
+    // its OWN would leave that ask unanswered, which is now a first miss and
+    // ends the walk-through (asserted separately below). This is the realistic
+    // utterance for the case anyway.
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'BS EN 61008',
+      transcriptText: 'Type AC, BS EN 61008',
       now: 2000,
     });
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'AC',
+      transcriptText: '30',
       now: 3000,
     });
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: '30',
-      now: 4000,
-    });
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
       transcriptText: 'no',
-      now: 5000,
+      now: 4000,
     });
     // Verbatim ceremony still fires — the re-dictated (canonical-equal) BS
     // is script-owned satisfied_existing, so it counts as "dictated" for
@@ -259,6 +258,41 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     // ORIGINAL raw seeded form (never round-tripped through the parser).
     expect(lastQuestion(ws)).toBe('Got it. 61008, type AC, 30 mA.');
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('61008');
+  });
+
+  // (e2) PLAN-A — the SAME re-dictation on a turn of its own is a first miss,
+  // and the Audio-First invariant this pair exists for still holds: a dictated
+  // non-empty value is never silent, and no phantom write is created.
+  test('(e2) a snapshot-equal re-dictation that leaves the ASK unanswered hands off, still spoken', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 5: { rcd_bs_en: '61008' } });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'RCD on circuit 5.',
+      now: 1000,
+    });
+    // The engine asked for the TYPE (BS is seeded, so the walk skipped it).
+    expect(ws.sent.at(-1).context_field).toBe('rcd_type');
+
+    const out = processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61008',
+      now: 2000,
+    });
+
+    // Still SPOKEN — at the terminal exit rather than the finish summary.
+    expect(lastQuestion(ws)).toBe('Also got BS number 61008.');
+    // Still no phantom write: satisfied_existing, and the snapshot keeps its
+    // original raw seeded form.
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('61008');
+    // And the unanswered ask is a first miss.
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.serverNote.asked_field).toBe('rcd_type');
+    expect(session.dialogueScriptState).toBeNull();
   });
 
   // (f) unresolved-circuit drain counts as dictated — a value queued before
@@ -772,19 +806,15 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'BS EN 61008',
       now: 2000,
     });
-    // Corrects the SAME field before finishing.
+    // Corrects the SAME field before finishing. PLAN-A (feedback-2026-09-17):
+    // the correction rides the same turn as the answer to the slot the engine
+    // asked (`rcd_type`). A bare "actually BS EN 60898" on its own turn leaves
+    // that ask unanswered, which is now a first miss and ends the walk-through.
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'actually BS EN 60898',
-      now: 2500,
-    });
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: 'AC',
+      transcriptText: 'Type AC, actually BS EN 60898',
       now: 3000,
     });
     processProtectiveDeviceTurn({
@@ -1033,36 +1063,24 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'Actually the lives are 0.44.',
       now: 1800,
     });
-    processRingContinuityTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '0.43',
-      now: 2000,
-    });
-    processRingContinuityTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '0.78',
-      now: 3000,
-    });
-    // Confirmation names the CURRENT (corrected) R1 value.
-    const confirm = ws.sent.filter((m) => m?.type === 'ask_user_started').at(-1);
-    expect(confirm.question).toContain('R1 0.44');
-    ws.sent.length = 0;
-    // Cancel immediately — the SUPERSEDED 0.43 R1 operation must still
-    // reach a read-back somewhere (never silently dropped), and the
-    // CURRENT 0.44 must never be duplicated.
-    processRingContinuityTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: 'never mind',
-      now: 4000,
-    });
-    const cancelText = ws.sent.filter((m) => m?.type === 'ask_user_started').at(-1)?.question ?? '';
-    expect(cancelText).toMatch(/0\.43/);
-    expect((cancelText.match(/0\.44/g) ?? []).length).toBe(0);
+    // PLAN-A (feedback-2026-09-17) — WHERE THE READ-BACK NOW HAPPENS, and why
+    // it moved. The correction above answers `ring_r1_ohm` while the engine's
+    // outstanding ask was `ring_rn_ohm`, so under Decision 1 it is a compound
+    // reply with an UNANSWERED ask: a first miss. The walk-through ends here
+    // and the terminal exit speaks what this run captured but has not yet said.
+    // Previously the script stayed alive, the walk reached confirmation, and
+    // the superseded operation waited for a cancel to be spoken.
+    //
+    // The INVARIANT this test exists for is unchanged and is asserted on the
+    // new site: the SUPERSEDED 0.43 R1 operation still reaches a read-back
+    // (never silently dropped), and per-operation coverage means the CURRENT
+    // 0.44 is named exactly once alongside it rather than twice.
+    const terminal = ws.sent.filter((m) => m?.type === 'ask_user_started').at(-1)?.question ?? '';
+    expect(terminal).toMatch(/0\.43/);
+    expect((terminal.match(/0\.44/g) ?? []).length).toBe(1);
+    expect(session.dialogueScriptState).toBeNull();
+
+    // The correction itself landed — a handoff never discards a write.
+    expect(session.stateSnapshot.circuits[13].ring_r1_ohm).toBe('0.44');
   });
 });

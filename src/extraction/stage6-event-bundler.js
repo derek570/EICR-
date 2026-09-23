@@ -31,6 +31,8 @@ import {
   resolveDesignation,
   readEffectiveOpBoard,
   BULK_OUTCOME_CALL_ID,
+  buildSurvivingWritePredicate,
+  survivingClears,
 } from './stage6-per-turn-writes.js';
 // Loaded Barrel Phase 1.B (plan v10 §C) — the helper + friendly-name
 // table moved into `confirmation-text.js` so loaded-barrel-speculator.js
@@ -1355,31 +1357,12 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // fallback applies ONLY when BOTH compared sides lack the Symbol; a one-sided
   // pair never infers ordering (no collapse). currentBoardId is NEVER resolved
   // here (a mid-turn select_board would skew it).
-  const survivingEffectiveSlots = new Set();
-  const survivingRawSlots = new Set();
-  // A2-multiboard — read survival from the JOURNAL winners for the same reason
-  // the projection above does: a board-A write shadowed under a shared raw Map
-  // key still SURVIVED the turn, and a raw-Map scan would have missed it, so a
-  // clear on board A would not have collapsed against its own replacement.
-  for (const { rawKey: mapKey, value: val } of readingWinners) {
-    const sym = val?.[EFFECTIVE_CIRCUIT_SLOT];
-    if (sym) {
-      survivingEffectiveSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
-    } else {
-      const d = decodeReadingKey(mapKey);
-      survivingRawSlots.add(rawCircuitSlot(d.field, d.circuit, d.boardId));
-    }
-  }
-  const clearSlotHasSurvivingWrite = (entry) => {
-    const sym = entry?.[EFFECTIVE_CIRCUIT_SLOT];
-    if (sym) {
-      return survivingEffectiveSlots.has(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
-    }
-    // Both-Symbol-less fallback: match against the RAW surviving set only.
-    return survivingRawSlots.has(
-      rawCircuitSlot(entry?.field, entry?.circuit, entry?.board_id ?? null)
-    );
-  };
+  // PLAN-A (feedback-2026-09-17) — the predicate is EXTRACTED to
+  // `stage6-per-turn-writes.js` so the device-absence fence can reach it from
+  // the answer finalizer, which runs BEFORE this function. Byte-identical
+  // output; the existing P5 tests pin that.
+  const clearSlotHasSurvivingWrite = buildSurvivingWritePredicate(perTurnWrites);
+
   // Plan A1a (2026-07-27) — mechanism B, the BOARD twin of the circuit
   // collapse above. A board correction can now emit clear_board_reading then
   // a replacement record_board_reading in one turn (the documented
@@ -1658,7 +1641,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     // P5 — drop cleared entries whose slot has a surviving same-turn write
     // (clear→write). No reason predicate: every cleared entry is a clear.
     // OMITTED when all were collapsed, keeping the empty-slot byte-identity.
-    const keptCleared = perTurnWrites.cleared.filter((c) => !clearSlotHasSurvivingWrite(c));
+    const keptCleared = survivingClears(perTurnWrites);
     if (keptCleared.length > 0) {
       result.cleared_readings = keptCleared;
     }
