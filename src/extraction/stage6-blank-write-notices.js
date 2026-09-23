@@ -72,15 +72,7 @@ export function mintRejectionRef(turnId, toolCallId) {
  */
 export function recordRejection(
   perTurnWrites,
-  {
-    ref,
-    field,
-    scopeSet = null,
-    boardId = null,
-    toolCallId = null,
-    bulkInput = null,
-    scope = null,
-  }
+  { ref, field, scopeSet = null, boardId = null, toolCallId = null, bulkInput = null, scope = null }
 ) {
   if (!perTurnWrites || ref == null) return null;
   if (!Array.isArray(perTurnWrites.rejections)) perTurnWrites.rejections = [];
@@ -137,6 +129,27 @@ export function spokenRefList(refs) {
   if (list.length === 0) return '';
   if (list.length === 1) return list[0];
   return `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`;
+}
+
+/**
+ * Sorted refs as spoken runs: [1,2,3,4,5,6,7,9,11,12,13,14] -> "1 to 7, 9 and
+ * 11 to 14". A run needs three or more members; two adjacent refs stay a
+ * plain pair so "1 to 2" is never spoken. Injective over the input set.
+ */
+export function spokenRefRuns(sortedRefs) {
+  const parts = [];
+  let i = 0;
+  while (i < sortedRefs.length) {
+    let j = i;
+    while (j + 1 < sortedRefs.length && sortedRefs[j + 1] === sortedRefs[j] + 1) j += 1;
+    if (j - i >= 2) {
+      parts.push(`${sortedRefs[i]} to ${sortedRefs[j]}`);
+    } else {
+      for (let k = i; k <= j; k += 1) parts.push(String(sortedRefs[k]));
+    }
+    i = j + 1;
+  }
+  return spokenRefList(parts);
 }
 
 /**
@@ -227,10 +240,20 @@ export function describeBulkScope({
   const spareClause = sparePolicy === 'exclude' ? ' excluding spares' : ' including spares';
   const sortedExcludes = [...new Set(excludes)].sort((a, b) => a - b);
   const exceptClause = sortedExcludes.length > 0 ? ` except ${spokenRefList(sortedExcludes)}` : '';
+  const sortedRefs = [...resolvedRefs].sort((a, b) => a - b);
+  // Six or fewer: the explicit list, APPENDED to the qualifier. More than six:
+  // the same set as compressed runs ("1 to 7, 9 and 11 to 14"). The runs are
+  // still EXACT — two different resolved sets always render different bytes —
+  // which the list has to be, because the refs are part of the slot key: a
+  // descriptor that dropped them above six made "circuits 1-7" and "circuits
+  // 1-8" render identically, and the client's 30 s byte dedupe swallowed the
+  // second refusal.
   const listClause =
-    resolvedRefs.length > 0 && resolvedRefs.length <= 6
-      ? ` — ${spokenRefList([...resolvedRefs].sort((a, b) => a - b))} —`
-      : '';
+    sortedRefs.length === 0
+      ? ''
+      : sortedRefs.length <= 6
+        ? ` — ${spokenRefList(sortedRefs)} —`
+        : ` — ${spokenRefRuns(sortedRefs)} —`;
   return `${selectorName}${spareClause}${exceptClause}${listClause}${boardClause(snapshot, boardId)}`;
 }
 
@@ -518,7 +541,6 @@ export function stageEnumRejectedAfterAskNotice(
   });
 }
 
-
 // ---- ask lineage -----------------------------------------------------------
 
 /**
@@ -549,11 +571,12 @@ export function recordAskRegistration(
 ) {
   if (!perTurnWrites) return null;
   const resolvedBoardId = resolveEffectiveBoardId(session, boardId) ?? null;
-  const refs = Array.isArray(circuits) && circuits.length > 0
-    ? [...circuits]
-    : Number.isInteger(circuit)
-      ? [circuit]
-      : [];
+  const refs =
+    Array.isArray(circuits) && circuits.length > 0
+      ? [...circuits]
+      : Number.isInteger(circuit)
+        ? [circuit]
+        : [];
   if (!Array.isArray(perTurnWrites.askRegistrations)) perTurnWrites.askRegistrations = [];
   perTurnWrites.askRegistrations.push({
     toolCallId,

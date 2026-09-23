@@ -508,6 +508,40 @@ describe('acceptance 5b — a bulk refusal is per CALL', () => {
     expect(line.indexOf('RCD-protected')).toBeLessThan(line.indexOf('except 4'));
   });
 
+  test('two scopes differing only ABOVE the sixth ref render byte-distinct lines', async () => {
+    // Codex review cycle 1: the descriptor used to drop the ref list above six
+    // targets, while the slot key kept it — so circuits 1-7 and 1-8 were two
+    // slots with one rendered string, and the client's 30 s byte dedupe
+    // swallowed the second refusal.
+    const circuits = { 0: {} };
+    for (let n = 1; n <= 8; n += 1) circuits[n] = { circuit_designation: `C${n}`, ref_method: 'C' };
+    const session = makeSession(SINGLE_BOARD, 'main', circuits);
+    const bulk = (id, exclude_circuits) => ({
+      id,
+      name: 'set_field_for_all_circuits',
+      input: {
+        field: 'ref_method',
+        value: '',
+        confidence: 0.9,
+        source_turn_id: 't1',
+        scope: 'all',
+        exclude_circuits,
+      },
+    });
+    // Exclusions change the "except" clause too, so compare by the ref runs:
+    // one call over 1-8, one over 1-7 reached by adding circuit 8 later.
+    loopDispatching([bulk('tu_a', [])], {});
+    const first = await runShadowHarness(session, 'eight', [], baseOpts());
+    delete session.stateSnapshot.circuits[8];
+    loopDispatching([bulk('tu_b', [])], {});
+    const second = await runShadowHarness(session, 'seven', [], baseOpts());
+    const a = spoken(first).find((t) => t.includes('all circuits'));
+    const b = spoken(second).find((t) => t.includes('all circuits'));
+    expect(a).toContain('1 to 8');
+    expect(b).toContain('1 to 7');
+    expect(a).not.toBe(b);
+  });
+
   test('include-spares and exclude-spares sweeps are byte-distinct', async () => {
     const session = makeSession(SINGLE_BOARD, 'main');
     const bulk = (id, spare_policy) => ({
@@ -578,7 +612,12 @@ describe('acceptance 5g — the PROVISIONAL direct enum rejection', () => {
         terminal_reason: 'end_turn',
       };
     });
-    const result = await runShadowHarness(session, 'enum then ask', [], baseOpts());
+    const result = await runShadowHarness(
+      session,
+      'enum then ask',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['tu_ask'] })
+    );
     expect(spoken(result).some((t) => t.includes("isn't one of the options"))).toBe(false);
   });
 
@@ -1028,7 +1067,12 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
         terminal_reason: 'end_turn',
       };
     });
-    const result = await runShadowHarness(session, 'ask covers', [], baseOpts());
+    const result = await runShadowHarness(
+      session,
+      'ask covers',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['tu_ask'] })
+    );
     expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(false);
   });
 
@@ -1056,7 +1100,45 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
         terminal_reason: 'end_turn',
       };
     });
-    const result = await runShadowHarness(session, 'ask other circuit', [], baseOpts());
+    const result = await runShadowHarness(
+      session,
+      'ask other circuit',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['tu_ask'] })
+    );
+    expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(true);
+  });
+
+  test('an ask that was REGISTERED but never HEARD does not retire the refusal', async () => {
+    // Codex review cycle 1: the registration is journaled BEFORE the WebSocket
+    // send. A closed socket or a throwing send leaves a question nobody heard,
+    // and retiring the refusal for it leaves the rejected value with no
+    // specific spoken outcome at all. Same setup as the covering-ask case
+    // above, minus the emission evidence — so this is the discriminating half.
+    const session = makeSession(SINGLE_BOARD, 'main');
+    runToolLoopSpy.mockImplementation(async (o) => {
+      await o.dispatcher(
+        { tool_call_id: 'tu_b', name: 'record_reading', input: blankWrite('tu_b').input },
+        o.ctx
+      );
+      o.perTurnWritesRef().askRegistrations.push({
+        toolCallId: 'tu_ask',
+        rejectionRef: null,
+        field: 'ocpd_bs_en',
+        circuits: [1],
+        boardId: 'main',
+      });
+      return {
+        stop_reason: 'end_turn',
+        rounds: 1,
+        tool_calls: [],
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+    const result = await runShadowHarness(session, 'unsent ask', [], baseOpts());
     expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(true);
   });
 
@@ -1104,7 +1186,12 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
         terminal_reason: 'end_turn',
       };
     });
-    const result = await runShadowHarness(session, 'post-ask refusal', [], baseOpts());
+    const result = await runShadowHarness(
+      session,
+      'post-ask refusal',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['tu_ask'] })
+    );
     expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(true);
   });
 
@@ -1143,7 +1230,12 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
         terminal_reason: 'end_turn',
       };
     });
-    const result = await runShadowHarness(session, 'provisional refusal', [], baseOpts());
+    const result = await runShadowHarness(
+      session,
+      'provisional refusal',
+      [],
+      baseOpts({ _seedEmittedAskToolCallIds: ['tu_ask'] })
+    );
     expect(spoken(result).some((t) => t.includes('still BS EN 60898'))).toBe(false);
   });
 

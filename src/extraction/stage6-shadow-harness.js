@@ -2753,9 +2753,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
     // else".
     try {
       const answerState = perTurnWrites.answer;
-      const journaledAnswers = Array.isArray(perTurnWrites.answers)
-        ? perTurnWrites.answers
-        : [];
+      const journaledAnswers = Array.isArray(perTurnWrites.answers) ? perTurnWrites.answers : [];
       if (journaledAnswers.length > 0 && answerState != null) {
         const stagedNotices = Array.isArray(perTurnWrites.mandatoryNotices)
           ? perTurnWrites.mandatoryNotices.filter(
@@ -4862,13 +4860,15 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           const c3SurvivingCircuitSlots = new Set();
           for (const winner of projectReadingWinners(perTurnWrites)) {
             const sym = winner?.value?.[EFFECTIVE_CIRCUIT_SLOT];
-            if (sym) c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+            if (sym)
+              c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
           }
           if (Array.isArray(perTurnWrites?.fieldCorrections)) {
             for (const c of perTurnWrites.fieldCorrections) {
               if (c?.reason !== 'clear_reading') continue;
               const sym = c?.[EFFECTIVE_CIRCUIT_SLOT];
-              if (sym) c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
+              if (sym)
+                c3SurvivingCircuitSlots.add(rawCircuitSlot(sym.field, sym.circuit, sym.boardId));
             }
           }
           const c3SurvivingOpSlots = new Set();
@@ -4894,6 +4894,13 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           if (Array.isArray(perTurnWrites?.askRegistrations)) {
             for (const ask of perTurnWrites.askRegistrations) {
               if (!ask) continue;
+              // Only an ask the inspector actually HEARD covers a refusal. The
+              // registration is journaled before the WebSocket send, so a closed
+              // socket or a throwing send leaves a registered question nobody
+              // heard — and retiring the refusal for it would leave the
+              // rejected value with no specific spoken outcome at all. Emission
+              // evidence is the same set every other ask-gated net reads.
+              if (!emittedAskToolCallIds.has(ask.toolCallId)) continue;
               if (typeof ask.rejectionRef === 'string') c3CoveringAskRefs.add(ask.rejectionRef);
               if (typeof ask.field !== 'string' || ask.field.length === 0) continue;
               const refs = Array.isArray(ask.circuits) ? ask.circuits : [];
@@ -4966,7 +4973,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                 continue;
               }
               // A bulk notice is per CALL: only a covering ask retires it.
-              if (notice.family !== 'empty_bulk_write_blocked' && !notice.slotKey.startsWith('bulk ')) {
+              if (
+                notice.family !== 'empty_bulk_write_blocked' &&
+                !notice.slotKey.startsWith('bulk ')
+              ) {
                 if (c3SurvivingCircuitSlots.has(notice.slotKey)) continue;
                 if (c3SurvivingOpSlots.has(notice.slotKey)) continue;
                 if (survivingSlots.has(notice.slotKey)) continue;
