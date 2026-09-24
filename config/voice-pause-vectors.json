@@ -2,7 +2,7 @@
   "$comment": "PLAN-D (feedback wave 2026-09-17, Derek's decision 2) — hands-free pause and resume by voice. The ONE shared contract for both clients: the command grammar (plain \"pause\" / \"resume\" since Decision 36), the acceptance and near-miss vectors, the five spoken strings and the resume tone's parameters. Canonical copy lives here; iOS carries byte-identical copies (app bundle + test fixtures), pinned by scripts/check-voice-pause-fixture-sync.sh as a CertMateUnified/deploy-testflight.sh preflight. Tests assert against the keys in this file, never against literals.",
   "schema_version": 1,
   "grammar": {
-    "$comment": "Decision 36 (TAKEN 2026-09-24): the command is exactly one word said on its own — \"pause\" or \"resume\". Whole-utterance match, case-insensitive, punctuation-stripped, no prefix, no brand word, no aliases, no fuzzy matching (the 2026-06-24 hard rule). Normalisation runs in the order listed; the pattern is then matched against the normalised text. (Before Decision 36 the grammar required the brand word \"CertMate\"; Flux transcribed it as \"So it may\", \"Search made to\" and \"Certainly made\" in the device smoke.)",
+    "$comment": "Decision 36 (TAKEN 2026-09-24): the command is exactly one word said on its own — \"pause\" or \"resume\". Whole-utterance match, case-insensitive, punctuation-stripped, no prefix, no brand word, no aliases, no fuzzy matching (the 2026-06-24 hard rule). Normalisation runs in the order listed; the pattern is then matched against the normalised text. (Before Decision 36 the grammar required the brand word \"CertMate\"; Flux transcribed it as \"So it may\", \"Search made to\" and \"Certainly made\" in the device smoke.) \"paws\" is an enumerated transcription of the spoken word \"pause\" and is a pause command (Derek, Decision 36 addendum).",
     "normalisation": [
       "lowercase",
       "delete apostrophes (U+0027 and U+2019)",
@@ -10,12 +10,13 @@
       "collapse runs of whitespace to one space and trim"
     ],
     "pause_commands": [
-      "pause"
+      "pause",
+      "paws"
     ],
     "resume_commands": [
       "resume"
     ],
-    "pattern": "^(?<command>pause|resume)$"
+    "pattern": "^(?<command>pause|paws|resume)$"
   },
   "keyterm_brand_forms": {
     "$comment": "Recognition aid only, no longer part of the command grammar (Decision 36). The brand forms stay on both web keyterm lists and the iOS keyword boosts so the product name is transcribed well in ordinary speech.",
@@ -33,7 +34,10 @@
       "Pause.",
       "PAUSE!",
       "Pause…",
-      " pause "
+      " pause ",
+      "paws",
+      "Paws.",
+      "PAWS!"
     ],
     "accept_resume": [
       "resume",
