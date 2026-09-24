@@ -216,12 +216,17 @@ export const OCPD_STANDARD_ACCEPTED_FORMS =
 export const BS_STANDARD_NAMED_EXTRACTOR =
   /\b((?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*\d{2,5}(?:\s*-\s*\d{1,2})?(?:\s*-\s*\d)?)(?![A-Za-z0-9\-/]|[.,]\d)/i;
 
+/** One digit, or one spoken digit word, as a regex source fragment. */
+const DIGIT_TOKEN = String.raw`(?:\d|\b(?:zero|oh|nought|one|two|three|four|five|six|seven|eight|nine)\b)`;
+
 /**
  * DETECTION ONLY — does the utterance mention a BS standard at all? Much
  * broader than the extractor above: `BS` (or Flux's letter-split `b s`)
  * followed, within the same sentence and 40 characters, by a digit or a
  * spoken digit word — so "the RCD BS code is 61009", "the BS code for the RCD
- * is 61009" and "BS 6 1 zero zero 9" all count.
+ * is 61009" and "BS 6 1 zero zero 9" all count. It needs TWO adjacent digit
+ * tokens, because every device standard has at least two digits: a circuit
+ * designated "BS 3" is not a stated standard (EP cycle 3, c4-1).
  * It is never used to WRITE anything and never decides which field a number
  * belongs to; a schema uses it to notice that a standard was said and not
  * consumed, so the turn can go to the model (Decision 7). Deliberately
@@ -229,8 +234,10 @@ export const BS_STANDARD_NAMED_EXTRACTOR =
  * mention): a missed detection is a silent drop, an extra one is one model
  * turn. Not global.
  */
-export const BS_STANDARD_MENTION_PATTERN =
-  /\b(?:a\.?\s+)?b\.?\s*s\.?\b(?=[^.?!]{0,40}?(?:\d|\b(?:zero|oh|nought|one|two|three|four|five|six|seven|eight|nine)\b))/i;
+export const BS_STANDARD_MENTION_PATTERN = new RegExp(
+  String.raw`\b(?:a\.?\s+)?b\.?\s*s\.?\b(?=[^.?!]{0,40}?${DIGIT_TOKEN}\s*-?\s*${DIGIT_TOKEN})`,
+  'i'
+);
 
 /**
  * `rcd_bs_en`'s closed option list, the `""` sentinel EXCLUDED. `rcd_bs_en`

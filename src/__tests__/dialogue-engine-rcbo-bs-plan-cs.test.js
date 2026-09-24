@@ -855,3 +855,21 @@ describe('EP cycle 2 — an unattributed BS standard is never dropped', () => {
     expect(lastAsk(ws).question).toMatch(/^Got it\./);
   });
 });
+
+describe('EP cycle 3 — a circuit designated "BS 3" is not a stated standard (c4-1)', () => {
+  test('entry "RCBO on circuit BS 3" enters and asks, no hand-off', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'BS 3' } });
+    const out = say(ws, session, 'RCBO on circuit 3.', 1000);
+    expect(out.handled).toBe(true);
+    const out2 = say(ws, session, 'BS EN 61009', 2000);
+    expect(out2.fallthrough).toBe(false);
+    const out3 = say(ws, session, 'BS EN 61009', 2500);
+    expect(out3.fallthrough).toBe(false);
+    // "curve B on circuit BS 3" answers the curve; the designation's single
+    // digit is not a standard, so the walk continues.
+    const out4 = say(ws, session, 'curve B on circuit BS 3', 3000);
+    expect(out4.fallthrough).toBe(false);
+    expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
+  });
+});
