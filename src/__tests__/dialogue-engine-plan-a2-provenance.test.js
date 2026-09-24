@@ -424,10 +424,11 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     expect(lastQuestion(ws)).toBe('Got it. BS EN 61008, type AC, 30 mA.');
   });
 
-  // (i) RCBO volunteered BS number → ONE spoken occurrence (mirror-covered
-  // — rcd_bs_en's value is spoken via ocpd_bs_en's mention in finishMessage,
-  // so the terminal-sink rule must never double it).
-  test('(i) RCBO volunteered BS mirrors ocpd_bs_en<->rcd_bs_en without doubling the finish text', () => {
+  // (i) RCBO BS numbers → ONE spoken occurrence when equal. PLAN-CS (CS-64 /
+  // CS-70) retired the mirror: both BS slots are separate asked slots, and
+  // the finish line names the RCD's number only when it DIFFERS, so equal
+  // values are spoken once and the terminal-sink rule never doubles them.
+  test('(i) RCBO BS slots answered separately with equal values — named once, never doubled', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     processProtectiveDeviceTurn({
@@ -437,14 +438,20 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'RCBO on circuit 5.',
       now: 1000,
     });
-    // First-asked slot is ocpd_bs_en — bare "BS EN 61009" answers it and
-    // mirrors into rcd_bs_en (never a separate dictation operation).
+    // First-asked slot is ocpd_bs_en, then rcd_bs_en — each its own answer.
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
       transcriptText: 'BS EN 61009',
       now: 2000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      now: 2500,
     });
     processProtectiveDeviceTurn({
       ws,
@@ -536,7 +543,16 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'BS EN 61009',
       now: 2000,
     });
-    // BS EN 61009 pivots RCD -> RCBO. Drive the RCBO walkthrough to finish.
+    // BS EN 61009 pivots RCD -> RCBO. PLAN-CS (CS-64 / CS-114): no mirror
+    // fills the OCPD standard, so RCBO asks it first — one answer turn,
+    // then the rest of the walkthrough to finish.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      now: 2500,
+    });
     processProtectiveDeviceTurn({
       ws,
       session,
@@ -585,8 +601,12 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       const session = buildSession({
         5: { rcd_bs_en: '61008', rcd_type: 'AC', rcd_operating_current_ma: '30' },
       });
+      // PLAN-CS — seeds canonicalise through `parseRcdBsCode`, so the seed's
+      // canonical value is `BS EN 61008`.
       const resolver = (field, circuitRef, canonicalValue) =>
-        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null;
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === 'BS EN 61008'
+          ? 'bundler'
+          : null;
       const result = enterScriptByName({
         session,
         sessionId: SESSION_ID,
@@ -672,8 +692,9 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       // Codex diff-review r1 — same partial-dictation reasoning as the
       // canonical-equal case above: type/current are snapshot-only, so the
       // legacy verbatim summary is suppressed; only the genuinely dictated
-      // (freshly written) BS number is spoken.
-      expect(lastQuestion(ws)).toBe('Also got BS number 61008.');
+      // (freshly written) BS number is spoken — in its canonical form, since
+      // PLAN-CS canonicalises BS seeds through the slot's parser.
+      expect(lastQuestion(ws)).toBe('Also got BS number BS EN 61008.');
     });
   });
 
@@ -696,22 +717,25 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       schemas: ALL_DIALOGUE_SCHEMAS,
       schemaName: 'rcd',
       circuit_ref: 5,
-      // 60898 (not 61009 — that value triggers RCD's own RCBO-pivot
-      // derivation, an unrelated mechanism this test must not exercise).
-      pending_writes: [{ field: 'rcd_bs_en', value: '60898' }],
+      // 62423 (not 61009 — that value triggers RCD's own RCBO-pivot
+      // derivation, an unrelated mechanism this test must not exercise; and
+      // not 60898, an MCB standard the strict RCD parser refuses since
+      // PLAN-CS).
+      pending_writes: [{ field: 'rcd_bs_en', value: '62423' }],
       ws,
       logger: null,
       now: 1000,
       ownershipResolver: (field, circuitRef, canonicalValue) =>
-        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null,
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === 'BS EN 61008'
+          ? 'bundler'
+          : null,
     });
     expect(result.ok).toBe(true);
     expect(result.seeded_writes).toEqual(['rcd_bs_en']);
-    // The seed's genuinely different value overwrites the stale winner.
-    // (pending_writes-sourced BS values pass through normaliseDialogueSlotWrite
-    // unparsed — raw form, not the "BS EN …" canonical form text dictation
-    // produces via the slot parser; matches the sibling NO-prior-winner test.)
-    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('60898');
+    // The seed's genuinely different value overwrites the stale winner. Since
+    // PLAN-CS, pending_writes-sourced BS values canonicalise through the
+    // slot's parser in normaliseDialogueSlotWrite, like dictation does.
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 62423');
     // Bundler-owned (guaranteed backfilled) — the engine speaks NOTHING.
     expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
   });
@@ -734,9 +758,12 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       logger: null,
       now: 1000,
       ownershipResolver: (field, circuitRef, canonicalValue) =>
-        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '61008' ? 'bundler' : null,
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === 'BS EN 61008'
+          ? 'bundler'
+          : null,
     });
     expect(result.ok).toBe(true);
+    // Canonical-equal to the stored legacy bytes → satisfied, never rewritten.
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('61008');
     expect(ws.sent.filter((m) => m?.type === 'ask_user_started')).toHaveLength(0);
   });
@@ -758,27 +785,29 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       schemas: ALL_DIALOGUE_SCHEMAS,
       schemaName: 'rcd',
       circuit_ref: 5,
-      // B then A, where the resolver's frozen prior winner is A (60898) —
-      // simulating an earlier-in-the-turn record_reading of 60898, then two
+      // B then A, where the resolver's frozen prior winner is A (62423) —
+      // simulating an earlier-in-the-turn record_reading of 62423, then two
       // start_dialogue_script seeds: first a genuinely different write
       // (61008), then a later write that happens to equal the frozen prior
-      // winner (60898). The 60898 write is the LATEST dictation and must
+      // winner (62423). The 62423 write is the LATEST dictation and must
       // win — not be silently dropped because it matches the stale
       // pre-call resolver snapshot.
       pending_writes: [
         { field: 'rcd_bs_en', value: '61008' },
-        { field: 'rcd_bs_en', value: '60898' },
+        { field: 'rcd_bs_en', value: '62423' },
       ],
       ws,
       logger: null,
       now: 1000,
       ownershipResolver: (field, circuitRef, canonicalValue) =>
-        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === '60898' ? 'bundler' : null,
+        field === 'rcd_bs_en' && circuitRef === 5 && canonicalValue === 'BS EN 62423'
+          ? 'bundler'
+          : null,
     });
     expect(result.ok).toBe(true);
-    // The LATEST dictated value (60898) must be what's actually stored —
+    // The LATEST dictated value (62423) must be what's actually stored —
     // not silently discarded in favour of the intervening 61008 write.
-    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('60898');
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 62423');
   });
 
   // (l) two same-field dictations → TWO operations, each spoken per its own
@@ -814,7 +843,8 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'Type AC, actually BS EN 60898',
+      // 62423, not 60898: the strict RCD parser refuses an MCB standard.
+      transcriptText: 'Type AC, actually BS EN 62423',
       now: 3000,
     });
     processProtectiveDeviceTurn({
@@ -832,14 +862,14 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       now: 5000,
     });
     // Stored value is the CORRECTED one.
-    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 60898');
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 62423');
     // The finish text covers the latest (script-owned, current) value ONCE;
     // the earlier correction is a distinct genuinely-dictated reading and
     // is separately named via the terminal-sink append — neither is
     // doubled, and neither is silently dropped.
     const finish = lastQuestion(ws);
-    expect(finish).toBe('Got it. BS EN 60898, type AC, 30 mA. Also got BS number BS EN 61008.');
-    expect((finish.match(/60898/g) ?? []).length).toBe(1);
+    expect(finish).toBe('Got it. BS EN 62423, type AC, 30 mA. Also got BS number BS EN 61008.');
+    expect((finish.match(/62423/g) ?? []).length).toBe(1);
     expect((finish.match(/61008/g) ?? []).length).toBe(1);
   });
 
@@ -869,6 +899,15 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       sessionId: SESSION_ID,
       transcriptText: 'BS EN 61009',
       now: 2000,
+    });
+    // PLAN-CS (CS-64 / CS-114) — the RCD → RCBO pivot no longer mirrors the
+    // RCD's number into the OCPD standard, so RCBO asks for it next.
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      now: 2500,
     });
     processProtectiveDeviceTurn({
       ws,
@@ -932,7 +971,7 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       schemas: ALL_DIALOGUE_SCHEMAS,
       schemaName: 'rcd',
       circuit_ref: 5,
-      pending_writes: [{ field: 'rcd_bs_en', value: '60898' }],
+      pending_writes: [{ field: 'rcd_bs_en', value: '62423' }],
       ws: new FakeWS(),
       logger: null,
       now: 1000,
@@ -948,7 +987,8 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     // simulating exactly what a REPLACEMENT site's
     // `state.operations = priorOperations` produces — without disturbing
     // any of the engine's own slot-tracking state.
-    const session = buildSession({ 6: { rcd_bs_en: '60898' } });
+    // A VALID stored RCD standard (PLAN-CS: an unparseable one would be asked).
+    const session = buildSession({ 6: { rcd_bs_en: 'BS EN 62423' } });
     const entered = enterScriptByName({
       session,
       sessionId: SESSION_ID,
@@ -995,7 +1035,7 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
     // verbatim legacy summary as if BS had been said. It must NOT match
     // test (b)'s all-covered verbatim shape.
     const finish = lastQuestion(ws);
-    expect(finish).not.toBe('Got it. BS EN 60898, type AC, 30 mA.');
+    expect(finish).not.toBe('Got it. BS EN 62423, type AC, 30 mA.');
     expect(finish).not.toMatch(/^Got it\./);
     expect(session.stateSnapshot.circuits[6].rcd_type).toBe('AC');
     expect(session.stateSnapshot.circuits[6].rcd_operating_current_ma).toBe('30');

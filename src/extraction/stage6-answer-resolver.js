@@ -38,6 +38,7 @@ import { NUMERIC_READING_FIELDS, canonicaliseNumericReadingField } from './value
 // the resolver's OWN designation-matching stack (see the census-decoration
 // section below).
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
+import { parseOcpdStandard } from './dialogue-engine/parsers/bs-code.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -3389,6 +3390,87 @@ function levenshteinDistance(a, b) {
 function normaliseBsEnDigits(s) {
   if (typeof s !== 'string') return '';
   return s.replace(/\D/g, '');
+}
+
+/**
+ * PLAN-CS (feedback-2026-09-17) — resolve the inspector's answer to an ask for
+ * `ocpd_bs_en`, the free-text OCPD standard.
+ *
+ * WHY A DEDICATED RESOLVER. Once `ocpd_bs_en` is `text`, `resolveEnumAnswer`
+ * returns `no_value_context` for it, and `resolveValueAnswer` treats the reply
+ * as a NUMBER: it escalates `N/A` (no numeric) and `BS EN 60947-4-1` (several
+ * numerics), and auto-writes `BS 123456` down a path that rejects it later —
+ * none of which can stage PLAN-C3's post-ask terminal. The dispatcher runs this
+ * BEFORE the enum resolver whenever the asked field is `ocpd_bs_en`.
+ *
+ * Exact grammar only (`parseOcpdStandard`), over the whole isolated reply. No
+ * fuzzy matching, no digit extraction from prose — HARD RULE.
+ *
+ * Where the write goes, by the ask's shape (CS-27 / CS-44):
+ *   - a BULK lineage (`bulkInput`, from the rejected `set_field_for_all_circuits`
+ *     the ask is about) → ONE `set_field_for_all_circuits` carrying the ask's
+ *     original scope, spare policy and exclusions verbatim. It is never widened
+ *     to `all`.
+ *   - an integer `contextCircuit` → one `record_reading`.
+ *   - a plural `contextCircuits` → one `record_reading` per circuit, exactly
+ *     those circuits.
+ *   - none of these → `no_target`. Unreachable in production: the ask
+ *     dispatcher refuses to register such an ask (`ask_requires_target`).
+ *
+ * @returns {{kind:'auto_resolve', writes:object[]} |
+ *           {kind:'rejected', received:string} |
+ *           {kind:'no_target'}}
+ */
+export function resolveOcpdStandardAnswer({
+  userText,
+  contextCircuit,
+  contextCircuits,
+  contextBoardId = null,
+  bulkInput = null,
+  sourceTurnId,
+}) {
+  const received = String(userText ?? '').trim();
+  const canonical = parseOcpdStandard(received);
+  if (canonical === null) return { kind: 'rejected', received };
+
+  const base = {
+    field: 'ocpd_bs_en',
+    value: canonical,
+    // The reply parsed EXACTLY against the grammar — the same confidence the
+    // enum resolver gives an exact option match.
+    confidence: 0.95,
+    source_turn_id: sourceTurnId ?? null,
+  };
+  if (bulkInput && typeof bulkInput === 'object') {
+    return {
+      kind: 'auto_resolve',
+      writes: [
+        {
+          ...base,
+          tool: 'set_field_for_all_circuits',
+          circuit: null,
+          bulkInput,
+          ...(bulkInput.board_id != null ? { board_id: bulkInput.board_id } : {}),
+        },
+      ],
+    };
+  }
+  const circuits =
+    Array.isArray(contextCircuits) && contextCircuits.length > 0
+      ? contextCircuits
+      : Number.isInteger(contextCircuit)
+        ? [contextCircuit]
+        : null;
+  if (!circuits) return { kind: 'no_target' };
+  return {
+    kind: 'auto_resolve',
+    writes: circuits.map((circuit) => ({
+      ...base,
+      tool: 'record_reading',
+      circuit,
+      ...(contextBoardId != null ? { board_id: contextBoardId } : {}),
+    })),
+  };
 }
 
 /**

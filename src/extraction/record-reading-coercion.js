@@ -12,11 +12,14 @@
  *
  * Coercion classes:
  *
- *   1. BS-EN canonicalisation — ocpd_bs_en / rcd_bs_en flow through
- *      parseBsCode. The dialogue-engine parser already encodes every
- *      reasonable variant + the Levenshtein-1 fuzzy fallback for
- *      Deepgram digit drift, so we get a single source of truth across
- *      dictation, dialogue-engine, dispatcher, AND speculator.
+ *   1. BS-EN canonicalisation — each field through its OWN dialogue-engine
+ *      parser (PLAN-CS): ocpd_bs_en → parseOcpdStandard (free text, any
+ *      grammar-valid standard), rcd_bs_en → parseRcdBsCode (strict closed
+ *      list). One source of truth across dictation, dialogue-engine,
+ *      dispatcher AND speculator. A value the parser cannot read passes
+ *      through UNCHANGED so the dispatcher's validator rejects it audibly
+ *      (`ocpd_standard_shape` / `value_not_in_options`) — coercion never
+ *      guesses, and there is no fuzzy fallback.
  *
  *   2. Y/N boolean-enum coercion — polarity_confirmed,
  *      supply_polarity_confirmed, rcd_button_confirmed,
@@ -52,7 +55,7 @@
  * speculator agree.
  */
 
-import { parseBsCode } from './dialogue-engine/parsers/bs-code.js';
+import { parseOcpdStandard, parseRcdBsCode } from './dialogue-engine/parsers/bs-code.js';
 import { NUMERIC_READING_FIELDS, isLimForm } from './value-enum-validator.js';
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 
@@ -72,7 +75,12 @@ const YN_BOOLEAN_FIELDS = new Set([
   'rcd_button_confirmed',
   'afdd_button_confirmed',
 ]);
-const BS_EN_FIELDS = new Set(['ocpd_bs_en', 'rcd_bs_en']);
+// PLAN-CS — the two BS fields canonicalise through DIFFERENT parsers, keyed by
+// field: `ocpd_bs_en` is free text and `rcd_bs_en` a closed list.
+const BS_EN_PARSERS = new Map([
+  ['ocpd_bs_en', parseOcpdStandard],
+  ['rcd_bs_en', parseRcdBsCode],
+]);
 
 // P3 (2026-07-23, feedback id 86) — "LIM" (limitation: the inspector could not
 // obtain a reading) is a valid value for EVERY numeric READING field, not just
@@ -267,8 +275,8 @@ export function coerceRecordReadingValue(field, value) {
     return canonicaliseCircuitDesignation(value);
   }
 
-  if (BS_EN_FIELDS.has(field)) {
-    const canonical = parseBsCode(value);
+  if (BS_EN_PARSERS.has(field)) {
+    const canonical = BS_EN_PARSERS.get(field)(value);
     if (canonical) return canonical;
     return value;
   }

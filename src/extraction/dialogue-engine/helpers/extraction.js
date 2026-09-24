@@ -101,6 +101,46 @@ export function maskCircuitSpans(text) {
 }
 
 /**
+ * PLAN-CS (feedback-2026-09-17, CS-66 / CS-82 / CS-95) — the ONE definition of
+ * blankness and the ONE definition of "this slot's stored value parses". Every
+ * fill decision composes these rather than inlining its own test: the walk
+ * (`nextMissingSlot`), the cancel tally (`countFilledForCancel`) and the
+ * engine's skip branch. Three call sites drifting apart is exactly what
+ * produced the RCBO BS defects this plan closes. PLAN-A imports them.
+ */
+export const isNonBlank = (value) => value !== undefined && value !== null && value !== '';
+
+/**
+ * Whether a stored value parses under the slot's OWN parser. Stricter than the
+ * engine's `canonicaliseSlotValue`: a throw and an `undefined` result both mean
+ * "does not parse". No parser means nothing to fail.
+ *
+ * The slot's own parser, never a shared one: the two `rcd_bs_en` slots use the
+ * strict `parseRcdBsCode`, and a shared OCPD parser would call an RCD slot
+ * holding `BS 3036` filled.
+ */
+export const slotParses = (slot, value) => {
+  if (typeof slot?.parser !== 'function') return true;
+  try {
+    const parsed = slot.parser(typeof value === 'string' ? value : String(value));
+    return parsed !== null && parsed !== undefined;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * THE fill test. A slot is filled when its value is non-blank AND, for a slot
+ * declaring `askWhenStoredUnparseable` (only the two `rcd_bs_en` slots), that
+ * value parses — so a stored `BS 9999` on an RCD slot counts as unfilled and is
+ * asked, rather than surviving the walk as an invalid standard. The stored
+ * bytes are never rewritten here; the inspector's answer replaces them through
+ * the ordinary applied operation.
+ */
+export const slotIsFilled = (slot, value) =>
+  isNonBlank(value) && (!slot?.askWhenStoredUnparseable || slotParses(slot, value));
+
+/**
  * Find the next slot that hasn't been written, in declared order.
  * Returns the slot object (not just the field name) so callers can
  * read its question / parser / flags directly.
@@ -115,6 +155,9 @@ export function maskCircuitSpans(text) {
  * skipped — they're harvested from the entry utterance via
  * extractNamedFieldValues but never asked for via TTS. They behave
  * like "always done" from nextMissingSlot's perspective.
+ *
+ * "Written" is `slotIsFilled` (PLAN-CS, CS-66): blank OR stored-unparseable
+ * on an `askWhenStoredUnparseable` slot counts as missing.
  */
 export function nextMissingSlot(values, slots, skippedSet, deferredSet) {
   for (const slot of slots) {
@@ -128,8 +171,7 @@ export function nextMissingSlot(values, slots, skippedSet, deferredSet) {
     // a deliberate override ("the BS code is 60898") still asks /
     // resolves through the normal slot machinery.
     if (deferredSet?.has?.(slot.field)) continue;
-    const v = values[slot.field];
-    if (v === undefined || v === null || v === '') return slot;
+    if (!slotIsFilled(slot, values[slot.field])) return slot;
   }
   return null;
 }
@@ -137,7 +179,9 @@ export function nextMissingSlot(values, slots, skippedSet, deferredSet) {
 /**
  * Count how many of the cancellation-tally slots are filled. Used to
  * format the "N of M saved" cancel message. Voltage in IR is excluded
- * via `countsTowardCancelTally: false`.
+ * via `countsTowardCancelTally: false`. Uses the same `slotIsFilled` test as
+ * the walk, so a stored-unparseable RCD standard that was asked and never
+ * answered is not counted as saved (PLAN-CS, CS-66).
  */
 export function countFilledForCancel(values, slots) {
   let filled = 0;
@@ -145,8 +189,7 @@ export function countFilledForCancel(values, slots) {
   for (const slot of slots) {
     if (slot.countsTowardCancelTally === false) continue;
     total += 1;
-    const v = values[slot.field];
-    if (v !== undefined && v !== null && v !== '') filled += 1;
+    if (slotIsFilled(slot, values[slot.field])) filled += 1;
   }
   return { filled, total };
 }

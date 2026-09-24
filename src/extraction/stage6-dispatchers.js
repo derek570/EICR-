@@ -333,7 +333,7 @@ export function createToolDispatcher(
  * @param {object} logger
  * @param {string} turnId
  * @param {object} perTurnWrites
- * @returns {(write: {tool, field, circuit, value, confidence, source_turn_id}, ctx?: object) => Promise<{ok: boolean, body?: object, error?: string}>}
+ * @returns {(write: {tool, field, circuit, value, confidence, source_turn_id, board_id?, bulkInput?}, ctx?: object) => Promise<{ok: boolean, body?: object, error?: string}>}
  */
 export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrites, extraCtx = {}) {
   let round = 0;
@@ -388,6 +388,25 @@ export function createAutoResolveWriteHook(session, logger, turnId, perTurnWrite
     // punching a hole in their destructive-write safety contract.
     if (write.board_id != null) {
       synthInput.board_id = write.board_id;
+    }
+    // PLAN-CS (feedback-2026-09-17, CS-27 / CS-35) — the ONE allowlisted bulk
+    // branch. The rebuild above drops every bulk argument, so an answer to an
+    // ask about a rejected `set_field_for_all_circuits {scope:
+    // rcd_protected_only}` or `{exclude_circuits: [4]}` would silently widen
+    // to `all`. The OCPD-standard answer resolver hands over the rejected
+    // call's own validated arguments as an immutable `bulkInput`; they are
+    // copied VERBATIM and read from nowhere else (never from the ask's
+    // `context_*`, which cannot express a selector, a spare policy or an
+    // exclusion list). The real bulk dispatcher then does its own scope
+    // resolution, spare handling and outcome staging.
+    if (write.tool === 'set_field_for_all_circuits' && write.bulkInput) {
+      const { scope, spare_policy: sparePolicy, exclude_circuits: excludes } = write.bulkInput;
+      // `null` in `bulkInput` means the original call omitted the argument,
+      // so it stays omitted here — the bulk validator rejects an explicit
+      // `scope: null`.
+      if (scope != null) synthInput.scope = scope;
+      if (sparePolicy != null) synthInput.spare_policy = sparePolicy;
+      if (excludes != null) synthInput.exclude_circuits = [...excludes];
     }
     const synthCall = {
       tool_call_id: synthCallId,

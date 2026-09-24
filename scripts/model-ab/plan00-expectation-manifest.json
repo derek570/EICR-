@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "aa44c4b7973ddc8599229c9c969269a9ad48a67e59f07acd00ee62433175abfa",
+  "semantic_oracle_digest": "da9347ca9571e6351b6cc920c563f746a3aa9e4e9924cda6cf6042af0bc5d573",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -521,15 +521,15 @@
     },
     {
       "path": "src/extraction/stage6-dispatchers.js",
-      "sha256": "953993bcb46bf99a5f9946da1ca0621a573b37330d9780ac5140a1a5f97114c1"
+      "sha256": "cee506c553b960d23093c48c95f74f8c9e0da80e4b70e2114e0fc7c1c15c7c62"
     },
     {
       "path": "src/extraction/eicr-extraction-session.js",
-      "sha256": "9d950fb0f743e92a6da2ac6c73de6c9ea98217f0429c854b223a2d9a4760daee"
+      "sha256": "1ff448cf0cb9e187cba92c797352b9a67516dab2d15a3bdf1eeb40e7567c0179"
     },
     {
       "path": "src/extraction/stage6-shadow-harness.js",
-      "sha256": "cfd43706274691c4210cc307478341d1fbcbc8658764bdfd7cabb75fc0f88da9"
+      "sha256": "e43752a20b28094eea5b8b9995f7908e8e8c6648d16a53a5af0b2f11ab043489"
     },
     {
       "path": "src/extraction/postcode-snapshot-applier.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "dae5a5757ee5dd633f1bfa66217bbe14e6fbf67c9a73e7fd127e53b978afd0e4"
+      "sha256": "6a189a9dc88601a25b6ceaa1a1ab33babcae9f2fdbdf938f13ec1d062e0c40fa"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
@@ -597,7 +597,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "009328320b405a4735eee4c4ba36143da06622a898d61a8264f353e4dbb466a9"
+      "sha256": "5164c1b5316b71971e61140bac939c3273514626829255675929d68cdabc42dc"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",

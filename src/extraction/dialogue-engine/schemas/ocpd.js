@@ -5,10 +5,11 @@
  *
  * Pivot: when `ocpd_bs_en` fills with "BS EN 61009", the device IS
  * an RCBO — derivation pivots to the RCBO schema, which carries the
- * BS code over (mirrored to rcd_bs_en too, since by convention an
- * RCBO populates both columns) and continues asking for the RCBO's
- * remaining slots (curve + rating + kA + RCD type + RCD operating
- * current).
+ * OCPD standard over and asks the RCBO's remaining slots, starting with
+ * the RCD's own BS number. Nothing copies the OCPD standard into
+ * `rcd_bs_en` any more (PLAN-CS, CS-64): an RCBO's two standards are not
+ * always the same in the field (61008 against 61009), so each is dictated
+ * or asked on its own.
  *
  * Skip: per-slot "skip" / "don't know" / "leave blank" exits the
  * current slot only and moves to the next, rather than cancelling
@@ -17,7 +18,7 @@
  * be left blank.
  */
 
-import { parseBsCode } from '../parsers/bs-code.js';
+import { BS_STANDARD_NAMED_EXTRACTOR, parseOcpdStandard } from '../parsers/bs-code.js';
 import { parseMcbType } from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
@@ -28,23 +29,24 @@ const slots = [
     kind: 'bs_code',
     label: 'BS number',
     question: "What's the BS number of the breaker?",
-    parser: parseBsCode,
-    // Accepts both clean `BS 60898` / `BS EN 60898` and Flux's
-    // letter-splitting `a b s 60898` / `a. b. s. e. n. 60898` forms.
-    // Defensive duplicate of `normaliseBsInput` in
-    // parsers/bs-code.js — applied here too because
-    // `extractNamedFieldValues` runs the regex against raw text before
-    // calling the parser. iOS NumberNormaliser collapses both forms
-    // for the iOS path, so this only fires on web / test inputs.
-    namedExtractor: /\b(?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
+    // PLAN-CS — free text (Decision 4). Any grammar-valid standard is
+    // accepted and canonicalised; anything else is a miss, and a miss on the
+    // asked slot is PLAN-A's first-miss handoff.
+    parser: parseOcpdStandard,
+    // The whole standard token, prefix included, with the full two-suffix
+    // grammar and a right boundary. The previous capture stopped after ONE
+    // single-digit suffix, so `BS EN 60947-4-1` was written and read back as
+    // `60947-4`. Shared with rcd.js so the two remaining BS extractors cannot
+    // drift; see `BS_STANDARD_NAMED_EXTRACTOR`.
+    namedExtractor: BS_STANDARD_NAMED_EXTRACTOR,
     acceptsBareValue: true,
     derivations: [
       // Pure MCB BS code — no derivation. The schema asks for ocpd_type
       // (curve) next. Listing it explicitly documents intent.
       // (60898 → no auto-fill; ask for curve.)
-      // RCBO — pivots to RCBO schema. Mirrors the same value into
-      // rcd_bs_en so both iOS columns show "BS EN 61009".
-      { value: '61009', mirrors: ['rcd_bs_en'], pivot: 'rcbo' },
+      // RCBO — pivots to the RCBO schema. No mirror into rcd_bs_en
+      // (PLAN-CS, CS-64/CS-77): the RCBO walk asks the RCD's number.
+      { value: '61009', pivot: 'rcbo' },
       // Rewireable BS code uniquely determines ocpd_type = "Rew".
       { value: '3036', sets: { ocpd_type: 'Rew' } },
       // HRC fuses by BS 88 family.

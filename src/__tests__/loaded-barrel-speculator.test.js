@@ -1124,26 +1124,53 @@ describe('onToolUseStreamed (Phase 2.D streamed-speculation hook)', () => {
   });
 
   test('voice-correctness-2026-06-03b Fix C: record_reading off-enum circuit field is also skipped', async () => {
-    // Circuit-side counterpart to the board-side gate. ocpd_bs_en is a
-    // circuit-level enum field. coerceRecordReadingValue DOES run
-    // parseBsCode in the BS_EN_FIELDS path (which is why the existing
-    // 2026-05-29 test at line 699 passes on 'BS 60898' — coerces to
-    // on-enum 'BS EN 60898'). Picking 'XYZ 99999' bypasses parseBsCode
-    // (no recognisable BS prefix) — the value passes through
-    // unmodified, lands as off-enum, and the gate fires.
+    // Circuit-side counterpart to the board-side gate. `rcd_bs_en` is a
+    // circuit-level enum field (PLAN-CS made `ocpd_bs_en` free text, so the
+    // enum gate is pinned on its RCD sibling now). 'XYZ 99999' is not a
+    // readable standard, so coercion passes it through unmodified, it lands
+    // as off-enum, and the gate fires.
     const { factory } = makeMockClientFactory();
     const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
     const spec = makeSpeculator({ factory, logger: loggerSpy });
-    spec.onToolUseStreamed(streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'XYZ 99999' }));
+    spec.onToolUseStreamed(streamedEvent({ field: 'rcd_bs_en', circuit: 1, value: 'XYZ 99999' }));
     await flush();
     expect(factory).toHaveBeenCalledTimes(0);
     expect(loggerSpy.info).toHaveBeenCalledWith(
       'voice_latency.speculator_skipped_enum_field',
       expect.objectContaining({
         tool: 'record_reading',
-        field: 'ocpd_bs_en',
+        field: 'rcd_bs_en',
         coerced_value_preview: 'XYZ 99999',
       })
+    );
+  });
+
+  test('PLAN-CS: an ocpd_bs_en value the dispatcher will reject as ocpd_standard_shape is never pre-synthesised', async () => {
+    const { factory } = makeMockClientFactory();
+    const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const spec = makeSpeculator({ factory, logger: loggerSpy });
+    spec.onToolUseStreamed(
+      streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'There is no RCBO' })
+    );
+    await flush();
+    // Zero ElevenLabs calls.
+    expect(factory).toHaveBeenCalledTimes(0);
+    expect(loggerSpy.info).toHaveBeenCalledWith(
+      'voice_latency.speculator_skipped_ocpd_shape',
+      expect.objectContaining({ field: 'ocpd_bs_en', coerced_value_preview: 'There is no RCBO' })
+    );
+  });
+
+  test('PLAN-CS: an unlisted but standard-shaped ocpd_bs_en ("BS 9999") still speculates', async () => {
+    const { factory } = makeMockClientFactory();
+    const loggerSpy = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
+    const spec = makeSpeculator({ factory, logger: loggerSpy });
+    spec.onToolUseStreamed(streamedEvent({ field: 'ocpd_bs_en', circuit: 1, value: 'BS 9999' }));
+    await flush();
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(loggerSpy.info).not.toHaveBeenCalledWith(
+      'voice_latency.speculator_skipped_ocpd_shape',
+      expect.anything()
     );
   });
 

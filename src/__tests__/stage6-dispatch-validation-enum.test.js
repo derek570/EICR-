@@ -254,19 +254,18 @@ describe('BOARD_FIELD_VALUE_ENUMS — exposed for stage6-dispatchers-board.js', 
 // round-1/round-2 TTS split for spd_bs_en writes.
 // ─────────────────────────────────────────────────────────────────────
 describe('voice-correctness-2026-06-03b Fix C — speculator gate value-enum schema-lock', () => {
-  test('CIRCUIT_FIELD_VALUE_ENUMS is exported and includes ocpd_bs_en + rcd_bs_en', () => {
-    // The two circuit-side BS-EN families. Both are type:"select"
-    // (verified via field_schema.json circuit_fields). Without these
-    // entries, the speculator gate never fires on a streamed
-    // `record_reading` with an off-enum BS-EN value, and the
-    // pre-validation TTS leak re-opens for the circuit-side path.
+  test('CIRCUIT_FIELD_VALUE_ENUMS includes rcd_bs_en and NOT the free-text ocpd_bs_en', () => {
+    // `rcd_bs_en` stays type:"select", so the speculator's enum gate still
+    // covers it. PLAN-CS flipped `ocpd_bs_en` to free text (Decision 4): it
+    // leaves the enum map and is gated instead by its own shape predicate
+    // (`ocpd_standard_shape` in the dispatcher, `speculator_skipped_ocpd_shape`
+    // in the speculator).
     expect(CIRCUIT_FIELD_VALUE_ENUMS).toBeInstanceOf(Map);
-    expect(CIRCUIT_FIELD_VALUE_ENUMS.has('ocpd_bs_en')).toBe(true);
+    expect(CIRCUIT_FIELD_VALUE_ENUMS.has('ocpd_bs_en')).toBe(false);
     expect(CIRCUIT_FIELD_VALUE_ENUMS.has('rcd_bs_en')).toBe(true);
-    // Spot-check one canonical option per field so a schema rename
-    // (e.g. dropping the "BS EN " prefix) fails this assertion before
-    // the speculator gate stops matching.
-    expect(CIRCUIT_FIELD_VALUE_ENUMS.get('ocpd_bs_en').has('BS EN 60898')).toBe(true);
+    // Spot-check one canonical option so a schema rename (e.g. dropping the
+    // "BS EN " prefix) fails this assertion before the speculator gate stops
+    // matching.
     expect(CIRCUIT_FIELD_VALUE_ENUMS.get('rcd_bs_en').has('BS EN 61008')).toBe(true);
   });
 

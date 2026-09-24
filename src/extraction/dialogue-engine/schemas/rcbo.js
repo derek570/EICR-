@@ -4,15 +4,27 @@
  * "BS EN 61009" — and the direct entry path when they say "RCBO on
  * circuit N".
  *
- * Slots: ocpd_bs_en + rcd_bs_en (mirrored — RCBOs populate both
- * iOS columns with the same value), ocpd_type (curve), ocpd_rating_a,
- * ocpd_breaking_capacity_ka, rcd_type (waveform),
- * rcd_operating_current_ma. After a pivot from OCPD/RCD where both
- * BS fields are already set, RCBO's nextMissingSlot starts at the
- * curve question.
+ * Slots, in asked order: ocpd_bs_en, rcd_bs_en, ocpd_type (curve),
+ * ocpd_rating_a, ocpd_breaking_capacity_ka, rcd_type (waveform),
+ * rcd_operating_current_ma.
+ *
+ * The two BS numbers are ORDINARY ASKED SLOTS with no named extractor and
+ * no mirror (PLAN-CS, feedback-2026-09-17, CS-64 / CS-100, under Decision 7).
+ * Both slots used to carry the same generic `BS…` extractor, so one stretch
+ * of speech matched both and an answer to "What's the RCD's BS number?"
+ * silently overwrote the OCPD standard. Five successive rules tried to decide
+ * which slot a spoken number belonged to and each failed review; Decision 7
+ * forbids a sixth. With no BS extractor here the ambiguity cannot arise: a BS
+ * value is collected only as the answer to its own question, through the
+ * bare-value path, and a parser miss hands the turn to the model.
+ *
+ * Accepted costs, recorded in the plan: an entry utterance carrying a BS
+ * number ("RCBO on circuit 3, BS EN 61009") does not fill either BS slot, so
+ * both are asked; and a BS number volunteered on a turn that also answers a
+ * different asked slot is not captured.
  */
 
-import { parseBsCode } from '../parsers/bs-code.js';
+import { parseOcpdStandard, parseRcdBsCode } from '../parsers/bs-code.js';
 import { parseMcbType } from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
@@ -25,48 +37,31 @@ const slots = [
     kind: 'bs_code',
     label: 'BS number',
     question: "What's the BS number of the RCBO?",
-    parser: parseBsCode,
-    namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
+    // PLAN-CS — free text (Decision 4); a miss is PLAN-A's first-miss handoff.
+    // No `namedExtractor` and no `derivations` (CS-100 / CS-64): see the
+    // header comment.
+    parser: parseOcpdStandard,
     acceptsBareValue: true,
-    // Mirror to rcd_bs_en — by convention an RCBO populates both
-    // OCPD and RCD columns with the same BS code (single device,
-    // single type-test classification). No pivot here (we ARE the
-    // RCBO schema; nothing to pivot to).
-    //
-    // 2026-05-31: dropped the `value: '61009'` gate so the mirror
-    // fires for any code the inspector dictates. Was: with the gate
-    // in place, entering anything other than 61009 (e.g. 61008 —
-    // session E8C6B716) left rcd_bs_en empty, so `nextMissingSlot`
-    // then asked the identical "What's the BS number?" prompt for
-    // the rcd_bs_en slot, which the inspector reasonably heard as
-    // "the system didn't register my answer". For an RCBO the OCPD
-    // BS code IS the RCD BS code, so unconditional mirror is the
-    // correct semantic regardless of which standard the inspector
-    // names.
-    derivations: [{ mirrors: ['rcd_bs_en'] }],
   },
   {
     field: 'rcd_bs_en',
     kind: 'bs_code',
     label: 'RCD BS number',
     question: "What's the RCD's BS number?",
-    parser: parseBsCode,
-    namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
+    // PLAN-CS — strict: must canonicalise to one of `rcd_bs_en`'s options.
+    parser: parseRcdBsCode,
     acceptsBareValue: true,
-    // 2026-05-31: never auto-asked. The ocpd_bs_en mirror above
-    // unconditionally fills this field, so the inspector hears the
-    // BS-number prompt exactly once per RCBO walk-through.
-    //
-    // The slot is preserved (rather than deleted) so the
-    // namedExtractor still harvests volunteered values when the
-    // inspector dictates the RCD code first ("the RCD BS code is
-    // 61009 …"); the symmetric mirror below then fills ocpd_bs_en.
-    // The question text is reworded ("…the RCD's BS number?") as
-    // defence-in-depth — if some future code path ever bypasses the
-    // mirror, the inspector at least hears WHICH BS number is being
-    // asked for instead of an identical-sounding duplicate.
-    volunteeredOnly: true,
-    derivations: [{ mirrors: ['ocpd_bs_en'] }],
+    // PLAN-CS (CS-64 / CS-66) — an ordinary asked slot. It used to be
+    // `volunteeredOnly`, filled only by the OCPD mirror, which wrote the
+    // RCBO's OCPD standard into the RCD column whether or not the two
+    // matched. A stored value `parseRcdBsCode` rejects counts as unfilled and
+    // is asked (`slotIsFilled`).
+    askWhenStoredUnparseable: true,
+    // Entry routing only: a model write of `rcd_bs_en` ALONE still routes to
+    // the RCD walk, as it did while this slot was `volunteeredOnly`
+    // (tryEnterScriptFromWrites' specificity ranking, 2026-06-02). An RCD's
+    // number on its own says "RCD", not "RCBO".
+    entryScoreAuxiliary: true,
   },
   {
     field: 'ocpd_type',
@@ -148,6 +143,21 @@ const slots = [
   },
 ];
 
+/**
+ * Whether the finish line must name the RCD's BS number separately (CS-70).
+ * Each side is compared through its OWN slot parser, so a legacy stored
+ * `61009-1` equals a dictated `BS EN 61009` and is not spoken as a second
+ * number. A value its parser rejects is compared raw, trimmed and
+ * case-insensitively. Stored bytes are never rewritten here: this decides
+ * SPEECH only.
+ */
+function rcdBsDiffers(ocpd, rcd) {
+  if (rcd === undefined || rcd === null || rcd === '') return false;
+  const norm = (value, parse) => parse(value) ?? String(value).trim().toLowerCase();
+  if (ocpd === undefined || ocpd === null || ocpd === '') return true;
+  return norm(ocpd, parseOcpdStandard) !== norm(rcd, parseRcdBsCode);
+}
+
 const triggers = [
   // Direct entry — "RCBO on circuit N".
   /\bRCBO\b(?:[^.?!]{0,50}?\bcircuit\s*(\d{1,3})\b)?/i,
@@ -190,13 +200,18 @@ export const rcboSchema = {
     const ka = values.ocpd_breaking_capacity_ka ?? '?';
     const rcdType = values.rcd_type ?? '?';
     const ma = values.rcd_operating_current_ma ?? '?';
-    return `Got it. ${bs}, type ${curve}, ${rating} amps, ${ka} kA, RCD type ${rcdType}, ${ma} mA.`;
+    // PLAN-CS (CS-65 / CS-70) — the RCD's number is named only when it is set
+    // and DIFFERS from the OCPD standard, so equal values are spoken once and
+    // differing values once each.
+    const rcdClause = rcdBsDiffers(values.ocpd_bs_en, values.rcd_bs_en)
+      ? `, RCD BS ${values.rcd_bs_en}`
+      : '';
+    return `Got it. ${bs}${rcdClause}, type ${curve}, ${rating} amps, ${ka} kA, RCD type ${rcdType}, ${ma} mA.`;
   },
   // PLAN A2 (feedback id 117) — the value-bearing fields `finishMessage`
-  // actually speaks. `rcd_bs_en` is included even though finishMessage never
-  // names it separately: its value is spoken via `ocpd_bs_en` (the
-  // unconditional mirror keeps both fields equal by convention), so treating
-  // it as covered stops the terminal-sink rule from doubling the BS number.
+  // actually speaks. Both BS slots are covered because the finish line speaks
+  // the BS number, and a differing RCD BS number is named by the finish line
+  // itself (PLAN-CS, CS-65).
   finishCoveredFields: [
     'ocpd_bs_en',
     'rcd_bs_en',

@@ -60,7 +60,14 @@ function reachBreakingCapacitySlot(session, ws, logger) {
     ['B', 3000],
     ['32 amps', 4000],
   ]) {
-    processProtectiveDeviceTurn({ ws, session, sessionId: SESSION_ID, transcriptText, logger, now });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText,
+      logger,
+      now,
+    });
   }
 }
 
@@ -132,9 +139,13 @@ describe('path (a) — the script COMPLETES on the off-list answer', () => {
       6: { rcd_type: 'A', rcd_operating_current_ma: '30' },
     });
     const logger = { info: () => {}, warn: () => {} };
+    // PLAN-CS (CS-64) — no mirror fills the RCD's BS number from the OCPD
+    // standard any more, so the RCBO walk asks it next and needs its own
+    // answer before the curve.
     for (const [transcriptText, now] of [
       ['RCBO on circuit 6.', 1000],
       ['BS EN 61009', 2000],
+      ['BS EN 61009', 2500],
       ['type B', 3000],
       ['32 amps', 4000],
       ['66 kA', 5000],
@@ -250,11 +261,11 @@ describe('path (d) — a BUNDLER-OWNED entry write, then a later completion (CRO
 describe('producer 1 — the bundler’s ordinary confirmation', () => {
   test('a model write of 66 carries the advisory in its read-back text', () => {
     const perTurnWrites = createPerTurnWrites();
-    recordReadingWrite(
-      perTurnWrites,
-      encodeReadingKey('ocpd_breaking_capacity_ka', 5, null),
-      { value: '66', confidence: 1, source_turn_id: 't1' }
-    );
+    recordReadingWrite(perTurnWrites, encodeReadingKey('ocpd_breaking_capacity_ka', 5, null), {
+      value: '66',
+      confidence: 1,
+      source_turn_id: 't1',
+    });
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {});
     const confs = result.confirmations ?? [];
     const ka = confs.filter((c) => c.field === 'ocpd_breaking_capacity_ka');
@@ -267,15 +278,13 @@ describe('producer 1 — the bundler’s ordinary confirmation', () => {
 
   test('a listed value carries none, and no new dedupe token is minted for it', () => {
     const perTurnWrites = createPerTurnWrites();
-    recordReadingWrite(
-      perTurnWrites,
-      encodeReadingKey('ocpd_breaking_capacity_ka', 5, null),
-      { value: '6', confidence: 1, source_turn_id: 't1' }
-    );
+    recordReadingWrite(perTurnWrites, encodeReadingKey('ocpd_breaking_capacity_ka', 5, null), {
+      value: '6',
+      confidence: 1,
+      source_turn_id: 't1',
+    });
     const result = bundleToolCallsIntoResult(perTurnWrites, null, {});
-    const ka = (result.confirmations ?? []).filter(
-      (c) => c.field === 'ocpd_breaking_capacity_ka'
-    );
+    const ka = (result.confirmations ?? []).filter((c) => c.field === 'ocpd_breaking_capacity_ka');
     expect(ka).toHaveLength(1);
     expect(ka[0].text).not.toContain('standard breaking capacity');
   });

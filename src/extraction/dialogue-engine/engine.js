@@ -35,6 +35,9 @@ import {
   nextMissingSlot,
   countFilledForCancel,
   maskCircuitSpans,
+  isNonBlank,
+  slotParses,
+  slotIsFilled,
 } from './helpers/extraction.js';
 import { applyWrite } from './helpers/snapshot-write.js';
 import {
@@ -1560,8 +1563,10 @@ function remainingSlotsForNote(state, schema, session, askedField) {
   for (const slot of schema.slots ?? []) {
     if (skipped?.has?.(slot.field)) continue;
     if (deferred?.has?.(slot.field)) continue;
-    const v = values[slot.field];
-    if (v === undefined || v === null || v === '') missing.push(slot);
+    // PLAN-CS (CS-66) — the SAME fill test as the walk: a stored value the
+    // slot's own parser rejects (`rcd_bs_en = BS 9999`) is still remaining,
+    // and the model sees it in `existing_values` beside it.
+    if (!slotIsFilled(slot, values[slot.field])) missing.push(slot);
   }
   // `asked_field` first — it is the question the inspector just failed to
   // answer, so it is the one the model should pick up.
@@ -4392,6 +4397,38 @@ function runActivePath({
     Array.isArray(schema.skipSlotTriggers) &&
     matchesAny(text, schema.skipSlotTriggers)
   ) {
+    // PLAN-CS (CS-66 / CS-71) — a skip on a slot asked BECAUSE its stored
+    // value does not parse is not a skip. Marking it skipped would finish the
+    // script with that invalid value (`BS 9999` on an RCD) silently kept, and
+    // the script has no clear path of its own — `clear_reading` is the
+    // model's. So it is a first miss: hand off with the slot in `remaining`
+    // and the stored value in `existing_values`, and let the model decide
+    // with the inspector's "leave it blank" in front of it.
+    //
+    // Deliberately NOT `!slotIsFilled(...)`: that is true for a BLANK value
+    // too, and a skip on a blank flagged slot stays an ordinary skip.
+    const storedValue = state.values[currentSlot.field];
+    if (
+      currentSlot.askWhenStoredUnparseable &&
+      isNonBlank(storedValue) &&
+      !slotParses(currentSlot, storedValue)
+    ) {
+      return terminateWithHandoff({
+        ws,
+        session,
+        sessionId,
+        schema,
+        state,
+        logger,
+        now,
+        responseEpoch,
+        transcriptText,
+        kind: 'slot_miss',
+        askedField: currentSlot.field,
+        askedQuestion: currentSlot.question ?? null,
+        textPreview: text.slice(0, 80),
+      });
+    }
     state.skipped_slots.add(currentSlot.field);
     logger?.info?.(`${schema.logEventPrefix}_slot_skipped`, {
       sessionId,
@@ -4861,7 +4898,16 @@ function runActivePath({
   // circuit span ("earths for circuit 13 are 1.19", or a quoted TTS
   // question containing "circuit N" in the annotation) must never capture
   // the span's digit as a conductor value.
-  const named = extractNamedFieldValues(maskCircuitSpans(text), schema.slots);
+  //
+  // PLAN-CS (feedback-2026-09-17) — `kind: 'bs_code'` slots read the RAW
+  // reply, never the annotated `text`. The `[In response to TTS question …]`
+  // bracket quotes the question, and a question can itself name a standard
+  // ("Is that BS 3871?"), which the BS extractor would then capture as the
+  // answer. Extraction runs slot by slot so the declared order of `named` is
+  // unchanged for every other slot.
+  const named = schema.slots.flatMap((slot) =>
+    extractNamedFieldValues(maskCircuitSpans(slot.kind === 'bs_code' ? reply : text), [slot])
+  );
   for (const w of named) {
     // PLAN A2 §A2.2 — direct parse→apply (step-7 named). Mark at parse,
     // BEFORE the seeded-value skip decision.
@@ -4895,10 +4941,11 @@ function runActivePath({
     // tryEnterScriptFromWrites below, which also calls
     // applyDerivations on each seeded slot.
     clearDeferredSlot(session, schema.name, state.circuit_ref, w.field);
-    // Audit-2026-06-02 Phase 2 — mid-walk-through derivation mirrors
-    // (e.g. inspector says "BS EN 61009" naming the rcd_bs_en slot;
-    // RCBO mirror also fills ocpd_bs_en) ride the same extraction
-    // envelope. Pre-Phase-2 only the named write made it to iOS.
+    // Audit-2026-06-02 Phase 2 — derivation side-writes ride the same
+    // extraction envelope as the originating slot write. No schema declares
+    // a `mirrors` derivation any more (PLAN-CS, CS-64 retired the RCBO BS
+    // mirror), so `mirrorWrites` is always empty; `setWrites` (BS 3036 →
+    // `ocpd_type = Rew`) still flows.
     for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
     for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
     if (r.pivotTo) pivotTo = r.pivotTo;
@@ -4922,7 +4969,16 @@ function runActivePath({
   ) {
     // Masked for the same reason as step 7 — a "circuit N" span's digit is
     // never a bare reading value.
-    const bareValue = currentSlot.parser(maskCircuitSpans(text));
+    //
+    // PLAN-CS — a `kind: 'bs_code'` slot parses the RAW reply. Its parsers
+    // are anchored whole-value grammars, and the annotated `text` begins with
+    // the `[In response to TTS question …]` bracket, which no standard
+    // grammar can consume: every correct answer would miss and hand off. For
+    // the RCBO BS pair this is now the ONLY ingress (neither slot is
+    // named-extracted), so the clause is load-bearing.
+    const bareValue = currentSlot.parser(
+      maskCircuitSpans(currentSlot.kind === 'bs_code' ? reply : text)
+    );
     // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
     // gate. The OCPD breaking-capacity slot now declares the realistic kA
     // set ([1.5, 3, 4.5, 6, 10, 16, 20, 25, 36, 50, 80] — see
@@ -4978,9 +5034,8 @@ function runActivePath({
       markWritten(op, r.effectiveValue, state.circuit_ref);
       // Plan D — EFFECTIVE (clamped) value on the wire, not the raw bareValue.
       writes.push({ field: currentSlot.field, value: r.effectiveValue });
-      // Audit-2026-06-02 Phase 2 — bare-value derivation mirrors (e.g.
-      // inspector answers a bare BS code while the engine has rcd_bs_en
-      // expected; RCBO mirror to ocpd_bs_en) ride the same envelope.
+      // Audit-2026-06-02 Phase 2 — derivation side-writes ride the same
+      // envelope (no `mirrors` remain after PLAN-CS; `sets` still flow).
       for (const mw of r.mirrorWrites) writes.push({ ...mw, auto_resolved: true });
       for (const sw of r.setWrites) writes.push({ ...sw, auto_resolved: true });
       if (r.pivotTo) pivotTo = r.pivotTo;
@@ -5568,9 +5623,9 @@ function finishScript({
   const { circuit_ref, values } = state;
   // PLAN A2 §A2.4/A2.5 (feedback id 117) — finish rendering is OPERATION-
   // AWARE. `schema.finishCoveredFields` is the set of value-bearing fields
-  // the schema's finishMessage() actually speaks (mirror coverage included —
-  // e.g. RCBO's finish text speaks ocpd_bs_en's value only, so rcd_bs_en is
-  // still "covered" even though it's never separately named). Schemas
+  // the schema's finishMessage() actually speaks (RCBO's finish text names
+  // `rcd_bs_en` itself when it differs from the OCPD standard — PLAN-CS,
+  // CS-65). Schemas
   // without the declaration fall back to every filled value field
   // (byte-identical to pre-A2 behaviour).
   const finishCoveredFields = Array.isArray(schema.finishCoveredFields)
@@ -5612,10 +5667,9 @@ function finishScript({
   // not a competing summary.
   const opGatingOptIn = Array.isArray(schema.finishCoveredFields);
   // Codex diff-review r1 (§A2.4/A2.5 correctness) — a field is "covered"
-  // for the verbatim-summary check when EITHER it has its own script-owned
-  // dictated operation, OR it is the declared mirror TARGET of another
-  // field that does (mirrors are the by-design silent exception — they
-  // never get their own operation). Checking only fields that HAPPEN to
+  // for the verbatim-summary check only when it has its own script-owned
+  // dictated operation (the mirror-target credit was retired with the
+  // mirrors — PLAN-CS, CS-73). Checking only fields that HAPPEN to
   // have an operation, and treating an ABSENT one as vacuously fine, let a
   // PARTIAL dictation (e.g. only BS said this run; type/current still
   // snapshot-only) through as "all covered" — reopening id 117's exact bug
@@ -5645,24 +5699,15 @@ function finishScript({
       scriptOwnedDictatedFields.add(field);
     }
   }
-  const mirrorCoveredFields = new Set();
-  for (const field of scriptOwnedDictatedFields) {
-    const slot = schema.slots?.find((s) => s.field === field);
-    const dictatedValue = findCoveringOp(field)?.written_value;
-    for (const derivation of slot?.derivations ?? []) {
-      // Only credit an UNCONDITIONAL mirror, or one whose value condition
-      // the dictated value actually satisfies — a value-gated mirror that
-      // never fired must never be treated as covering its target.
-      if (derivation.value !== undefined && derivation.value !== dictatedValue) continue;
-      for (const m of derivation.mirrors ?? []) mirrorCoveredFields.add(m);
-    }
-  }
+  // PLAN-CS (CS-65 / CS-73) — the mirror-credit loop that used to sit here is
+  // gone. With no `mirrors` derivation left in any schema it credited
+  // nothing, and its consumer below goes with it: a covered field now counts
+  // only when it has its own script-owned operation. For RCBO that means both
+  // BS slots were asked and answered this run, since no single utterance can
+  // fill both any more.
   const coveredOps = finishCoveredFields.map((f) => findCoveringOp(f)).filter(Boolean);
   const allCoveredScriptOwned =
-    !opGatingOptIn ||
-    finishCoveredFields.every(
-      (f) => scriptOwnedDictatedFields.has(f) || mirrorCoveredFields.has(f)
-    );
+    !opGatingOptIn || finishCoveredFields.every((f) => scriptOwnedDictatedFields.has(f));
   // PLAN-A / Decision 17 — per-field suppression of what the bundler already
   // spoke. Computed BEFORE the marking loop, because the marking loop is what
   // it changes.
@@ -7020,8 +7065,9 @@ export function tryEnterScriptFromWrites({
   // descending (stable so declared order is the tiebreaker), then
   // use the sorted order in the existing per-reading loop. The
   // volunteeredOnly bonus captures the device-class intent:
-  // RCBO's `rcd_bs_en` is volunteeredOnly (auxiliary harvest of a
-  // mirrored field), while RCD's `rcd_bs_en` is a primary slot.
+  // RCBO's `rcd_bs_en` is auxiliary (was volunteeredOnly; since PLAN-CS an
+  // asked slot flagged `entryScoreAuxiliary`), while RCD's `rcd_bs_en` is a
+  // primary slot.
   // Schemas whose write set includes exclusive slots (e.g. RCD's
   // rcd_trip_time, owned by RCD only) automatically outscore
   // schemas that only share the broader BS-code slot.
@@ -7049,7 +7095,12 @@ export function tryEnterScriptFromWrites({
       for (const c of candidates) {
         const slot = slotByField.get(c);
         if (!slot) continue;
-        score += slot.volunteeredOnly ? 1 : 2;
+        // PLAN-CS — `entryScoreAuxiliary` keeps the weight-1 routing for a slot
+        // that stopped being `volunteeredOnly` without becoming this schema's
+        // primary home for the field (RCBO's `rcd_bs_en`). Without it a lone
+        // `rcd_bs_en` write ties RCBO with RCD and declared order sends it
+        // into the RCBO walk — the 2026-06-02 mis-route this ranking fixed.
+        score += slot.volunteeredOnly || slot.entryScoreAuxiliary ? 1 : 2;
         break; // count this reading once per schema
       }
     }

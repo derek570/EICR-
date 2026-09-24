@@ -533,8 +533,14 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 25620 (25475 + A2's +145); cap retains ~100-token headroom.
       // 2026-09-23 (PLAN-B merged with PLAN-A2): both edits together measure
       // 26020; cap retains ~100-token headroom.
+      // 2026-09-24 (PLAN-CS, Decision 4): the OCPD STANDARD block (Tier-1 list
+      // rendered from config/ocpd-bs-suggestions.json, the free-text shape rule,
+      // the targeted-ask rule and the two new ask match_status values), and the
+      // BS EN split-digit example rewritten to the canonical form. Shared
+      // region; measured 26203 and cap retains ~100-token headroom (measured +
+      // ~100, P8 precedent).
       const estimate = Math.ceil(combinedRenderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(26120);
+      expect(estimate).toBeLessThanOrEqual(26303);
     });
   });
 
@@ -1496,8 +1502,10 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       // 20371 (20226 + A2's +145); cap 20471.
       // 2026-09-23 (PLAN-B merged with PLAN-A2): both edits together measure
       // 20771; cap 20871.
+      // 2026-09-24 (PLAN-CS, Decision 4): the OCPD STANDARD block (see the
+      // Group 1 combined-cap comment). Measured 20953; cap 21053.
       const estimate = Math.ceil(renderedOn.length / 4);
-      expect(estimate).toBeLessThanOrEqual(20871);
+      expect(estimate).toBeLessThanOrEqual(21053);
     });
   });
 
@@ -2669,5 +2677,51 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
       expect(once('NEVER `set_field_for_all_circuits` with an empty `value`')).toBe(1);
       expect(once('`rejection_ref: "unrelated"`')).toBe(1);
     });
+  });
+});
+
+// PLAN-CS (feedback-2026-09-17, acceptance 6) — the OCPD standard block's
+// Tier-1 list is RENDERED from config/ocpd-bs-suggestions.json into BOTH
+// prompt variants. Equality, not presence: a hand-edited list in the markdown
+// is exactly the drift this wave removed.
+describe('PLAN-CS — OCPD standard Tier-1 block rendered from the shared manifest', () => {
+  test('both variants carry exactly the manifest-built block and never the raw placeholder', async () => {
+    const session = await import('../extraction/eicr-extraction-session.js');
+    const manifest = JSON.parse(
+      fssync.readFileSync(
+        path.join(__dirname, '..', '..', 'config', 'ocpd-bs-suggestions.json'),
+        'utf8'
+      )
+    );
+    const expected = `  - ${manifest.tier1.join(', ')}.`;
+    expect(session.buildOcpdStandardTier1Block()).toBe(expected);
+    const rawMarkdown = fssync.readFileSync(PROMPT_PATH, 'utf8');
+    expect(
+      rawMarkdown.split('\n').filter((l) => l.trim() === '{{OCPD_STANDARD_TIER1}}')
+    ).toHaveLength(1);
+    for (const enabled of [false, true]) {
+      const rendered = session.renderAgenticSystemPrompt(enabled);
+      expect(rendered).not.toContain('{{OCPD_STANDARD_TIER1}}');
+      const lines = rendered.split('\n');
+      const header = lines.findIndex((l) =>
+        l.startsWith('OCPD STANDARD (`ocpd_bs_en` is FREE TEXT')
+      );
+      expect(header).toBeGreaterThanOrEqual(0);
+      expect(lines[header + 1]).toBe(expected);
+    }
+    for (const composed of [
+      session.EICR_AGENTIC_SYSTEM_PROMPT,
+      session.EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS,
+    ]) {
+      expect(composed).not.toContain('{{OCPD_STANDARD_TIER1}}');
+      expect(composed.split('\n').filter((l) => l === expected)).toHaveLength(1);
+    }
+  });
+
+  test('the Enum rejection rule names ocpd_standard_shape and the two OCPD match_status values are documented', () => {
+    const rawMarkdown = fssync.readFileSync(PROMPT_PATH, 'utf8');
+    expect(rawMarkdown).toContain('`ocpd_standard_shape`');
+    expect(rawMarkdown).toContain('`ocpd_standard_resolved`');
+    expect(rawMarkdown).toContain('`ocpd_standard_rejected_after_ask` = terminal');
   });
 });

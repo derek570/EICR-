@@ -43,6 +43,10 @@ import {
   canonicaliseNumericReadingField,
 } from './value-enum-validator.js';
 import { STAGE6_VALUE_RULES } from './value-normalise.js';
+// PLAN-CS — the ONE registered parser_backed predicate. `parsers/` is the
+// import-closure carve-out: `bs-code.js` statically imports nothing (its two
+// JSON reads go through `createRequire`), so the leaf stays a leaf.
+import { ocpdStandardShapeAccepts } from './dialogue-engine/parsers/bs-code.js';
 
 const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
@@ -130,8 +134,8 @@ export const BOARD_FIELD_VALUE_ENUMS = (() => {
 // `acceptsPerDescriptor`'s delegation to `predicate`, and the oracle. A
 // sibling owns its own ENTRY, added in the SAME PR as its gate.
 //
-// THIS REGISTRY IS EMPTY AT PLAN-A's MERGE, because no field-specific gate
-// exists on `main` today. It is NOT a reminder: the oracle enumerates every
+// This registry was EMPTY at PLAN-A's merge; PLAN-CS added the first row in
+// the same PR as its gate. It is NOT a reminder: the oracle enumerates every
 // non-`_ui_` circuit field against a vector set including 'abc', so a gate
 // added with no registry row makes the suite go RED in the PR that adds the
 // gate, naming the field. A sibling cannot land its gate without the row.
@@ -157,7 +161,23 @@ export const BOARD_FIELD_VALUE_ENUMS = (() => {
 // was tried in three consecutive review rounds and was incomplete each time —
 // the leaf imports every registered predicate by construction, so
 // `leaf → predicate → leaf` closes a cycle while touching no named module.
-export const PARSER_BACKED_FIELD_GATES = new Map();
+export const PARSER_BACKED_FIELD_GATES = new Map([
+  // PLAN-CS (feedback-2026-09-17, CS-113) — `ocpd_bs_en` is free text
+  // (Decision 4) with ONE shape rule, `ocpd_standard_shape` in
+  // `validateRecordReading`. `allowed_values` is deliberately ABSENT: the
+  // Tier-1 list is offered as `suggestions`, never enforced, and serialising it
+  // as allowed values would tell the model the opposite of what was decided.
+  [
+    'ocpd_bs_en',
+    Object.freeze({
+      predicate: ocpdStandardShapeAccepts,
+      module: 'src/extraction/dialogue-engine/parsers/bs-code.js',
+      grammar_ref: 'PLAN-CS parseOcpdStandard (config/ocpd-bs-suggestions.json)',
+      accepts_lim: false,
+      accepts_na: true,
+    }),
+  ],
+]);
 
 const SENTINELS_MINUS_LIM = Object.freeze(
   STAGE6_VALUE_RULES.VALID_SENTINELS.filter((s) => s !== 'lim')

@@ -27,10 +27,28 @@ describe('coerceRecordReadingValue — BS-EN canonicalisation', () => {
     expect(coerceRecordReadingValue('ocpd_bs_en', '61009')).toBe('BS EN 61009');
   });
 
-  test('Deepgram dropped-leading-zero ("6898" / "1008" / "1009") fuzzy-resolves to canonical', () => {
-    expect(coerceRecordReadingValue('ocpd_bs_en', '6898')).toBe('BS EN 60898');
-    expect(coerceRecordReadingValue('rcd_bs_en', '1008')).toBe('BS EN 61008');
-    expect(coerceRecordReadingValue('ocpd_bs_en', '1009')).toBe('BS EN 61009');
+  // PLAN-CS — the Levenshtein-1 fallback is gone (no fuzzy garble correction).
+  // A dropped digit is no longer "repaired" into a different real standard.
+  test('a dropped digit is NOT fuzzy-repaired: OCPD records it as said, RCD leaves it for the validator', () => {
+    expect(coerceRecordReadingValue('ocpd_bs_en', '6898')).toBe('BS 6898');
+    expect(coerceRecordReadingValue('ocpd_bs_en', '1009')).toBe('BS 1009');
+    // `rcd_bs_en` is a closed list: an unreadable value passes through
+    // UNCHANGED so the dispatcher's enum gate rejects it audibly.
+    expect(coerceRecordReadingValue('rcd_bs_en', '1008')).toBe('1008');
+  });
+
+  test('PLAN-CS — each BS field canonicalises through its OWN parser', () => {
+    // ocpd_bs_en is free text: any standard-shaped value, listed or not.
+    expect(coerceRecordReadingValue('ocpd_bs_en', 'BS 3871')).toBe('BS 3871');
+    expect(coerceRecordReadingValue('ocpd_bs_en', '88-2')).toBe('BS 88-2');
+    expect(coerceRecordReadingValue('ocpd_bs_en', 'bs en 60947 dash 4 dash 1')).toBe(
+      'BS EN 60947-4-1'
+    );
+    // Not standard-shaped → unchanged, for `ocpd_standard_shape` to reject.
+    expect(coerceRecordReadingValue('ocpd_bs_en', 'There is no RCBO')).toBe('There is no RCBO');
+    // rcd_bs_en is strict: an OCPD-only standard is NOT canonicalised onto it.
+    expect(coerceRecordReadingValue('rcd_bs_en', 'BS 3036')).toBe('BS 3036');
+    expect(coerceRecordReadingValue('rcd_bs_en', '61009-1')).toBe('BS EN 61009');
   });
 
   test('rewireable (3036) and cartridge (1361) preserve the BS-no-EN form', () => {
@@ -102,12 +120,9 @@ describe('coerceRecordReadingValue — LIM canonicalisation (P3 2026-07-23; four
   // P3: only the FOUR canonical forms coerce to "LIM". The old broad matcher
   // also accepted limit/limited/lynn/lym — those are now DELIBERATELY rejected
   // (left unchanged so validateNumericReadingValue rejects them).
-  test.each(['LIM', 'lim', 'limb', 'limp', 'limitation'])(
-    'ir_live_live_mohm "%s" → "LIM"',
-    (v) => {
-      expect(coerceRecordReadingValue('ir_live_live_mohm', v)).toBe('LIM');
-    }
-  );
+  test.each(['LIM', 'lim', 'limb', 'limp', 'limitation'])('ir_live_live_mohm "%s" → "LIM"', (v) => {
+    expect(coerceRecordReadingValue('ir_live_live_mohm', v)).toBe('LIM');
+  });
 
   test.each(['limit', 'limited', 'Lynn', 'Lym'])(
     'ir_live_live_mohm near-match "%s" is NOT coerced (passes through unchanged)',

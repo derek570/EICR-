@@ -170,10 +170,31 @@ describe('describeSlotValidation — shape invariants (canonical row 5)', () => 
     expect(acceptsPerDescriptor(d, '66')).toBe(true);
   });
 
-  test('the parser_backed registry is EMPTY at this plan’s merge', () => {
+  test('the parser_backed registry holds exactly PLAN-CS’s ocpd_bs_en row', () => {
     // PLAN-A owns the mechanism; a sibling owns its own entry, added in the
-    // same PR as its gate. No field-specific gate exists on main today.
-    expect(PARSER_BACKED_FIELD_GATES.size).toBe(0);
+    // same PR as its gate. PLAN-CS's `ocpd_standard_shape` gate is the only
+    // field-specific gate on main.
+    expect([...PARSER_BACKED_FIELD_GATES.keys()]).toEqual(['ocpd_bs_en']);
+  });
+
+  test('PLAN-CS (CS-113) — ocpd_bs_en is parser_backed, suggestions not allowed_values', async () => {
+    const { validateRecordReading } = await import('../extraction/stage6-dispatch-validation.js');
+    const d = describeSlotValidation('ocpd_bs_en');
+    expect(d.kind).toBe('parser_backed');
+    expect(d.accepts_na).toBe(true);
+    expect(d.accepts_lim).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(d, 'allowed_values')).toBe(false);
+    expect(Array.isArray(d.suggestions)).toBe(true);
+    // BOTH sides: the descriptor and the live validator agree on N/A and abc.
+    const snapshot = { circuits: { 1: {} } };
+    const validate = (value) =>
+      validateRecordReading({ field: 'ocpd_bs_en', circuit: 1, value, confidence: 1 }, snapshot);
+    expect(acceptsPerDescriptor(d, 'N/A')).toBe(true);
+    expect(validate('N/A')).toBeNull();
+    expect(acceptsPerDescriptor(d, 'abc')).toBe(false);
+    expect(validate('abc')).toEqual(expect.objectContaining({ code: 'ocpd_standard_shape' }));
+    expect(acceptsPerDescriptor(d, 'BS 3871')).toBe(true);
+    expect(validate('BS 3871')).toBeNull();
   });
 });
 
@@ -216,10 +237,7 @@ describe('descriptor-vs-validator oracle (A-101 / A-112)', () => {
         // dispatcher's order: coerce in place, then validate.
         const cv = coerceRecordReadingValue(field, raw);
         const validatorAccepts =
-          validateRecordReading(
-            { field, circuit: 1, value: cv, confidence: 1 },
-            snapshot
-          ) === null;
+          validateRecordReading({ field, circuit: 1, value: cv, confidence: 1 }, snapshot) === null;
         const descriptorAccepts = acceptsPerDescriptor(desc, cv);
         expect({ field, raw, cv, descriptorAccepts }).toEqual({
           field,
