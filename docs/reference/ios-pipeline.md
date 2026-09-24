@@ -823,6 +823,65 @@ Pinned on both clients: Stop mid-playback leaves the record open with
 the row; PDF success during an active episode leaves that row; account purge
 deliberately breaks the equation and the harness re-scopes to pre-purge state.
 
+## Hands-free voice pause (PLAN-D, 2026-09-23)
+
+Saying "pause" (or "paws") stops INPUT; saying "resume" resumes it. Pausing never holds, mutes, defers or drops
+speech (WAVE-CONTEXT Decision 8). Both clients implement one contract, pinned by
+`config/voice-pause-vectors.json` (iOS byte copy under `Tests/CertMateUnifiedTests/Fixtures/`, guarded by
+`scripts/check-voice-pause-fixture-sync.sh` before TestFlight).
+
+- **Grammar (Decision 36).** Exactly one word said on its own: "pause" (or its transcription "paws") or
+  "resume". Case-insensitive and punctuation stripped, with no prefix, no brand word, no aliases and no fuzzy
+  matching. The brand word was dropped after Flux transcribed "CertMate pause" as "So it may pause." in the device
+  smoke. The fixture carries the normalisation steps, the pattern
+  and the accept and near-miss vectors. Every spoken string is also a must-not-command vector.
+- **State.** `voicePaused` is a client-only flag. It is NOT `isPaused` (iOS) or `status === 'sleeping'`
+  (web), because those tear down capture, and a torn-down microphone cannot hear the resume phrase. The mic and
+  the Deepgram socket stay live; the existing `session_pause` / `session_resume` frames are sent.
+- **Entry.** Flush the pre-pause input buffers first (iOS: the naming buffer, through the same re-entrant
+  `handleFinalTranscript(…, bypassNamingBuffer: true, …)` call its timer makes; web: burst then naming,
+  detached before dispatch). Then set the flag, speak the pause line on the protected mode-status route,
+  send `session_pause`, set the loss-ledger pause cut and clear the interim line.
+- **The boundary.** Inside `handleFinalTranscript`, after the duplicate drop, `recordFinal` and both echo
+  gates, and before the naming buffer. While paused, a non-command final counts `voice_pause_drop_count`,
+  requests the still-paused cue (at most once per 30 s, stamped at admission) and returns. Interim handling
+  keeps running; only the on-screen interim line is suppressed.
+- **Exit.** One origin-aware function for the phrase and the **Resume** tap: play the resume tone, clear
+  `voicePaused` synchronously (so a same-tick phrase and tap produce one tone and one line), send
+  `session_resume`, clear the ledger cut, cancel the 15-minute reminder, then enqueue the resume line
+  "Carrying on — anything said while paused wasn't recorded." There is no reconnect and no mic reacquire.
+- **Decisions 34 and 34a (tap only).** On Flux, each client tracks the highest `turn_index` that has started on
+  the current socket epoch (StartOfTurn or a non-empty Update, from the current socket only). A Resume tap records
+  that watermark, and any later final on the same epoch whose own `turn_index` is at or below it is dropped
+  (`voice_pause_late_final_dropped`, no cue). Delivery order does not matter, so a final held by iOS's 700 ms grace
+  buffer is still caught. The record clears on a new epoch and at session stop and start. On the nova-3 fallback,
+  only a turn already showing interim text at the tap is dropped; a final-only nova-3 turn is admitted (Decision
+  34a). The post-TTS hold's contents at the tap are discarded (`voice_pause_held_audio_discarded`). The phrase route
+  needs nothing, because finals on one socket arrive in order.
+- **Known limits accepted (Decisions 36 and 37).** The commands are single common words, so recognition is reliable;
+  the cost is two own-speech echo paths. Both clients hold and replay the audio captured after a spoken line ends. If
+  the output device lags the playback-end event by longer than the words after "resume" in a cue (about half a second),
+  the cue's own "resume" can be admitted as the command. A model-authored one-word ask "Resume?" has the same timing
+  path. Both are accepted, not fixed; the device smoke is the field check.
+- **The one speech-rule change.** While paused, `resumeDeferredTTSIfNeeded()` skips its 6-second staleness
+  drop, so a direct clip deferred behind local speech is played rather than discarded.
+- **Resume tone.** A second lazily built `AVAudioPlayer` over an in-code 22.05 kHz WAV (440 Hz for 60 ms, then
+  660 Hz for 90 ms; 10 ms linear attack; exponential decay), `volume` 0.7. It is not the processing chime,
+  and it never calls `markTTSStarted()`, so it neither pauses the uplink nor arms the holding buffer.
+- **Local fallback for the mode-status cues.** `AlertManagerProtocol.prerenderModeStatusClips()` runs once
+  per recording session, immediately after `resetFastPathSessionState()` in `performStartRecording`. A
+  detached task renders each fixture string with its own `AVSpeechSynthesizer` on the best en-GB voice
+  (`SpeechClipWAV.renderBuffers`), converts the buffers with `SpeechClipWAV.makeWAVData`, and stores the WAV
+  keyed by the string. The store clears with the other session stores, and a stale-generation render writes
+  nothing. The mode-status fetch is bounded at 12 s. On failure, the catch branch hands the stored clip to the
+  unchanged `playOrDeferQueueHead`, or abandons as `synth_fetch_failed` when there is no clip. The phone probe
+  (`VoicePauseClipProbeTests`, opt-in; or Settings → tap the version badge seven times → **Voice-pause clip
+  probe**) is the merge gate that proves the render plays on a real device.
+- **Diagnostics.** `voice_pause_entered`, `voice_pause_resumed { via }`, `voice_pause_resume_tone { via }`,
+  `voice_pause_drop_count`, `voice_pause_trailing_content_cue`, `voice_pause_late_final_dropped`,
+  `voice_pause_held_audio_discarded { blocks }`, and `voice_pause_speech_spoken { kind }`. The last is
+  emitted at PLAYBACK START on the queue-head and alert paths, never at enqueue.
+
 ## Realtime iOS Log Streaming (PLAN-backend-final.md Phase 1.3)
 
 On-device `DebugLogger` JSONL output streams to the backend in near-real-time via batched `client_log_batch` envelopes over the existing Sonnet WebSocket. Replaces the multipart `/api/session/:id/analytics` upload that has been broken since Mar 2026 — that path used a one-shot end-of-session POST that lost the batch on crash and required the iPad to be plugged in for diagnosis. The streaming path:

@@ -434,7 +434,8 @@
     "recording/recordingoverlay-86",
     "recording/waveformview",
     "recording/x-xx",
-    "recording/dictated-readback-policy"
+    "recording/dictated-readback-policy",
+    "recording/voice-pause"
   ],
   "web/src/components/recording/transcript-bar.tsx": [
     "recording/transcriptstripview-35"
@@ -581,7 +582,8 @@
     "recording/dictated-readback-policy",
     "recording/ze-accepted-alias-consistency",
     "recording/regex-occurrence-freshness",
-    "recording/poor-signal-probe"
+    "recording/poor-signal-probe",
+    "recording/voice-pause"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -663,7 +665,8 @@
     "recording/ze-accepted-alias-consistency"
   ],
   "web/src/lib/recording/tones.ts": [
-    "recording/gate-pass-chime"
+    "recording/gate-pass-chime",
+    "recording/voice-pause"
   ],
   "web/src/lib/recording/transcript-field-matcher.ts": [
     "recording/garble-aliases-f8-f10",
@@ -678,14 +681,16 @@
   ],
   "web/src/lib/recording/tts-queue.ts": [
     "recording/confirmation-dedupe-ttl",
-    "recording/tts-fifo"
+    "recording/tts-fifo",
+    "recording/voice-pause"
   ],
   "web/src/lib/recording/tts.ts": [
     "recording/readback-dedup-rekey",
     "recording/recordingoverlay-47",
     "recording/tts-fifo",
     "recording/regex-occurrence-freshness",
-    "recording/poor-signal-probe"
+    "recording/poor-signal-probe",
+    "recording/ask-readback-arbitration"
   ],
   "web/src/lib/runtime-config.ts": [
     "recording/flux-kill-switch"
@@ -756,5 +761,11 @@
   ],
   "web/src/lib/constants/circuit-field-options.ts": [
     "circuits/ocpd-bs-en-free-text-client"
+  ],
+  "web/src/lib/recording/voice-pause.ts": [
+    "recording/voice-pause"
+  ],
+  "web/src/lib/recording/uplink-loss-ledger.ts": [
+    "recording/voice-pause"
   ]
 }

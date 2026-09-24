@@ -59,13 +59,20 @@ interface ToneStep {
   endFreq: number;
   /** Duration in seconds. */
   duration: number;
-  /** Peak gain (0–1). The envelope opens to this value over a 5ms
-   *  attack and decays exponentially to 0.0001 over the step's
-   *  duration so successive notes don't click. */
+  /** Peak gain (0–1). The envelope opens to this value over the attack
+   *  (5ms exponential by default) and decays exponentially to 0.0001
+   *  over the step's duration so successive notes don't click. */
   peakGain: number;
   /** Oscillator type. iOS Tock has a hint of triangle; the
    *  confirmation chime is a clean sine. */
   type?: OscillatorType;
+  /** Attack length in seconds. Default `0.005` — the historical attack
+   *  every existing tone uses. PLAN-D's resume tone needs `0.010`. */
+  attackS?: number;
+  /** Attack curve. Default `'exponential'` (ramps from 0.0001, today's
+   *  schedule). `'linear'` ramps from 0 with `linearRampToValueAtTime`,
+   *  which PLAN-D's resume tone pins in the shared fixture. */
+  attackCurve?: 'linear' | 'exponential';
 }
 
 function playSequence(steps: ToneStep[]): void {
@@ -86,9 +93,17 @@ function playSequence(steps: ToneStep[]): void {
       osc.frequency.linearRampToValueAtTime(step.endFreq, when + step.duration);
     }
     const gain = context.createGain();
-    // 5ms attack to avoid the audible click an instant ramp produces.
-    gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(step.peakGain, when + 0.005);
+    // Short attack to avoid the audible click an instant ramp produces.
+    // The defaults (5ms, exponential from 0.0001) reproduce the schedule
+    // every tone used before PLAN-D added the two optional fields.
+    const attackS = step.attackS ?? 0.005;
+    if (step.attackCurve === 'linear') {
+      gain.gain.setValueAtTime(0, when);
+      gain.gain.linearRampToValueAtTime(step.peakGain, when + attackS);
+    } else {
+      gain.gain.setValueAtTime(0.0001, when);
+      gain.gain.exponentialRampToValueAtTime(step.peakGain, when + attackS);
+    }
     gain.gain.exponentialRampToValueAtTime(0.0001, when + step.duration);
     osc.connect(gain).connect(context.destination);
     osc.start(when);
@@ -120,6 +135,71 @@ export function playConfirmationChime(): void {
     { startFreq: 1320, endFreq: 1320, duration: 0.07, peakGain: 0.16, type: 'sine' },
     { startFreq: 1760, endFreq: 1760, duration: 0.09, peakGain: 0.18, type: 'sine' },
   ]);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Voice-pause resume tone — PLAN-D D6 (feedback wave 2026-09-17,
+// WAVE-CONTEXT Decision 20).
+//
+// Two ascending sine notes, a perfect fifth apart: 440 Hz for 60 ms, then
+// 660 Hz for 90 ms, each with a 10 ms LINEAR attack and an exponential
+// decay to 0.0001 at the note's end. Its audible contract: "the voice
+// pause has ended and the microphone is acting on you again." It is NOT
+// the processing chime (which promises a spoken response) and must never
+// be overloaded with that meaning.
+//
+// Deliberately NOT routed through `tts.ts`: it notifies no TTS lifecycle
+// observer, so it never engages the PCM gate, never pauses the Deepgram
+// socket and never arms the post-TTS hold — a resume signal that deafened
+// the client for its own length plus the 500 ms tail would clip the
+// inspector's first words. It also cannot be pre-empted by
+// `ttsQueuePreemptFlush()`, because it is not on the FIFO.
+//
+// The parameters are pinned by the shared fixture
+// `config/voice-pause-vectors.json` (`resume_tone`); iOS renders the same
+// parameters to PCM, so the two clients are compared by parameter, never
+// by bytes. Chosen by ear like every other tone here — the device smoke
+// may move them, on both clients in the same change.
+// ────────────────────────────────────────────────────────────────────────
+
+export interface VoiceResumeToneNote {
+  frequencyHz: number;
+  durationS: number;
+  attackS: number;
+  peakGain: number;
+}
+
+export const VOICE_RESUME_TONE_NOTES: readonly VoiceResumeToneNote[] = [
+  { frequencyHz: 440, durationS: 0.06, attackS: 0.01, peakGain: 0.2 },
+  { frequencyHz: 660, durationS: 0.09, attackS: 0.01, peakGain: 0.22 },
+];
+
+/**
+ * Play the resume tone. Fail-quiet and returns at once — nothing may wait
+ * for it (Decision 24(a): the caller enqueues the resume line right after
+ * and the TTS queue orders the two). Returns the AudioContext state at
+ * the call (`'unavailable'` when no context exists) for the
+ * `voice_pause_resume_tone` diagnostic.
+ */
+export function playVoiceResumeTone(): { contextState: string } {
+  const context = getContext();
+  const contextState = context ? context.state : 'unavailable';
+  try {
+    playSequence(
+      VOICE_RESUME_TONE_NOTES.map((note) => ({
+        startFreq: note.frequencyHz,
+        endFreq: note.frequencyHz,
+        duration: note.durationS,
+        peakGain: note.peakGain,
+        type: 'sine' as OscillatorType,
+        attackS: note.attackS,
+        attackCurve: 'linear' as const,
+      }))
+    );
+  } catch {
+    // Non-critical audio cue — the resume itself must never fail on it.
+  }
+  return { contextState };
 }
 
 // ────────────────────────────────────────────────────────────────────────

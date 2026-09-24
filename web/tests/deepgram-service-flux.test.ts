@@ -105,7 +105,12 @@ describe('DeepgramService — Flux TurnInfo → delegate mapping', () => {
     const { ws, cbs } = makeService();
     ws.open();
     ws.emit({ type: 'TurnInfo', event: 'Update', transcript: 'insulation resis' });
-    expect(cbs.onInterimTranscript).toHaveBeenCalledWith('insulation resis', expect.any(Number));
+    // PLAN-D — the third argument names the emitting socket (current here).
+    expect(cbs.onInterimTranscript).toHaveBeenCalledWith(
+      'insulation resis',
+      expect.any(Number),
+      expect.objectContaining({ current: true })
+    );
   });
 
   it('maps StartOfTurn → onSpeechStarted', () => {

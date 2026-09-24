@@ -256,17 +256,26 @@ export class FakeDeepgramService implements DeepgramServiceLike {
   get dispatchedStreamOffset(): number {
     return this.inner.dispatchedStreamOffset;
   }
-  emitSpeechStarted(): void {
+  /** Real Flux TurnInfo frames carry `turn_index` on every event. By default
+   *  StartOfTurn / Update name the turn the NEXT EndOfTurn will close
+   *  (`nextTurnIndex`); pass `turnIndex` to model interleaved turns
+   *  (PLAN-D Decision 34a). */
+  emitSpeechStarted(opts: { turnIndex?: number } = {}): void {
     this.noteOnsetBeforeProviderEvidence();
-    this.emitFrame({ type: 'TurnInfo', event: 'StartOfTurn' });
+    this.emitFrame({
+      type: 'TurnInfo',
+      event: 'StartOfTurn',
+      turn_index: opts.turnIndex ?? this.nextTurnIndex,
+    });
   }
-  emitInterim(text: string, confidence = 0.5): void {
+  emitInterim(text: string, confidence = 0.5, opts: { turnIndex?: number } = {}): void {
     if (text !== '') this.noteOnsetBeforeProviderEvidence();
     this.emitFrame({
       type: 'TurnInfo',
       event: 'Update',
       transcript: text,
       end_of_turn_confidence: confidence,
+      turn_index: opts.turnIndex ?? this.nextTurnIndex,
     });
   }
   /** Transcript-bearing EndOfTurn — the REAL mapping decides what fires
@@ -308,9 +317,17 @@ export class FakeDeepgramService implements DeepgramServiceLike {
     if (!last) throw new Error('FakeDeepgramService: no EndOfTurn to duplicate');
     this.emitFrame(last);
   }
-  /** Empty EndOfTurn (silence-driven close). */
+  /** Empty EndOfTurn (silence-driven close). It closes the current turn,
+   *  so it carries that turn's `turn_index` and the next turn gets a new
+   *  one (PLAN-D Decision 34a relies on indices only growing). */
   emitEmptyEndOfTurn(): void {
-    this.emitFrame({ type: 'TurnInfo', event: 'EndOfTurn', transcript: '' });
+    this.onsetNotedForTurn = false;
+    this.emitFrame({
+      type: 'TurnInfo',
+      event: 'EndOfTurn',
+      transcript: '',
+      turn_index: this.nextTurnIndex++,
+    });
   }
 }
 

@@ -238,6 +238,15 @@ export class UplinkLossLedger {
    *  cycle-1). */
   private readonly disclosedEpisodeByEpoch = new Map<ConnectionEpoch, Episode>();
 
+  /** PLAN-D D4 — the voice-pause cut, in the capture-sample domain. While
+   *  set, capture at or after it is INELIGIBLE for every loss source (the
+   *  microphone and socket stay live during a voice pause, but nothing the
+   *  inspector says is acted on, so its loss is not disclosed); unresolved
+   *  evidence before it stays accountable. `WAVE-CONTEXT.md` Decision 21:
+   *  the resume line tells the inspector instead, at the moment they
+   *  resume. Null outside a voice pause. */
+  private pauseCutAt: number | null = null;
+
   private holds = 0;
   private pendingRelease: LossSourceId[] | null = null;
   /** An open observed WHILE a hold was outstanding is a disclosure MOMENT
@@ -264,15 +273,38 @@ export class UplinkLossLedger {
     readonly captureSampleRange: CaptureSampleRange;
     readonly dispatchedSampleRange: CaptureSampleRange;
     readonly voiced: boolean;
+    /** The frame's PCM, one sample per capture-range sample. Lets a frame
+     *  that straddles the voice-pause cut be classified on its ELIGIBLE
+     *  (pre-cut) part alone, so that part cannot inherit post-cut speech's
+     *  verdict (PLAN-D D4). */
+    readonly samples?: Int16Array;
   }): void {
-    if (!input.voiced) return;
     if (this.closedEpochs.has(input.dispatchEpoch)) return;
+    const clipped = this.clipToPauseCut(input.captureSampleRange);
+    if (!clipped) return;
+    let voiced = input.voiced;
+    if (clipped.end !== input.captureSampleRange.end) {
+      // Straddles the cut: re-classify only the pre-cut prefix. Without the
+      // PCM there is no per-part evidence, so the whole-frame verdict is KEPT
+      // for the pre-cut part — conservative: never silently drop evidence
+      // that may be real pre-cut speech.
+      voiced = input.samples
+        ? classifyPcmEnergy(input.samples.subarray(0, clipped.end - clipped.start))
+        : input.voiced;
+    }
+    if (!voiced) return;
+    // A block straddling the cut keeps only its pre-cut part; its dispatched
+    // range shrinks by the same number of samples.
+    const trimmed = input.captureSampleRange.end - clipped.end;
     const entry: LedgerEntry = {
       variant: 'dispatched',
       recordingSessionId: this.recordingSessionId,
       epochScope: input.epochScope,
-      captureSampleRange: input.captureSampleRange,
-      dispatchedSampleRange: input.dispatchedSampleRange,
+      captureSampleRange: clipped,
+      dispatchedSampleRange: {
+        start: input.dispatchedSampleRange.start,
+        end: input.dispatchedSampleRange.end - trimmed,
+      },
       dispatchEpoch: input.dispatchEpoch,
     };
     const list = this.dispatchedByEpoch.get(input.dispatchEpoch);
@@ -287,12 +319,14 @@ export class UplinkLossLedger {
     readonly captureSampleRange: CaptureSampleRange;
     readonly samples: Int16Array;
   }): void {
-    if (!classifyPcmEnergy(input.samples)) return;
+    const cut = this.cutSamples(input.captureSampleRange, input.samples);
+    if (!cut) return;
+    if (!classifyPcmEnergy(cut.samples)) return;
     this.attribute({
       variant: 'undispatched',
       recordingSessionId: this.recordingSessionId,
       epochScope: input.epochScope,
-      captureSampleRange: input.captureSampleRange,
+      captureSampleRange: cut.range,
       dispatchedSampleRange: null,
       dispatchEpoch: null,
     });
@@ -309,12 +343,14 @@ export class UplinkLossLedger {
     // `report.epoch < liveEpoch` guard, which wrongly dropped a genuine
     // late failed-send whose unowned close had opened an episode.
     if (this.ownedEpochs.has(report.epoch)) return;
-    if (!classifyPcmEnergy(report.samples)) return;
+    const cut = this.cutSamples(report.captureSampleRange, report.samples);
+    if (!cut) return;
+    if (!classifyPcmEnergy(cut.samples)) return;
     this.attribute({
       variant: 'encoderResidue',
       recordingSessionId: this.recordingSessionId,
       epochScope: { kind: 'epoch', id: report.epoch },
-      captureSampleRange: report.captureSampleRange,
+      captureSampleRange: cut.range,
       dispatchedSampleRange: null,
       dispatchEpoch: null,
     });
@@ -328,11 +364,13 @@ export class UplinkLossLedger {
     readonly voiced: boolean;
   }): LossSourceId | null {
     if (!input.voiced) return null;
+    const clipped = this.clipToPauseCut(input.captureSampleRange);
+    if (!clipped) return null;
     const entry: LedgerEntry = {
       variant: 'staged',
       recordingSessionId: this.recordingSessionId,
       epochScope: input.epochScope,
-      captureSampleRange: input.captureSampleRange,
+      captureSampleRange: clipped,
       dispatchedSampleRange: null,
       dispatchEpoch: null,
     };
@@ -345,7 +383,7 @@ export class UplinkLossLedger {
       const lastStart = Math.min(...last.entries.map((e) => e.captureSampleRange.start));
       // Contiguous = overlapping or exactly adjacent in EITHER direction; a
       // disjoint rewound report is its own source (Codex E-TERM cycle-1).
-      if (input.captureSampleRange.start <= lastEnd && input.captureSampleRange.end >= lastStart) {
+      if (clipped.start <= lastEnd && clipped.end >= lastStart) {
         last.entries.push(entry);
         this.emitMaterialIfDebounced(last.sourceId, last.entries);
         return last.sourceId;
@@ -446,6 +484,11 @@ export class UplinkLossLedger {
       // pause window → no episode, no disclosure).
       return;
     }
+    // PLAN-D D4 — during a voice pause capture stays active, but only the
+    // pre-cut tail is accountable. With nothing pre-cut carried there is
+    // nothing to disclose, so no episode opens (and none is disclosed at
+    // the next open). Pre-cut evidence carried here opens one as usual.
+    if (this.pauseCutAt !== null && carried.length === 0 && !this.openEpisode) return;
     if (!this.openEpisode) {
       this.openEpisode = {
         sourceId: { kind: 'episode', id: this.nextEpisodeId++ },
@@ -552,6 +595,41 @@ export class UplinkLossLedger {
     // Only an actual non-empty moment speaks (an empty held-open moment that
     // accrued nothing simply closes silently).
     if (all.length > 0) this.onDisclosureReady(all);
+  }
+
+  // ── Voice pause (PLAN-D D4) ───────────────────────────────────────────
+
+  /** Set the voice-pause cut at `captureSample` (the capture clock's
+   *  position when the pause is entered). Idempotent for a live pause. */
+  setPauseCut(captureSample: number): void {
+    this.pauseCutAt = captureSample;
+  }
+
+  /** Clear the cut on resume (either origin), session stop or start. */
+  clearPauseCut(): void {
+    this.pauseCutAt = null;
+  }
+
+  get pauseCut(): number | null {
+    return this.pauseCutAt;
+  }
+
+  /** The eligible (pre-cut) part of `range`, or null when none remains. */
+  private clipToPauseCut(range: CaptureSampleRange): CaptureSampleRange | null {
+    const cut = this.pauseCutAt;
+    if (cut === null || range.end <= cut) return range;
+    if (range.start >= cut) return null;
+    return { start: range.start, end: cut };
+  }
+
+  private cutSamples(
+    range: CaptureSampleRange,
+    samples: Int16Array
+  ): { range: CaptureSampleRange; samples: Int16Array } | null {
+    const clipped = this.clipToPauseCut(range);
+    if (!clipped) return null;
+    if (clipped.end === range.end) return { range, samples };
+    return { range: clipped, samples: samples.subarray(0, clipped.end - clipped.start) };
   }
 
   // ── Internals ─────────────────────────────────────────────────────────

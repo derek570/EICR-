@@ -1,0 +1,1244 @@
+/**
+ * PLAN-D (feedback wave 2026-09-17) — hands-free pause and resume by voice,
+ * driven through the REAL RecordingProvider (B0 harness recipe). Only the
+ * external effects are fake: the Deepgram socket (a REAL DeepgramService
+ * around a captive socket, so Flux frames go through real parsing), the
+ * Sonnet socket, the mic and the audio players. The pause boundary, the
+ * buffers, the FIFO, the protected cue family, the loss ledger and the
+ * diagnostics are production code.
+ *
+ * Acceptance items covered here (web): 1 (mounted half), 2, 3 (interim +
+ * deferral), 4, 5, 6 (web twin), 7, 8, 9, 12 (provider state), 14 (i)–(iv).
+ * The D7 audio-window items (3's after-playback half, 15) live in
+ * `pland-post-tts-hold.test.tsx`.
+ *
+ * Every spoken string is read from `config/voice-pause-vectors.json` by key;
+ * the strings the route PRODUCES are derived from each entry's `status`.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as React from 'react';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createRoot, type Root } from 'react-dom/client';
+import { act } from 'react';
+import { JobProvider } from '@/lib/job-context';
+import { RecordingProvider, useRecording } from '@/lib/recording-context';
+import { __setRecordingTestServices } from '@/lib/recording/test-services';
+import { setDiagnosticTap } from '@/lib/recording/client-diagnostic';
+import { __resetForTests as resetTtsQueue } from '@/lib/recording/tts-queue';
+import {
+  POOR_SIGNAL_ADVISORY_TEXT,
+  UPLINK_LOSS_DISCLOSURE_TEXT,
+  __resetModeStatusCuesForTests,
+  __resetPoorSignalAdvisoryForTests,
+  __resetTtsFingerprintsForTests,
+  __resetTtsWindowForTests,
+  __resetUplinkLossDisclosureForTests,
+  setConfirmationModeEnabled,
+  speakPoorSignalAdvisory,
+  __ttsLifecycleObserverForTests,
+} from '@/lib/recording/tts';
+import { playVoiceResumeTone } from '@/lib/recording/tones';
+import type { MicCaptureOptions } from '@/lib/recording/mic-capture';
+import type { QueuePlayControls } from '@/lib/recording/tts-queue';
+import { buildHarnessServices } from './fake-services';
+
+// Count resume-tone calls without changing what the tone does.
+vi.mock('@/lib/recording/tones', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/recording/tones')>();
+  return { ...actual, playVoiceResumeTone: vi.fn(actual.playVoiceResumeTone) };
+});
+const toneSpy = vi.mocked(playVoiceResumeTone);
+import type { JobDetail } from '@/lib/types';
+
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+interface FixtureString {
+  text: string;
+  status: 'active' | 'retired' | 'approved';
+}
+const fixture = JSON.parse(
+  readFileSync(path.join(__dirname, '..', '..', '..', 'config', 'voice-pause-vectors.json'), 'utf8')
+) as {
+  vectors: {
+    accept_pause: string[];
+    accept_resume: string[];
+    near_miss: Array<{ text: string; kind: string }>;
+  };
+  strings: Record<string, FixtureString>;
+  timing: { still_paused_cue_throttle_ms: number; reminder_interval_ms: number };
+};
+const S = (key: string): string => fixture.strings[key].text;
+/** Command utterances read from the fixture (Decision 36: one word each). */
+const PAUSE = fixture.vectors.accept_pause[0];
+const RESUME = fixture.vectors.accept_resume[0];
+const nearMiss = (kind: string, n = 0): string =>
+  fixture.vectors.near_miss.filter((v) => v.kind === kind)[n].text;
+const RETIRED_TEXTS = Object.entries(fixture.strings)
+  .filter(([k, v]) => !k.startsWith('$') && v.status === 'retired')
+  .map(([, v]) => v.text);
+const THROTTLE_MS = fixture.timing.still_paused_cue_throttle_ms;
+const REMINDER_MS = fixture.timing.reminder_interval_ms;
+/** Past the self-echo window after a phrase-bearing cue ends. */
+const SETTLE_MS = 400;
+
+function makeJob(): JobDetail {
+  return {
+    id: 'job_pland',
+    job_id: 'job_pland',
+    user_id: 'u',
+    folder_name: 'f',
+    certificate_type: 'EICR',
+    job_address: '1 Pause Way',
+    created_date: new Date(0).toISOString(),
+    last_modified: new Date(0).toISOString(),
+    circuits: [
+      { id: 'row-1', circuit_ref: '1', designation: 'Sockets', circuit_designation: 'Sockets' },
+      { id: 'row-2', circuit_ref: '2', designation: 'Lights', circuit_designation: 'Lights' },
+    ],
+  } as unknown as JobDetail;
+}
+
+type RecordingApi = ReturnType<typeof useRecording>;
+function Probe({ apiRef }: { apiRef: { current: RecordingApi | null } }) {
+  // eslint-disable-next-line react-hooks/refs -- house harness pattern
+  apiRef.current = useRecording();
+  return null;
+}
+
+type Bundle = ReturnType<typeof buildHarnessServices>;
+
+describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    resetTtsQueue();
+    __resetModeStatusCuesForTests();
+    __resetTtsFingerprintsForTests();
+    __resetTtsWindowForTests();
+    __resetPoorSignalAdvisoryForTests();
+    __resetUplinkLossDisclosureForTests();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('network disabled in harness')));
+    setConfirmationModeEnabled(true);
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    vi.useFakeTimers();
+    toneSpy.mockClear();
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    __setRecordingTestServices(null);
+    setDiagnosticTap(null);
+    resetTtsQueue();
+    __resetModeStatusCuesForTests();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  let onSamples: MicCaptureOptions['onSamples'] | undefined;
+
+  async function mount(
+    opts: { sonnet?: 'real-decoder'; deepgram?: 'static' | 'reconnectable' } = {}
+  ): Promise<{ harness: Bundle; api: () => RecordingApi }> {
+    const harness = buildHarnessServices(opts as { sonnet?: 'fake' }) as Bundle;
+    onSamples = undefined;
+    harness.services.micCaptureFactory = async (micOpts) => {
+      harness.counts.micStarted += 1;
+      onSamples = micOpts.onSamples;
+      return {
+        sampleRate: 16000,
+        stop: () => {
+          harness.counts.micStopped += 1;
+        },
+      };
+    };
+    __setRecordingTestServices(harness.services);
+    setDiagnosticTap(harness.services.diagnosticTap!);
+    const apiRef: { current: RecordingApi | null } = { current: null };
+    await act(async () => {
+      root.render(
+        <JobProvider initial={makeJob()}>
+          <RecordingProvider>
+            <Probe apiRef={apiRef} />
+          </RecordingProvider>
+        </JobProvider>
+      );
+    });
+    await act(async () => {
+      await apiRef.current!.start();
+    });
+    expect(apiRef.current!.state).toBe('active');
+    return { harness, api: () => apiRef.current! };
+  }
+
+  const final = async (h: Bundle, text: string) => {
+    await act(async () => {
+      h.refs.deepgram!.emitEndOfTurn(text);
+    });
+  };
+  const advance = async (ms: number) => {
+    await act(async () => {
+      vi.advanceTimersByTime(ms);
+    });
+  };
+  const diags = (h: Bundle, category: string) =>
+    h.diagnostics.filter((d) => d.category === category);
+  const played = (h: Bundle) => h.tts.played.map((p) => p.text);
+  const count = (list: string[], text: string) => list.filter((t) => t === text).length;
+  /** Dispatches that reached the forward gate (sent or gate-blocked). */
+  const dispatched = (h: Bundle) =>
+    h.diagnostics
+      .filter(
+        (d) => d.category === 'pipeline_sonnet_send' || d.category === 'transcript_gate_blocked'
+      )
+      .map((d) => String(d.payload.textPreview));
+
+  /** 80 ms of loud voiced audio through the REAL onSamples path. */
+  const feedVoice = async () => {
+    const block = new Float32Array(1280);
+    for (let i = 0; i < block.length; i++)
+      block[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / 16000);
+    await act(async () => {
+      onSamples?.(block);
+    });
+  };
+
+  async function enterPause(h: Bundle, api: () => RecordingApi, phrase = PAUSE) {
+    await final(h, phrase);
+    expect(api().voicePaused).toBe(true);
+    await advance(SETTLE_MS);
+  }
+
+  // ── Acceptance 1 ──────────────────────────────────────────────────────
+  describe('Acceptance 1 — commands, near misses and the still-paused cue', () => {
+    it('every accepted pause phrase enters and every accepted resume phrase exits', async () => {
+      const { harness, api } = await mount();
+      // Every pause vector (Decision 36's "paws" included) and every resume
+      // vector is exercised; the shorter list is paired cyclically.
+      const n = Math.max(fixture.vectors.accept_pause.length, fixture.vectors.accept_resume.length);
+      for (let i = 0; i < n; i++) {
+        const pauseText = fixture.vectors.accept_pause[i % fixture.vectors.accept_pause.length];
+        const resumeText = fixture.vectors.accept_resume[i % fixture.vectors.accept_resume.length];
+        await final(harness, pauseText);
+        expect(api().voicePaused, pauseText).toBe(true);
+        await advance(SETTLE_MS);
+        await final(harness, resumeText);
+        expect(api().voicePaused, resumeText).toBe(false);
+        await advance(SETTLE_MS);
+      }
+      expect(diags(harness, 'voice_pause_entered')).toHaveLength(n);
+      expect(diags(harness, 'voice_pause_resumed')).toHaveLength(n);
+      expect(count(played(harness), S('pause_ack'))).toBe(n);
+      expect(count(played(harness), S('resume_line'))).toBe(n);
+      // The commands themselves are consumed, never forwarded.
+      expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
+    });
+
+    it('near misses pass through while recording', async () => {
+      const { harness, api } = await mount();
+      for (const v of fixture.vectors.near_miss) {
+        await final(harness, v.text);
+        await advance(600);
+        expect(api().voicePaused, v.text).toBe(false);
+      }
+      expect(dispatched(harness)).toHaveLength(fixture.vectors.near_miss.length);
+    });
+
+    it('while paused EVERY non-command final requests the cue, throttled to one per 30 s', async () => {
+      const { harness } = await mount();
+      const h = harness;
+      await enterPause(h, () => ({ voicePaused: true }) as RecordingApi);
+      const cueCount = () => count(played(h), S('still_paused_cue'));
+      // An ordinary dictated reading — first occurrence speaks.
+      await final(h, 'Zs on circuit 1 is 0.44');
+      expect(cueCount()).toBe(1);
+      // An unbranded near miss inside 30 s of that admission — silent.
+      await advance(THROTTLE_MS - SETTLE_MS - 1000);
+      await final(h, nearMiss('retired_alias', 1));
+      expect(cueCount()).toBe(1);
+      // A branded near miss with trailing content after 30 s — speaks.
+      await advance(1500);
+      await final(h, nearMiss('trailing'));
+      expect(cueCount()).toBe(2);
+      expect(diags(h, 'voice_pause_drop_count').map((d) => d.payload.count)).toEqual([1, 2, 3]);
+      expect(diags(h, 'voice_pause_trailing_content_cue')).toHaveLength(1);
+      expect(diags(h, 'voice_pause_resume_tone')).toHaveLength(0);
+    });
+
+    it('a resume phrase heard while a phrase-bearing cue plays never resumes', async () => {
+      const { harness, api } = await mount();
+      // A player that STARTS each clip and holds its end, so the
+      // acknowledgement (which contains the word "resume") is genuinely
+      // playing when the echo arrives.
+      const ends: Array<() => void> = [];
+      harness.services.ttsConfirmationPlayer = (text: string, controls: QueuePlayControls) => {
+        controls.ready({
+          play: () => {
+            harness.tts.played.push({ kind: 'confirmation', text });
+            controls.onStart();
+            ends.push(controls.onEnd);
+          },
+          discard: () => {},
+        });
+      };
+      await final(harness, PAUSE);
+      await advance(2000);
+      await final(harness, RESUME);
+      expect(api().voicePaused).toBe(true);
+      expect(toneSpy).not.toHaveBeenCalled();
+      // End the acknowledgement and the still-paused cue the echo requested
+      // (it contains the phrase too), then wait out the echo window.
+      await act(async () => {
+        while (ends.length) ends.shift()!();
+      });
+      await final(harness, RESUME);
+      expect(api().voicePaused).toBe(true);
+      await act(async () => {
+        while (ends.length) ends.shift()!();
+      });
+      await advance(SETTLE_MS);
+      await final(harness, RESUME);
+      expect(api().voicePaused).toBe(false);
+      expect(toneSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('no spoken string is ever admitted as a command', async () => {
+      const { harness, api } = await mount();
+      for (const [key, entry] of Object.entries(fixture.strings)) {
+        if (key.startsWith('$')) continue;
+        await final(harness, entry.text);
+        await advance(600);
+        expect(api().voicePaused, key).toBe(false);
+      }
+      expect(diags(harness, 'voice_pause_entered')).toHaveLength(0);
+    });
+  });
+
+  // ── Acceptance 2 ──────────────────────────────────────────────────────
+  it('Acceptance 2 — input stops at the boundary', async () => {
+    const { harness, api } = await mount();
+    await enterPause(harness, api);
+    const chimes = harness.chimes.count;
+    const jobChanges = harness.jobChanges.length;
+    const namingArmed = diags(harness, 'pipeline_naming_buffer_armed').length;
+    const burstArmed = diags(harness, 'pipeline_burst_buffer_armed').length;
+    harness.refs.sonnet!.setInFlightToolCallId('toolu_paused_1');
+    const drops = diags(harness, 'voice_pause_drop_count').length;
+
+    for (const text of [
+      'Zs on circuit 1 is 0.44',
+      'Circuit 2 is',
+      'yes',
+      'calculate Zs for circuit 1',
+    ]) {
+      await final(harness, text);
+    }
+    await advance(10_000);
+
+    expect(harness.chimes.count).toBe(chimes);
+    expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
+    expect(harness.refs.sonnet!.sentAskAnswers).toHaveLength(0);
+    expect(harness.jobChanges.length).toBe(jobChanges);
+    expect(diags(harness, 'pipeline_regex_applied')).toHaveLength(0);
+    expect(diags(harness, 'local_calculate_forwarded')).toHaveLength(0);
+    expect(diags(harness, 'local_calculate_outcome')).toHaveLength(0);
+    expect(diags(harness, 'pipeline_naming_buffer_armed')).toHaveLength(namingArmed);
+    expect(diags(harness, 'pipeline_burst_buffer_armed')).toHaveLength(burstArmed);
+    expect(dispatched(harness)).toHaveLength(0);
+    expect(diags(harness, 'voice_pause_drop_count').length - drops).toBe(4);
+    expect(api().voicePaused).toBe(true);
+  });
+
+  // ── Acceptance 3 (interim + deferral half) ────────────────────────────
+  it('Acceptance 3 — interim handling survives; a read-back is deferred, not dropped', async () => {
+    const { harness, api } = await mount();
+    await enterPause(harness, api);
+    await act(async () => {
+      harness.refs.deepgram!.emitSpeechStarted();
+      harness.refs.deepgram!.emitInterim('so the kitchen is being refitted');
+    });
+    expect(api().interim).toBe('');
+    // Past the phantom-VAD watchdog: the interim cancelled it, so the
+    // inspector still counts as speaking and a read-back defers.
+    await advance(1500);
+    await act(async () => {
+      harness.refs.sonnet!.emitExtraction({
+        readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+        confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Zs 0.44 on circuit 1' }],
+      });
+    });
+    expect(count(played(harness), 'Zs 0.44 on circuit 1')).toBe(0);
+    await final(harness, 'so the kitchen is being refitted');
+    expect(count(played(harness), 'Zs 0.44 on circuit 1')).toBe(1);
+  });
+
+  // ── Acceptance 4 ──────────────────────────────────────────────────────
+  describe('Acceptance 4 — speech is never suppressed by the pause', () => {
+    it('every item arriving while paused is spoken once, in order, reported at playback start', async () => {
+      const { harness, api } = await mount();
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(harness.chimes.count).toBe(1);
+      await final(harness, PAUSE);
+      expect(api().voicePaused).toBe(true);
+      // Each delivery is played and drained before the next arrives (the
+      // instant player completes synchronously; the FIFO is idle between).
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Zs 0.44 on circuit 1' }],
+        });
+      });
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'Noted, the kitchen is next.',
+        });
+      });
+      await act(async () => {
+        speakPoorSignalAdvisory();
+      });
+      await act(async () => {
+        harness.refs.sonnet!.emitQuestion({
+          question: 'Which circuit was that reading for?',
+          question_type: 'orphaned',
+          tool_call_id: 'toolu_pland_ask',
+        });
+      });
+      await advance(100);
+      const spoken = diags(harness, 'voice_pause_speech_spoken').map((d) => [
+        d.payload.kind,
+        d.payload.text,
+      ]);
+      expect(spoken).toEqual([
+        ['cue', S('pause_ack')],
+        ['read_back', 'Zs 0.44 on circuit 1'],
+        ['response', 'Noted, the kitchen is next.'],
+        ['advisory', POOR_SIGNAL_ADVISORY_TEXT],
+        ['ask', 'Which circuit was that reading for?'],
+      ]);
+      expect(
+        diags(harness, 'tts_queue_preempt_flush').filter(
+          (d) => (d.payload.discardedCount as number) > 0
+        )
+      ).toHaveLength(0);
+      expect(diags(harness, 'tts_deferred_cleared_by_stop')).toHaveLength(0);
+      expect(
+        harness.diagnostics.filter((d) =>
+          /^voice_pause_(gate_armed|gate_released|held_ask_cleared)$|^stale_direct_dropped$/.test(
+            d.category
+          )
+        )
+      ).toHaveLength(0);
+    });
+
+    it('kind is attributed per queued item: an identical-text read-back and response keep their own kinds', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      harness.tts.manual = true;
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Okay.' }],
+        });
+      });
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'Okay.',
+        });
+      });
+      // Both are queued before either plays; release them in order.
+      for (let i = 0; i < 3; i++) {
+        await act(async () => {
+          harness.tts.releaseAll();
+        });
+      }
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([
+        ['read_back', 'Okay.'],
+        ['response', 'Okay.'],
+      ]);
+    });
+
+    it("the enqueuer's tag wins: a response whose text IS a pause cue reports kind response", async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: S('still_paused_cue'),
+        });
+      });
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([['response', S('still_paused_cue')]]);
+    });
+
+    it('a response discarded before it played leaves nothing behind to mislabel a later same-text read-back', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      harness.tts.manual = true;
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'Okay.',
+        });
+      });
+      // An ask pre-empts the never-started response (a plain FIFO item: gone).
+      await act(async () => {
+        harness.refs.sonnet!.emitQuestion({
+          question: 'Which board?',
+          question_type: 'orphaned',
+          tool_call_id: 'toolu_pland_kind',
+        });
+      });
+      await act(async () => {
+        harness.tts.releaseAll();
+      });
+      harness.tts.manual = false;
+      const mark = diags(harness, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 2, field: 'measured_zs_ohm', value: '0.51' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 2, text: 'Okay.' }],
+        });
+      });
+      const spoken = diags(harness, 'voice_pause_speech_spoken')
+        .slice(mark)
+        .map((d) => [d.payload.kind, d.payload.text]);
+      expect(spoken).toEqual([['read_back', 'Okay.']]);
+    });
+
+    it('an ask pre-empts an owed read-back identically paused and not paused (pre-existing limit)', async () => {
+      const discardedFor = async (paused: boolean): Promise<number[]> => {
+        const { harness, api } = await mount();
+        if (paused) await enterPause(harness, api);
+        harness.tts.manual = true;
+        const before = diags(harness, 'tts_speak_preempted_confirmation').length;
+        await act(async () => {
+          harness.refs.sonnet!.emitExtraction({
+            readings: [{ circuit: 2, field: 'measured_zs_ohm', value: '0.51' }],
+            confirmations: [{ field: 'measured_zs_ohm', circuit: 2, text: 'Zs 0.51 on circuit 2' }],
+          });
+        });
+        await act(async () => {
+          harness.refs.sonnet!.emitQuestion({
+            question: 'Is that circuit 2?',
+            question_type: 'orphaned',
+            tool_call_id: 'toolu_pland_preempt',
+          });
+        });
+        const counts = diags(harness, 'tts_speak_preempted_confirmation')
+          .slice(before)
+          .map((d) => d.payload.discarded_count as number);
+        await act(async () => {
+          root.unmount();
+        });
+        root = createRoot(container);
+        __setRecordingTestServices(null);
+        setDiagnosticTap(null);
+        resetTtsQueue();
+        __resetModeStatusCuesForTests();
+        // The first session's ask left a TTS window and fingerprints behind.
+        __resetTtsWindowForTests();
+        __resetTtsFingerprintsForTests();
+        return counts;
+      };
+      const notPaused = await discardedFor(false);
+      const paused = await discardedFor(true);
+      expect(notPaused.length).toBeGreaterThan(0);
+      expect(notPaused[0]).toBeGreaterThanOrEqual(1);
+      expect(paused).toEqual(notPaused);
+    });
+  });
+
+  // ── Acceptance 5 ──────────────────────────────────────────────────────
+  describe('Acceptance 5 — pre-pause buffers are flushed, not lost', () => {
+    it('(i) a burst-buffered final 200 ms before the phrase dispatches and is read back', async () => {
+      const { harness, api } = await mount();
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(200);
+      expect(dispatched(harness)).toHaveLength(0);
+      await final(harness, PAUSE);
+      expect(api().voicePaused).toBe(true);
+      expect(dispatched(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Zs 0.44 on circuit 1' }],
+        });
+      });
+      expect(count(played(harness), 'Zs 0.44 on circuit 1')).toBe(1);
+    });
+
+    it('(ii)+(iii) a held naming preface dispatches at entry and no timer fires while paused', async () => {
+      const { harness, api } = await mount();
+      await final(harness, 'Circuit 2 is');
+      expect(diags(harness, 'pipeline_naming_buffer_armed')).toHaveLength(1);
+      await final(harness, PAUSE);
+      expect(api().voicePaused).toBe(true);
+      expect(dispatched(harness)).toEqual(['Circuit 2 is']);
+      await advance(10_000);
+      expect(dispatched(harness)).toEqual(['Circuit 2 is']);
+      expect(diags(harness, 'pipeline_naming_buffer_timeout')).toHaveLength(0);
+      expect(diags(harness, 'pipeline_burst_buffer_timeout')).toHaveLength(0);
+    });
+
+    it('(iv) both slots populated: two dispatches in capture order, never concatenated', async () => {
+      const { harness, api } = await mount();
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(100);
+      await final(harness, 'Circuit 3 is');
+      expect(diags(harness, 'pipeline_burst_buffer_armed')).toHaveLength(1);
+      expect(diags(harness, 'pipeline_naming_buffer_armed')).toHaveLength(1);
+      await final(harness, PAUSE);
+      expect(api().voicePaused).toBe(true);
+      expect(dispatched(harness)).toEqual(['Zs on circuit 1 is 0.44', 'Circuit 3 is']);
+      expect(diags(harness, 'pipeline_burst_buffer_concat')).toHaveLength(0);
+      expect(diags(harness, 'pipeline_naming_buffer_concat')).toHaveLength(0);
+      expect(diags(harness, 'pipeline_burst_buffer_armed')).toHaveLength(1);
+      await advance(10_000);
+      expect(dispatched(harness)).toHaveLength(2);
+    });
+  });
+
+  // ── Acceptance 6 (web twin) ───────────────────────────────────────────
+  it.each([
+    ['paused', true],
+    ['not paused', false],
+  ])(
+    'Acceptance 6 (web twin, %s) — no age rule: a read-back deferred 20 s plays once',
+    async (_label, paused) => {
+      const { harness, api } = await mount();
+      if (paused) await enterPause(harness, api);
+      await act(async () => {
+        harness.refs.deepgram!.emitSpeechStarted();
+        harness.refs.deepgram!.emitInterim('the customer is still talking');
+      });
+      await act(async () => {
+        harness.refs.sonnet!.emitExtraction({
+          readings: [{ circuit: 1, field: 'measured_zs_ohm', value: '0.44' }],
+          confirmations: [{ field: 'measured_zs_ohm', circuit: 1, text: 'Zs 0.44 on circuit 1' }],
+        });
+      });
+      await advance(20_000);
+      expect(count(played(harness), 'Zs 0.44 on circuit 1')).toBe(0);
+      await final(harness, 'the customer is still talking');
+      expect(count(played(harness), 'Zs 0.44 on circuit 1')).toBe(1);
+      expect(diags(harness, 'tts_deferred_dropped')).toHaveLength(0);
+    }
+  );
+
+  // ── Acceptance 7 ──────────────────────────────────────────────────────
+  it('Acceptance 7 — session frames once each; no disconnect, reconnect, epoch change or mic churn', async () => {
+    const { harness, api } = await mount({ sonnet: 'real-decoder' });
+    const dg = harness.refs.deepgram!;
+    const disconnect = vi.spyOn(dg, 'disconnect');
+    const epoch = dg.liveEpoch;
+    const counts = { ...harness.counts };
+    await enterPause(harness, api);
+    await final(harness, 'Zs on circuit 1 is 0.44');
+    await advance(5_000);
+    await final(harness, RESUME);
+    expect(api().voicePaused).toBe(false);
+    const sonnet = harness.refs.sonnet as unknown as {
+      wireTranscripts: unknown[];
+      wireFrames: Array<{ type: string }>;
+    };
+    void sonnet.wireTranscripts; // the getter collects every frame written so far
+    const frames = sonnet.wireFrames.map((f) => f.type);
+    expect(frames.filter((t) => t === 'session_pause')).toHaveLength(1);
+    expect(frames.filter((t) => t === 'session_resume')).toHaveLength(1);
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(harness.refs.deepgram).toBe(dg);
+    expect(dg.liveEpoch).toBe(epoch);
+    expect(harness.counts).toEqual(counts);
+  });
+
+  it('Acceptance 7 — the button exit still reconnects; stop while paused resets for the next session', async () => {
+    const { harness, api } = await mount();
+    await act(async () => {
+      api().pause();
+    });
+    const constructed = harness.counts.deepgramConstructed;
+    await act(async () => {
+      await api().resume();
+    });
+    expect(harness.counts.deepgramConstructed).toBe(constructed + 1);
+    await enterPause(harness, api);
+    await act(async () => {
+      api().stop();
+    });
+    expect(api().voicePaused).toBe(false);
+    await act(async () => {
+      await api().start();
+    });
+    expect(api().voicePaused).toBe(false);
+    const reminders = count(played(harness), S('reminder'));
+    await advance(REMINDER_MS * 2);
+    expect(count(played(harness), S('reminder'))).toBe(reminders);
+    // The throttle stamp was reset too: the first cue of a new pause speaks.
+    await enterPause(harness, api);
+    const cues = count(played(harness), S('still_paused_cue'));
+    await final(harness, 'Zs on circuit 1 is 0.44');
+    expect(count(played(harness), S('still_paused_cue'))).toBe(cues + 1);
+  });
+
+  // ── Acceptance 8 ──────────────────────────────────────────────────────
+  describe('Acceptance 8 — the believed-resumed inspector (ledger cut + the resume line)', () => {
+    const lossDisclosed = (h: Bundle) =>
+      h.diagnostics.filter(
+        (d) =>
+          d.category === 'uplink_loss_episode_disclosed' ||
+          d.category === 'uplink_loss_episode_disclosure_completed'
+      );
+    const resumeLineSpoken = (h: Bundle) =>
+      diags(h, 'voice_pause_speech_spoken').filter(
+        (d) => d.payload.kind === 'cue' && d.payload.text === S('resume_line')
+      );
+
+    async function failSocketWhilePaused(h: Bundle, api: () => RecordingApi) {
+      await enterPause(h, api);
+      const speechBefore = diags(h, 'voice_pause_speech_spoken').length;
+      await act(async () => {
+        h.refs.deepgram!.emitUnownedClose();
+      });
+      // The inspector says the phrase, then a reading, into a dead uplink:
+      // the tap accepts the voiced audio but no final can arrive.
+      for (let i = 0; i < 25; i++) await feedVoice();
+      // No final can arrive: nothing resumes, no cue, no tone.
+      await advance(REMINDER_MS);
+      expect(api().voicePaused).toBe(true);
+      expect(diags(h, 'voice_pause_resume_tone')).toHaveLength(0);
+      const during = diags(h, 'voice_pause_speech_spoken').slice(speechBefore);
+      // The only speech is the reminder, on schedule.
+      expect(during.map((d) => d.payload.text)).toEqual([S('reminder')]);
+      expect(count(played(h), S('reminder'))).toBe(1);
+    }
+
+    function assertOneResume(h: Bundle, via: 'phrase' | 'tap') {
+      expect(diags(h, 'voice_pause_resume_tone').map((d) => d.payload.via)).toEqual([via]);
+      expect(resumeLineSpoken(h)).toHaveLength(1);
+      for (const retired of RETIRED_TEXTS) {
+        expect(
+          diags(h, 'voice_pause_speech_spoken').filter((d) => d.payload.text === retired)
+        ).toHaveLength(0);
+        expect(count(played(h), retired)).toBe(0);
+      }
+      expect(lossDisclosed(h)).toHaveLength(0);
+      expect(count(played(h), UPLINK_LOSS_DISCLOSURE_TEXT)).toBe(0);
+    }
+
+    it('(a) the socket reopens and the phrase resumes', async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      await failSocketWhilePaused(harness, api);
+      // Let the real service's backoff reopen the socket (a new epoch).
+      await advance(30_000);
+      await act(async () => {
+        await Promise.resolve();
+      });
+      // A genuinely new socket carries the phrase.
+      expect(harness.refs.deepgram!.sockets.length).toBeGreaterThan(1);
+      expect(harness.refs.deepgram!.connectionState).toBe('connected');
+      await final(harness, RESUME);
+      expect(api().voicePaused).toBe(false);
+      assertOneResume(harness, 'phrase');
+    });
+
+    it('(b) Resume is tapped with the socket still down', async () => {
+      const { harness, api } = await mount();
+      await failSocketWhilePaused(harness, api);
+      await act(async () => {
+        await api().resume();
+      });
+      expect(api().voicePaused).toBe(false);
+      assertOneResume(harness, 'tap');
+    });
+
+    it.each([
+      ['phrase then tap', 'phrase'],
+      ['tap then phrase', 'tap'],
+    ] as const)('same tick (%s): one tone and one line', async (_label, first) => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      await act(async () => {
+        if (first === 'phrase') {
+          harness.refs.deepgram!.emitEndOfTurn(RESUME);
+          void api().resume();
+        } else {
+          void api().resume();
+          harness.refs.deepgram!.emitEndOfTurn(RESUME);
+        }
+      });
+      expect(api().voicePaused).toBe(false);
+      assertOneResume(harness, first);
+      expect(harness.refs.sonnet!.sentTranscripts).toHaveLength(0);
+    });
+  });
+
+  // ── WAVE-CONTEXT Decision 34 — a Resume TAP drops the turn in flight ──
+  describe('Decision 34 — the Deepgram turn in flight at a Resume tap is paused speech', () => {
+    const sent = (h: Bundle) => h.refs.sonnet!.sentTranscripts.map((t) => t.text);
+    const lateDrops = (h: Bundle) => diags(h, 'voice_pause_late_final_dropped');
+
+    it("a tap while a Flux turn is open drops that turn's final (no cue); the next turn is admitted", async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      // The inspector dictates while paused; Deepgram's turn is open (StartOfTurn,
+      // an interim) and its final has not arrived when Resume is tapped.
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('Zs on circuit 1 is');
+      });
+      const cues = count(played(harness), S('still_paused_cue'));
+      const drops = diags(harness, 'voice_pause_drop_count').length;
+      await act(async () => {
+        await api().resume();
+      });
+      expect(api().voicePaused).toBe(false);
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual([]);
+      expect(dispatched(harness)).toEqual([]);
+      expect(lateDrops(harness)).toHaveLength(1);
+      expect(diags(harness, 'voice_pause_drop_count').length - drops).toBe(1);
+      expect(count(played(harness), S('still_paused_cue'))).toBe(cues);
+      // Every later turn is admitted.
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(1);
+    });
+
+    it('Decision 34a: two turns STARTED before the tap, finals delivered after it in either order, are both dropped; a later turn is admitted', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      // Turns 11 and 12 both start while paused (a client grace buffer can
+      // hold turn 11's final past turn 12's start).
+      await act(async () => {
+        dg.emitSpeechStarted({ turnIndex: 11 });
+        dg.emitInterim('Zs on circuit 1', 0.5, { turnIndex: 11 });
+        dg.emitSpeechStarted({ turnIndex: 12 });
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      // Delivered out of order: 12, then 11.
+      await act(async () => {
+        dg.emitEndOfTurn('Zs on circuit 2 is 0.51', 0.9, 1.0, { turnIndex: 12 });
+        dg.emitEndOfTurn('Zs on circuit 1 is 0.44', 0.9, 1.0, { turnIndex: 11 });
+      });
+      await advance(600);
+      expect(sent(harness)).toEqual([]);
+      expect(lateDrops(harness).map((d) => d.payload.turnIndex)).toEqual([12, 11]);
+      // A turn that STARTS after the tap is admitted.
+      await act(async () => {
+        dg.emitSpeechStarted({ turnIndex: 13 });
+        dg.emitEndOfTurn('Zs on circuit 3 is 0.62', 0.9, 1.0, { turnIndex: 13 });
+      });
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 3 is 0.62']);
+      expect(lateDrops(harness)).toHaveLength(2);
+    });
+
+    it('a tap with NO open turn drops nothing', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      // A turn opened and closed while paused (its final took the cue path).
+      await act(async () => {
+        harness.refs.deepgram!.emitSpeechStarted();
+      });
+      await final(harness, 'hello there');
+      await act(async () => {
+        await api().resume();
+      });
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a turn started before the tap that ends with no final (empty EndOfTurn) leaves the NEXT turn admitted', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitSpeechStarted();
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      await act(async () => {
+        dg.emitEmptyEndOfTurn();
+      });
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it("a socket replacement clears the marker: the old turn's final cannot arrive, the new socket's is admitted", async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('Zs on circuit 1 is');
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      await act(async () => {
+        dg.emitUnownedClose();
+      });
+      await advance(30_000);
+      expect(dg.sockets.length).toBeGreaterThan(1);
+      expect(dg.connectionState).toBe('connected');
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    /** Pause, then let the socket die and the service reconnect (a new
+     *  epoch on the SAME service), so socket #0 is superseded. */
+    async function pauseThenReconnect(harness: Bundle, api: () => RecordingApi) {
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitUnownedClose();
+      });
+      await advance(30_000);
+      expect(dg.sockets.length).toBeGreaterThan(1);
+      expect(dg.connectionState).toBe('connected');
+      return dg;
+    }
+
+    it('a LATE interim from the superseded socket does not open a turn: the tap marks nothing', async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = await pauseThenReconnect(harness, api);
+      await act(async () => {
+        dg.emitFrameOnSocket(0, {
+          type: 'TurnInfo',
+          event: 'Update',
+          transcript: 'stale words from the old socket',
+          audio_window_end: 0.5,
+          // A high index: if a superseded socket could raise the watermark,
+          // every current-socket final would fall under it.
+          turn_index: 99,
+        });
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a LATE turn end from the superseded socket does not clear a live current-epoch mark', async () => {
+      const { harness, api } = await mount({ deepgram: 'reconnectable' });
+      const dg = await pauseThenReconnect(harness, api);
+      // A turn opens on the CURRENT socket; Resume is tapped mid-turn.
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('Zs on circuit 1 is');
+      });
+      await act(async () => {
+        await api().resume();
+      });
+      // The old socket delivers a late, empty EndOfTurn.
+      await act(async () => {
+        dg.emitFrameOnSocket(0, { type: 'TurnInfo', event: 'EndOfTurn', transcript: '' });
+      });
+      // The current turn's final is still the paused speech: dropped.
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual([]);
+      expect(lateDrops(harness)).toHaveLength(1);
+      // And the next turn is admitted.
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
+    });
+
+    it('the phrase route is untouched: a reading right after "resume" is admitted, nothing is marked', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      await act(async () => {
+        dg.emitSpeechStarted();
+        dg.emitInterim('resu');
+      });
+      await final(harness, RESUME);
+      expect(api().voicePaused).toBe(false);
+      await final(harness, 'Zs on circuit 1 is 0.44');
+      await advance(600);
+      expect(sent(harness)).toEqual(['Zs on circuit 1 is 0.44']);
+      expect(lateDrops(harness)).toHaveLength(0);
+    });
+
+    it('a tap while D7 holds paused audio discards it; audio captured after the tap replays', async () => {
+      const { harness, api } = await mount();
+      const dg = harness.refs.deepgram!;
+      await enterPause(harness, api);
+      const observer = __ttsLifecycleObserverForTests()!;
+      // A cue plays and ends: the post-TTS hold arms.
+      await act(async () => {
+        observer('start');
+        observer('end');
+      });
+      for (let i = 0; i < 3; i++) await feedVoice(); // captured while paused, held
+      const sentAtTap = dg.sentTaggedSegments.length;
+      const dropsBefore = diags(harness, 'voice_pause_drop_count').length;
+      await act(async () => {
+        await api().resume();
+      });
+      expect(api().voicePaused).toBe(false);
+      // One drop-count increment for the non-empty discard; the block total
+      // lives on voice_pause_held_audio_discarded.
+      expect(diags(harness, 'voice_pause_drop_count').length - dropsBefore).toBe(1);
+      for (let i = 0; i < 2; i++) await feedVoice(); // captured after the tap, held
+      await advance(500); // the drain
+      // Only the two post-tap blocks reach Deepgram.
+      expect(dg.sentTaggedSegments.length - sentAtTap).toBe(2);
+      expect(diags(harness, 'voice_pause_held_audio_discarded').at(-1)?.payload).toEqual({
+        blocks: 3,
+      });
+    });
+
+    describe('nova-3 — "interim seen since the last final" is the open turn', () => {
+      const nova = (dg: Bundle['refs']['deepgram'], transcript: string, isFinal: boolean) =>
+        dg!.emitFrame({
+          type: 'Results',
+          is_final: isFinal,
+          speech_final: isFinal,
+          channel: { alternatives: [{ transcript, confidence: 0.9, words: [] }] },
+        });
+
+      it.each([
+        ['an interim was seen: the final is dropped', true, 0],
+        [
+          'a final-only turn (a VAD SpeechStarted, no interim) is admitted — the documented fallback limit',
+          false,
+          1,
+        ],
+      ] as const)('%s', async (_label, withInterim, admitted) => {
+        const harness = buildHarnessServices();
+        harness.services.resolveSttModel = () => Promise.resolve('nova3');
+        harness.services.micCaptureFactory = async () => ({ sampleRate: 16000, stop: () => {} });
+        __setRecordingTestServices(harness.services);
+        setDiagnosticTap(harness.services.diagnosticTap!);
+        const apiRef: { current: RecordingApi | null } = { current: null };
+        await act(async () => {
+          root.render(
+            <JobProvider initial={makeJob()}>
+              <RecordingProvider>
+                <Probe apiRef={apiRef} />
+              </RecordingProvider>
+            </JobProvider>
+          );
+        });
+        await act(async () => {
+          await apiRef.current!.start();
+        });
+        const dg = harness.refs.deepgram!;
+        expect(dg.model).toBe('nova3');
+        await act(async () => {
+          nova(dg, PAUSE, true);
+        });
+        expect(apiRef.current!.voicePaused).toBe(true);
+        await advance(SETTLE_MS);
+        await act(async () => {
+          dg.emitFrame({ type: 'SpeechStarted' });
+          if (withInterim) nova(dg, 'Zs on circuit', false);
+        });
+        await act(async () => {
+          await apiRef.current!.resume();
+        });
+        await act(async () => {
+          nova(dg, 'Zs on circuit 1 is 0.44', true);
+        });
+        await advance(1500);
+        expect(harness.refs.sonnet!.sentTranscripts.length).toBe(admitted);
+        expect(diags(harness, 'voice_pause_late_final_dropped')).toHaveLength(1 - admitted);
+      });
+    });
+  });
+
+  // ── Acceptance 9 ──────────────────────────────────────────────────────
+  describe('Acceptance 9 — timers', () => {
+    it('the reminder recurs at 15, 30 and 45 minutes of a 50-minute pause', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      await advance(50 * 60 * 1000 - SETTLE_MS);
+      expect(count(played(harness), S('reminder'))).toBe(3);
+    });
+
+    it.each(['phrase', 'tap', 'stop', 'start'] as const)(
+      'the reminder is cancelled on %s with nothing further scheduled',
+      async (how) => {
+        const { harness, api } = await mount();
+        await enterPause(harness, api);
+        if (how === 'phrase') await final(harness, RESUME);
+        if (how === 'tap') {
+          await act(async () => {
+            await api().resume();
+          });
+        }
+        if (how === 'stop' || how === 'start') {
+          await act(async () => {
+            api().stop();
+          });
+        }
+        if (how === 'start') {
+          await act(async () => {
+            await api().start();
+          });
+        }
+        await advance(REMINDER_MS * 3);
+        expect(count(played(harness), S('reminder'))).toBe(0);
+      }
+    );
+
+    it('unmounting the provider during a pause cancels the reminder (nothing is spoken afterwards)', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      const spokenBefore = harness.tts.played.length;
+      const cueCallsBefore = diags(harness, 'tts_speak_mode_status_called').length;
+      await act(async () => {
+        root.unmount();
+      });
+      root = createRoot(container);
+      await advance(REMINDER_MS * 2 + 1000);
+      expect(harness.tts.played.length).toBe(spokenBefore);
+      expect(diags(harness, 'tts_speak_mode_status_called').length).toBe(cueCallsBefore);
+      expect(count(played(harness), S('reminder'))).toBe(0);
+    });
+
+    it('server speech after an ask times out plays while paused; the state stays paused', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      await act(async () => {
+        harness.refs.sonnet!.emitQuestion({
+          question: 'What is the Ze?',
+          question_type: 'orphaned',
+          tool_call_id: 'toolu_pland_timeout',
+        });
+      });
+      await advance(45_000);
+      await act(async () => {
+        harness.refs.sonnet!.emitVoiceCommandResponse({
+          understood: true,
+          spoken_response: 'No answer heard, moving on.',
+        });
+      });
+      expect(count(played(harness), 'No answer heard, moving on.')).toBe(1);
+      expect(api().voicePaused).toBe(true);
+      // The first post-resume final is forwarded normally (lazy expiry is
+      // the backend's; the client just resumes forwarding).
+      await final(harness, RESUME);
+      await advance(SETTLE_MS);
+      await final(harness, 'Zs on circuit 2 is 0.51');
+      await advance(600);
+      expect(harness.refs.sonnet!.sentTranscripts.map((t) => t.text)).toEqual([
+        'Zs on circuit 2 is 0.51',
+      ]);
+    });
+  });
+
+  // ── Acceptance 12 (provider half) ─────────────────────────────────────
+  it('Acceptance 12 — voicePaused is exposed and the tap resumes through the same exit', async () => {
+    const { harness, api } = await mount();
+    await enterPause(harness, api);
+    expect(api().state).toBe('active');
+    await act(async () => {
+      await api().resume();
+    });
+    expect(api().voicePaused).toBe(false);
+    expect(diags(harness, 'voice_pause_resumed').map((d) => d.payload.via)).toEqual(['tap']);
+  });
+
+  // ── Acceptance 14 ─────────────────────────────────────────────────────
+  describe('Acceptance 14 — the resume tone', () => {
+    it.each(['phrase', 'tap'] as const)(
+      '(%s) plays exactly once, BEFORE the line is enqueued, without engaging any gate',
+      async (via) => {
+        const { harness, api } = await mount();
+        await enterPause(harness, api);
+        const dg = harness.refs.deepgram!;
+        const dgPause = vi.spyOn(dg, 'pause');
+        const mark = harness.diagnostics.length;
+        if (via === 'phrase') await final(harness, RESUME);
+        else
+          await act(async () => {
+            await api().resume();
+          });
+        expect(toneSpy).toHaveBeenCalledTimes(1);
+        const after = harness.diagnostics.slice(mark);
+        const toneAt = after.findIndex((d) => d.category === 'voice_pause_resume_tone');
+        const lineEnqueuedAt = after.findIndex(
+          (d) =>
+            d.category === 'tts_speak_mode_status_called' &&
+            d.payload.textPreview === S('resume_line').slice(0, 80)
+        );
+        expect(toneAt).toBeGreaterThan(-1);
+        expect(lineEnqueuedAt).toBeGreaterThan(toneAt);
+        expect(after[toneAt].payload.via).toBe(via);
+        expect(after.filter((d) => d.category === 'tts_pcm_gate_engaged')).toHaveLength(0);
+        expect(dgPause).not.toHaveBeenCalled();
+      }
+    );
+
+    it('(iii) a pre-emption right after the resume displaces the line, which is heard once, late', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      harness.tts.manual = true;
+      await final(harness, RESUME);
+      await act(async () => {
+        harness.refs.sonnet!.emitQuestion({
+          question: 'Is that the kitchen?',
+          question_type: 'orphaned',
+          tool_call_id: 'toolu_pland_displace',
+        });
+      });
+      expect(count(played(harness), S('resume_line'))).toBe(0);
+      await act(async () => {
+        harness.tts.releaseAll();
+      });
+      await act(async () => {
+        harness.tts.releaseAll();
+      });
+      expect(count(played(harness), S('resume_line'))).toBe(1);
+      expect(toneSpy).toHaveBeenCalledTimes(1);
+      const order = played(harness);
+      expect(order.indexOf('Is that the kitchen?')).toBeLessThan(order.indexOf(S('resume_line')));
+    });
+
+    it('(iv) a failed resume attempt never plays the tone', async () => {
+      const { harness, api } = await mount();
+      await enterPause(harness, api);
+      await final(harness, nearMiss('trailing'));
+      await advance(THROTTLE_MS + 1000);
+      await final(harness, nearMiss('retired_alias', 0));
+      expect(api().voicePaused).toBe(true);
+      expect(toneSpy).not.toHaveBeenCalled();
+      expect(diags(harness, 'voice_pause_resume_tone')).toHaveLength(0);
+    });
+  });
+});

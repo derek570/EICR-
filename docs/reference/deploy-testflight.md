@@ -110,6 +110,20 @@ compiles against: `docker/nextjs.Dockerfile`'s builder never copies root `config
 A missing file on either side, a differing byte, or a generator failure fails
 closed. `deploy-testflight.sh` runs this as a named preflight — the sixth.
 
+PLAN-D (2026-09-23) adds the voice-pause fixture check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-voice-pause-fixture-sync.sh
+```
+
+It byte-compares `config/voice-pause-vectors.json` — the hands-free pause command
+grammar, its accept and near-miss vectors, the five spoken strings and the resume
+tone's parameters — with the XCTest copy under `Tests/CertMateUnifiedTests/Fixtures/`.
+Both clients compile the strings into production constants, and each client's test
+suite pins those constants against its copy. A missing file or a differing byte fails
+closed. `deploy-testflight.sh` runs this as a named preflight.
+
 ## App Store Connect credentials
 
 | Field | Value |
