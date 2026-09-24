@@ -35,11 +35,24 @@ import { CaptureWallClock } from '@/lib/recording/capture-wall-clock';
 import { UplinkLossLedger } from '@/lib/recording/uplink-loss-ledger';
 import type { MicCaptureOptions } from '@/lib/recording/mic-capture';
 import { buildHarnessServices } from './fake-services';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import type { JobDetail } from '@/lib/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const BLOCK = 1280; // 80 ms at 16 kHz
+const vectors = (
+  JSON.parse(
+    readFileSync(
+      path.join(__dirname, '..', '..', '..', 'config', 'voice-pause-vectors.json'),
+      'utf8'
+    )
+  ) as { vectors: { accept_pause: string[]; accept_resume: string[] } }
+).vectors;
+/** Command utterances from the fixture (Decision 36: one word each). */
+const PAUSE = vectors.accept_pause[0];
+const RESUME = vectors.accept_resume[0];
 const GATE_DELAY_MS = 500;
 
 function makeJob(): JobDetail {
@@ -135,7 +148,7 @@ describe.each([
     const api = () => apiRef.current!;
     if (paused) {
       await act(async () => {
-        harness.refs.deepgram!.emitEndOfTurn('CertMate, pause.');
+        harness.refs.deepgram!.emitEndOfTurn(PAUSE);
       });
       expect(api().voicePaused).toBe(true);
     }
@@ -277,7 +290,7 @@ describe.each([
     // inspector is answering).
     if (!api().voicePaused) {
       await act(async () => {
-        dg.emitEndOfTurn('CertMate, pause.');
+        dg.emitEndOfTurn(PAUSE);
       });
     }
     expect(api().voicePaused).toBe(true);
@@ -302,7 +315,7 @@ describe.each([
     expect(dg.sentTaggedSegments.slice(sentBefore).map((s) => s.capturedAt)).toEqual(phraseStamps);
     // Deepgram's final for that audio arrives and resumes.
     await act(async () => {
-      dg.emitEndOfTurn('CertMate, carry on.');
+      dg.emitEndOfTurn(RESUME);
     });
     expect(api().voicePaused).toBe(false);
     expect(diags(harness, 'voice_pause_resumed').map((d) => d.payload.via)).toEqual(['phrase']);

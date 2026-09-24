@@ -69,6 +69,11 @@ const fixture = JSON.parse(
   timing: { still_paused_cue_throttle_ms: number; reminder_interval_ms: number };
 };
 const S = (key: string): string => fixture.strings[key].text;
+/** Command utterances read from the fixture (Decision 36: one word each). */
+const PAUSE = fixture.vectors.accept_pause[0];
+const RESUME = fixture.vectors.accept_resume[0];
+const nearMiss = (kind: string, n = 0): string =>
+  fixture.vectors.near_miss.filter((v) => v.kind === kind)[n].text;
 const RETIRED_TEXTS = Object.entries(fixture.strings)
   .filter(([k, v]) => !k.startsWith('$') && v.status === 'retired')
   .map(([, v]) => v.text);
@@ -204,7 +209,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     });
   };
 
-  async function enterPause(h: Bundle, api: () => RecordingApi, phrase = 'CertMate, pause.') {
+  async function enterPause(h: Bundle, api: () => RecordingApi, phrase = PAUSE) {
     await final(h, phrase);
     expect(api().voicePaused).toBe(true);
     await advance(SETTLE_MS);
@@ -214,13 +219,17 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
   describe('Acceptance 1 — commands, near misses and the still-paused cue', () => {
     it('every accepted pause phrase enters and every accepted resume phrase exits', async () => {
       const { harness, api } = await mount();
-      const n = Math.min(fixture.vectors.accept_pause.length, fixture.vectors.accept_resume.length);
+      // Every pause vector (Decision 36's "paws" included) and every resume
+      // vector is exercised; the shorter list is paired cyclically.
+      const n = Math.max(fixture.vectors.accept_pause.length, fixture.vectors.accept_resume.length);
       for (let i = 0; i < n; i++) {
-        await final(harness, fixture.vectors.accept_pause[i]);
-        expect(api().voicePaused, fixture.vectors.accept_pause[i]).toBe(true);
+        const pauseText = fixture.vectors.accept_pause[i % fixture.vectors.accept_pause.length];
+        const resumeText = fixture.vectors.accept_resume[i % fixture.vectors.accept_resume.length];
+        await final(harness, pauseText);
+        expect(api().voicePaused, pauseText).toBe(true);
         await advance(SETTLE_MS);
-        await final(harness, fixture.vectors.accept_resume[i]);
-        expect(api().voicePaused, fixture.vectors.accept_resume[i]).toBe(false);
+        await final(harness, resumeText);
+        expect(api().voicePaused, resumeText).toBe(false);
         await advance(SETTLE_MS);
       }
       expect(diags(harness, 'voice_pause_entered')).toHaveLength(n);
@@ -251,11 +260,11 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(cueCount()).toBe(1);
       // An unbranded near miss inside 30 s of that admission — silent.
       await advance(THROTTLE_MS - SETTLE_MS - 1000);
-      await final(h, 'carry on to circuit 4');
+      await final(h, nearMiss('retired_alias', 1));
       expect(cueCount()).toBe(1);
       // A branded near miss with trailing content after 30 s — speaks.
       await advance(1500);
-      await final(h, 'certmate carry on, circuit two now');
+      await final(h, nearMiss('trailing'));
       expect(cueCount()).toBe(2);
       expect(diags(h, 'voice_pause_drop_count').map((d) => d.payload.count)).toEqual([1, 2, 3]);
       expect(diags(h, 'voice_pause_trailing_content_cue')).toHaveLength(1);
@@ -265,7 +274,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     it('a resume phrase heard while a phrase-bearing cue plays never resumes', async () => {
       const { harness, api } = await mount();
       // A player that STARTS each clip and holds its end, so the
-      // acknowledgement (which contains "CertMate, carry on") is genuinely
+      // acknowledgement (which contains the word "resume") is genuinely
       // playing when the echo arrives.
       const ends: Array<() => void> = [];
       harness.services.ttsConfirmationPlayer = (text: string, controls: QueuePlayControls) => {
@@ -278,9 +287,9 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
           discard: () => {},
         });
       };
-      await final(harness, 'CertMate, pause.');
+      await final(harness, PAUSE);
       await advance(2000);
-      await final(harness, 'CertMate carry on');
+      await final(harness, RESUME);
       expect(api().voicePaused).toBe(true);
       expect(toneSpy).not.toHaveBeenCalled();
       // End the acknowledgement and the still-paused cue the echo requested
@@ -288,13 +297,13 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       await act(async () => {
         while (ends.length) ends.shift()!();
       });
-      await final(harness, 'CertMate carry on');
+      await final(harness, RESUME);
       expect(api().voicePaused).toBe(true);
       await act(async () => {
         while (ends.length) ends.shift()!();
       });
       await advance(SETTLE_MS);
-      await final(harness, 'CertMate carry on');
+      await final(harness, RESUME);
       expect(api().voicePaused).toBe(false);
       expect(toneSpy).toHaveBeenCalledTimes(1);
     });
@@ -376,7 +385,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       await final(harness, 'Zs on circuit 1 is 0.44');
       await advance(600);
       expect(harness.chimes.count).toBe(1);
-      await final(harness, 'CertMate, pause.');
+      await final(harness, PAUSE);
       expect(api().voicePaused).toBe(true);
       // Each delivery is played and drained before the next arrives (the
       // instant player completes synchronously; the FIFO is idle between).
@@ -562,7 +571,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       await final(harness, 'Zs on circuit 1 is 0.44');
       await advance(200);
       expect(dispatched(harness)).toHaveLength(0);
-      await final(harness, 'CertMate, pause.');
+      await final(harness, PAUSE);
       expect(api().voicePaused).toBe(true);
       expect(dispatched(harness)).toEqual(['Zs on circuit 1 is 0.44']);
       await act(async () => {
@@ -578,7 +587,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       const { harness, api } = await mount();
       await final(harness, 'Circuit 2 is');
       expect(diags(harness, 'pipeline_naming_buffer_armed')).toHaveLength(1);
-      await final(harness, 'CertMate, pause.');
+      await final(harness, PAUSE);
       expect(api().voicePaused).toBe(true);
       expect(dispatched(harness)).toEqual(['Circuit 2 is']);
       await advance(10_000);
@@ -594,7 +603,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       await final(harness, 'Circuit 3 is');
       expect(diags(harness, 'pipeline_burst_buffer_armed')).toHaveLength(1);
       expect(diags(harness, 'pipeline_naming_buffer_armed')).toHaveLength(1);
-      await final(harness, 'CertMate, pause.');
+      await final(harness, PAUSE);
       expect(api().voicePaused).toBe(true);
       expect(dispatched(harness)).toEqual(['Zs on circuit 1 is 0.44', 'Circuit 3 is']);
       expect(diags(harness, 'pipeline_burst_buffer_concat')).toHaveLength(0);
@@ -642,7 +651,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     await enterPause(harness, api);
     await final(harness, 'Zs on circuit 1 is 0.44');
     await advance(5_000);
-    await final(harness, 'CertMate, carry on.');
+    await final(harness, RESUME);
     expect(api().voicePaused).toBe(false);
     const sonnet = harness.refs.sonnet as unknown as {
       wireTranscripts: unknown[];
@@ -743,7 +752,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       // A genuinely new socket carries the phrase.
       expect(harness.refs.deepgram!.sockets.length).toBeGreaterThan(1);
       expect(harness.refs.deepgram!.connectionState).toBe('connected');
-      await final(harness, 'CertMate, carry on.');
+      await final(harness, RESUME);
       expect(api().voicePaused).toBe(false);
       assertOneResume(harness, 'phrase');
     });
@@ -766,11 +775,11 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       await enterPause(harness, api);
       await act(async () => {
         if (first === 'phrase') {
-          harness.refs.deepgram!.emitEndOfTurn('CertMate, carry on.');
+          harness.refs.deepgram!.emitEndOfTurn(RESUME);
           void api().resume();
         } else {
           void api().resume();
-          harness.refs.deepgram!.emitEndOfTurn('CertMate, carry on.');
+          harness.refs.deepgram!.emitEndOfTurn(RESUME);
         }
       });
       expect(api().voicePaused).toBe(false);
@@ -968,15 +977,15 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(sent(harness)).toEqual(['Zs on circuit 2 is 0.51']);
     });
 
-    it('the phrase route is untouched: a reading right after "carry on" is admitted, nothing is marked', async () => {
+    it('the phrase route is untouched: a reading right after "resume" is admitted, nothing is marked', async () => {
       const { harness, api } = await mount();
       const dg = harness.refs.deepgram!;
       await enterPause(harness, api);
       await act(async () => {
         dg.emitSpeechStarted();
-        dg.emitInterim('CertMate carry');
+        dg.emitInterim('resu');
       });
-      await final(harness, 'CertMate, carry on.');
+      await final(harness, RESUME);
       expect(api().voicePaused).toBe(false);
       await final(harness, 'Zs on circuit 1 is 0.44');
       await advance(600);
@@ -1051,7 +1060,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
         const dg = harness.refs.deepgram!;
         expect(dg.model).toBe('nova3');
         await act(async () => {
-          nova(dg, 'CertMate pause', true);
+          nova(dg, PAUSE, true);
         });
         expect(apiRef.current!.voicePaused).toBe(true);
         await advance(SETTLE_MS);
@@ -1086,7 +1095,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       async (how) => {
         const { harness, api } = await mount();
         await enterPause(harness, api);
-        if (how === 'phrase') await final(harness, 'CertMate, carry on.');
+        if (how === 'phrase') await final(harness, RESUME);
         if (how === 'tap') {
           await act(async () => {
             await api().resume();
@@ -1143,7 +1152,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       expect(api().voicePaused).toBe(true);
       // The first post-resume final is forwarded normally (lazy expiry is
       // the backend's; the client just resumes forwarding).
-      await final(harness, 'CertMate, carry on.');
+      await final(harness, RESUME);
       await advance(SETTLE_MS);
       await final(harness, 'Zs on circuit 2 is 0.51');
       await advance(600);
@@ -1175,7 +1184,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
         const dg = harness.refs.deepgram!;
         const dgPause = vi.spyOn(dg, 'pause');
         const mark = harness.diagnostics.length;
-        if (via === 'phrase') await final(harness, 'CertMate, carry on.');
+        if (via === 'phrase') await final(harness, RESUME);
         else
           await act(async () => {
             await api().resume();
@@ -1200,7 +1209,7 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
       const { harness, api } = await mount();
       await enterPause(harness, api);
       harness.tts.manual = true;
-      await final(harness, 'CertMate, carry on.');
+      await final(harness, RESUME);
       await act(async () => {
         harness.refs.sonnet!.emitQuestion({
           question: 'Is that the kitchen?',
@@ -1224,9 +1233,9 @@ describe('PLAN-D — hands-free voice pause (mounted RecordingProvider)', () => 
     it('(iv) a failed resume attempt never plays the tone', async () => {
       const { harness, api } = await mount();
       await enterPause(harness, api);
-      await final(harness, 'certmate carry on, circuit two now');
+      await final(harness, nearMiss('trailing'));
       await advance(THROTTLE_MS + 1000);
-      await final(harness, 'carry on');
+      await final(harness, nearMiss('retired_alias', 0));
       expect(api().voicePaused).toBe(true);
       expect(toneSpy).not.toHaveBeenCalled();
       expect(diags(harness, 'voice_pause_resume_tone')).toHaveLength(0);

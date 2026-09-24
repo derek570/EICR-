@@ -1,11 +1,13 @@
 /**
  * PLAN-D (feedback wave 2026-09-17) — hands-free pause and resume by voice.
  *
- * "CertMate pause" stops INPUT: the transcript final is not acted on, not
- * forwarded, not chimed. It does nothing to the spoken channel — speech is
- * never held, muted or dropped because the session is paused
- * (WAVE-CONTEXT Decision 8). "CertMate carry on" (or the Resume button)
- * ends the pause through ONE origin-aware exit.
+ * Saying "pause" (or "paws") on its own stops INPUT: the transcript final is
+ * not acted on, not forwarded, not chimed. It does nothing to the spoken
+ * channel — speech is never held, muted or dropped because the session is
+ * paused (WAVE-CONTEXT Decision 8). Saying "resume" on its own (or tapping
+ * Resume) ends the pause through ONE origin-aware exit. WAVE-CONTEXT
+ * Decision 36 (2026-09-24) made each command exactly one word: Flux never
+ * transcribed the old brand word "CertMate" in Derek's voice.
  *
  * This module is the pure half: the command grammar, the five spoken
  * strings and the cue throttle. The session wiring lives in
@@ -33,7 +35,7 @@ export interface VoicePauseString {
  *  `status`, never a literal. */
 export const VOICE_PAUSE_STRINGS = {
   pause_ack: {
-    text: "Paused. Say 'CertMate, carry on' when you're ready.",
+    text: "Paused. Say 'resume' when you're ready.",
     status: 'active',
   },
   resume_ack: {
@@ -41,11 +43,11 @@ export const VOICE_PAUSE_STRINGS = {
     status: 'retired',
   },
   reminder: {
-    text: "Still paused. Say 'CertMate, carry on' to resume.",
+    text: "Still paused. Say 'resume' to carry on.",
     status: 'active',
   },
   still_paused_cue: {
-    text: "Still paused — say 'CertMate, carry on' on its own to resume.",
+    text: "Still paused — say 'resume' on its own to carry on.",
     status: 'active',
   },
   resume_line: {
@@ -71,15 +73,17 @@ export const STILL_PAUSED_CUE_THROTTLE_MS = 30_000;
 export const VOICE_PAUSE_REMINDER_INTERVAL_MS = 15 * 60 * 1000;
 
 // ── Grammar ────────────────────────────────────────────────────────────
+//
+// Decision 36 (TAKEN 2026-09-24, with Derek's "also paws" addendum): the
+// command is exactly one word said on its own. No prefix, no brand word, no
+// aliases, no fuzzy matching (the 2026-06-24 hard rule).
 
-const OPTIONAL_PREFIXES = ['hey', 'okay', 'ok'] as const;
-const BRAND_FORMS_NORMALISED = ['certmate', 'cert mate', 'sert mate'] as const;
-const PAUSE_COMMANDS = ['pause', 'pause listening', 'hold on'] as const;
-const RESUME_COMMANDS = ['carry on', 'resume', 'im back', 'listen'] as const;
+const PAUSE_COMMANDS = ['pause', 'paws'] as const;
+const RESUME_COMMANDS = ['resume'] as const;
+const ALL_COMMANDS: readonly string[] = [...PAUSE_COMMANDS, ...RESUME_COMMANDS];
 
 /** The fixture's `grammar.pattern`, compiled once. */
-export const VOICE_PAUSE_PATTERN_SOURCE =
-  '^(?:(?:hey|okay|ok) )?(?:certmate|cert mate|sert mate) (?<command>pause|pause listening|hold on|carry on|resume|im back|listen)$';
+export const VOICE_PAUSE_PATTERN_SOURCE = '^(?<command>pause|paws|resume)$';
 const PATTERN = new RegExp(VOICE_PAUSE_PATTERN_SOURCE);
 
 /** Normalisation, in the fixture's order: lowercase; delete apostrophes
@@ -88,15 +92,14 @@ const PATTERN = new RegExp(VOICE_PAUSE_PATTERN_SOURCE);
 export function normaliseVoicePauseText(text: string): string {
   return text
     .toLowerCase()
-    .replace(/['’]/g, '')
+    .replace(/['\u2019]/g, '')
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
 }
 
 export type VoicePauseCommand = 'pause' | 'resume';
 
-/** Whole-utterance match. The brand word is required and nothing else may
- *  be in the utterance. No fuzzy matching (the 2026-06-24 hard rule). */
+/** Whole-utterance match: the command word and nothing else. */
 export function matchVoicePauseCommand(text: string): VoicePauseCommand | null {
   const match = PATTERN.exec(normaliseVoicePauseText(text));
   const command = match?.groups?.command;
@@ -104,47 +107,24 @@ export function matchVoicePauseCommand(text: string): VoicePauseCommand | null {
   return (PAUSE_COMMANDS as readonly string[]).includes(command) ? 'pause' : 'resume';
 }
 
-function brandCommandPhrases(commands: readonly string[]): string[] {
-  const out: string[] = [];
-  for (const brand of BRAND_FORMS_NORMALISED) {
-    for (const command of commands) out.push(`${brand} ${command}`);
-  }
-  return out;
-}
-
-const RESUME_PHRASES = brandCommandPhrases(RESUME_COMMANDS);
-const ALL_COMMAND_PHRASES = brandCommandPhrases([...PAUSE_COMMANDS, ...RESUME_COMMANDS]);
-
-function containsPhrase(normalised: string, phrase: string): boolean {
-  return ` ${normalised} `.includes(` ${phrase} `);
-}
-
-/** True when a spoken text CONTAINS an accepted resume phrase. Such a cue
- *  disarms the resume matcher from its playback start through the post-TTS
- *  echo window (D1 self-echo), by playback lifecycle, not by string. */
+/** True when a spoken text contains a resume command WORD. Such a cue — and
+ *  since Decision 36 every cue that names the command ("Say 'resume' …")
+ *  is one — disarms the resume matcher from its playback start through the
+ *  post-TTS echo window (D1 self-echo), by playback lifecycle: this only
+ *  decides WHICH cues arm the disarm; the heard final is never string-
+ *  matched against the cue. */
 export function containsResumePhrase(text: string): boolean {
-  const normalised = normaliseVoicePauseText(text);
-  return RESUME_PHRASES.some((phrase) => containsPhrase(normalised, phrase));
+  const words = normaliseVoicePauseText(text).split(' ');
+  return RESUME_COMMANDS.some((command) => words.includes(command));
 }
 
-/** The branded-with-trailing-content near-miss ("certmate carry on, circuit
- *  two now"): an optional prefix, the brand, a command, then MORE words.
- *  Feeds only the `voice_pause_trailing_content_cue` diagnostic — the cue
- *  itself fires on every non-command final. */
-export function isBrandedCommandWithTrailingContent(text: string): boolean {
-  // An accepted command is never "trailing content" ("certmate pause
-  // listening" is the command, not "pause" plus a trailing word).
+/** A command word followed by MORE words ("pause the RCD test", "resume
+ *  the ring test"). Feeds only the `voice_pause_trailing_content_cue`
+ *  diagnostic — the cue itself fires on every non-command final. */
+export function isCommandWithTrailingContent(text: string): boolean {
   if (matchVoicePauseCommand(text) !== null) return false;
-  let normalised = normaliseVoicePauseText(text);
-  for (const prefix of OPTIONAL_PREFIXES) {
-    if (normalised.startsWith(`${prefix} `)) {
-      normalised = normalised.slice(prefix.length + 1);
-      break;
-    }
-  }
-  return ALL_COMMAND_PHRASES.some(
-    (phrase) => normalised.startsWith(`${phrase} `) && normalised.length > phrase.length + 1
-  );
+  const words = normaliseVoicePauseText(text).split(' ');
+  return words.length > 1 && ALL_COMMANDS.includes(words[0]);
 }
 
 // ── Still-paused cue throttle ──────────────────────────────────────────

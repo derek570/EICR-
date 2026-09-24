@@ -9,10 +9,18 @@
  * emits, within the existing caps, with and without heavy CCU augmentation.
  */
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { resolveUplinkURLConfig } from '@/lib/recording/uplink-url-config';
 import { KEYTERM_INTERNALS } from '@/lib/recording/keyword-boosts';
 
-const BRAND_FORMS = ['CertMate', 'Cert Mate', 'sert mate', 'cert-mate'];
+// Decision 36 moved the brand forms out of the command grammar into the
+// fixture's `keyterm_brand_forms` — a recognition aid only, still admitted.
+const BRAND_FORMS = (
+  JSON.parse(
+    readFileSync(path.join(__dirname, '..', '..', 'config', 'voice-pause-vectors.json'), 'utf8')
+  ) as { keyterm_brand_forms: { forms: string[] } }
+).keyterm_brand_forms.forms;
 
 const heavyAnalysis = {
   board_manufacturer: 'Acme',
@@ -70,8 +78,8 @@ describe('PLAN-D — the brand word reaches the admitted Deepgram URL', () => {
       expect(keys).toHaveLength(1);
       expect(KEYTERM_INTERNALS.BASE_KEYWORD_BOOSTS[keys[0]]).toBe(3.0);
     }
-    const flux = KEYTERM_INTERNALS.FLUX_CURATED_KEYTERMS_PROVISIONAL;
-    for (const form of BRAND_FORMS) expect(flux).toContain(form);
+    const flux = KEYTERM_INTERNALS.FLUX_CURATED_KEYTERMS_PROVISIONAL.map((t) => t.toLowerCase());
+    for (const form of BRAND_FORMS) expect(flux).toContain(form.toLowerCase());
     expect(flux).toHaveLength(47);
   });
 });

@@ -19,7 +19,7 @@ import {
   matchVoicePauseCommand,
   normaliseVoicePauseText,
   containsResumePhrase,
-  isBrandedCommandWithTrailingContent,
+  isCommandWithTrailingContent,
   StillPausedCueThrottle,
 } from '@/lib/recording/voice-pause';
 
@@ -34,13 +34,11 @@ const fixture = JSON.parse(
   readFileSync(path.join(__dirname, '..', '..', 'config', 'voice-pause-vectors.json'), 'utf8')
 ) as {
   grammar: {
-    optional_prefixes: string[];
-    brand_forms: string[];
-    brand_forms_normalised: string[];
     pause_commands: string[];
     resume_commands: string[];
     pattern: string;
   };
+  keyterm_brand_forms: { forms: string[] };
   vectors: {
     accept_pause: string[];
     accept_resume: string[];
@@ -89,9 +87,21 @@ describe('PLAN-D — voice-pause constants pinned to the fixture', () => {
     expect(VOICE_PAUSE_REMINDER_INTERVAL_MS).toBe(fixture.timing.reminder_interval_ms);
   });
 
-  it('brand forms normalise to the fixture normalised set', () => {
-    const normalised = new Set(fixture.grammar.brand_forms.map(normaliseVoicePauseText));
-    expect([...normalised].sort()).toEqual([...fixture.grammar.brand_forms_normalised].sort());
+  it('every grammar command word matches its own command (Decision 36: one word each)', () => {
+    for (const word of fixture.grammar.pause_commands)
+      expect(matchVoicePauseCommand(word)).toBe('pause');
+    for (const word of fixture.grammar.resume_commands) {
+      expect(matchVoicePauseCommand(word)).toBe('resume');
+    }
+  });
+
+  it('the brand word is not a command, alone or with a command (Decision 36)', () => {
+    for (const form of fixture.keyterm_brand_forms.forms) {
+      expect(matchVoicePauseCommand(form)).toBeNull();
+      for (const word of [...fixture.grammar.pause_commands, ...fixture.grammar.resume_commands]) {
+        expect(matchVoicePauseCommand(`${form} ${word}`)).toBeNull();
+      }
+    }
   });
 });
 
@@ -117,23 +127,23 @@ describe('PLAN-D — the command matcher against the fixture vectors', () => {
     }
   });
 
-  it('every string containing the resume phrase is flagged for the self-echo disarm', () => {
-    const phraseBearing = fixtureStrings
-      .map(([, e]) => e.text)
-      .filter((t) => normaliseVoicePauseText(t).includes('certmate carry on'));
-    expect(phraseBearing.length).toBeGreaterThan(0);
-    for (const text of phraseBearing) expect(containsResumePhrase(text)).toBe(true);
-    expect(containsResumePhrase(VOICE_PAUSE_STRINGS.resume_line.text)).toBe(false);
+  it('every string naming a resume command word is flagged for the self-echo disarm, and only those', () => {
+    const namesResume = (t: string) =>
+      normaliseVoicePauseText(t)
+        .split(' ')
+        .some((w) => fixture.grammar.resume_commands.includes(w));
+    const texts = fixtureStrings.map(([, e]) => e.text);
+    // Decision 36: every cue that tells the inspector how to resume names it.
+    expect(texts.filter(namesResume).length).toBeGreaterThan(0);
+    for (const text of texts) expect(containsResumePhrase(text), text).toBe(namesResume(text));
   });
 
-  it('flags only the branded-with-trailing-content near misses', () => {
+  it('flags only the command-with-trailing-content near misses', () => {
     for (const v of fixture.vectors.near_miss) {
-      expect(isBrandedCommandWithTrailingContent(v.text), v.text).toBe(
-        v.kind === 'branded_trailing'
-      );
+      expect(isCommandWithTrailingContent(v.text), v.text).toBe(v.kind === 'trailing');
     }
     for (const text of [...fixture.vectors.accept_pause, ...fixture.vectors.accept_resume]) {
-      expect(isBrandedCommandWithTrailingContent(text)).toBe(false);
+      expect(isCommandWithTrailingContent(text)).toBe(false);
     }
   });
 });

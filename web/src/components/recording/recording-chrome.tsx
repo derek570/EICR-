@@ -364,7 +364,7 @@ function RecordingActionBar() {
                 machine; resume only enables from dozing/sleeping.
                 PLAN-D — during a hands-free VOICE pause the Pause
                 affordance is replaced by Resume, which calls the same
-                origin-aware resume() the spoken "CertMate, carry on"
+                origin-aware resume() the spoken "resume"
                 reaches. */}
             {isPaused || voicePaused ? (
               <CircleButton
@@ -393,7 +393,7 @@ function RecordingActionBar() {
               data-testid="voice-pause-hint"
               className="basis-full text-[12px] font-medium text-[var(--color-status-limitation)]"
             >
-              Voice paused. Say &ldquo;CertMate, carry on&rdquo; or tap Resume.
+              Voice paused. Say &ldquo;resume&rdquo; or tap Resume.
             </p>
           ) : isPaused ? (
             <p

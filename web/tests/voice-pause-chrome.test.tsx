@@ -16,6 +16,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
+
+const RESUME_COMMAND = (
+  JSON.parse(
+    readFileSync(path.join(__dirname, '..', '..', 'config', 'voice-pause-vectors.json'), 'utf8')
+  ) as { grammar: { resume_commands: string[] } }
+).grammar.resume_commands[0];
 
 // lucide-react resolves the root React copy (two React instances); stub every
 // icon with a plain element, the pattern phase-3-alerts-page.test.tsx uses.
@@ -143,8 +151,9 @@ describe('PLAN-D Acceptance 12 — voice-pause presentation', () => {
     const resume = button('Resume');
     expect(resume).not.toBeNull();
     expect(container.textContent).toContain('Voice paused');
+    // Decision 36: the hint names the one-word resume command from the fixture.
     expect(container.querySelector('[data-testid="voice-pause-hint"]')?.textContent).toContain(
-      'CertMate, carry on'
+      `\u201c${RESUME_COMMAND}\u201d`
     );
     await act(async () => {
       resume!.click();

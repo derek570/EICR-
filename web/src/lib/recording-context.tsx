@@ -134,7 +134,7 @@ import {
   VOICE_PAUSE_REMINDER_INTERVAL_MS,
   VOICE_PAUSE_STRINGS,
   containsResumePhrase,
-  isBrandedCommandWithTrailingContent,
+  isCommandWithTrailingContent,
   matchVoicePauseCommand,
 } from './recording/voice-pause';
 // PLAN-E-TERM — the durable post-session unresolved-audio record: a
@@ -339,8 +339,8 @@ export type RecordingSnapshot = {
    *  Circuits tab, board-banner) filter their UI down to this id.
    *  Null when no session is active OR the job is single-board. */
   currentBoardId: string | null;
-  /** PLAN-D — a hands-free VOICE pause is holding ("CertMate pause"). The
-   *  microphone and Deepgram stay live so "CertMate carry on" can be
+  /** PLAN-D — a hands-free VOICE pause is holding (the spoken "pause"). The
+   *  microphone and Deepgram stay live so the spoken "resume" can be
    *  heard; only transcript finals stop being acted on. Independent of
    *  `state` (which stays `'active'`); the button pause is `'sleeping'`.
    *  The chrome shows a Resume-only presentation while this is true. */
@@ -1610,8 +1610,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     ((samples: Float32Array, sampleRate: number, capturedAt: number) => void) | null
   >(null);
 
-  // ── PLAN-D — hands-free voice pause ("CertMate pause" / "CertMate carry
-  // on"). THE CONTRACT: pausing stops INPUT and does nothing to the spoken
+  // ── PLAN-D — hands-free voice pause (the words "pause" / "resume" said on
+  // their own, WAVE-CONTEXT Decision 36). THE CONTRACT: pausing stops INPUT and does nothing to the spoken
   // channel (WAVE-CONTEXT Decision 8). While `voicePausedRef` is set the mic,
   // the Deepgram socket and interim handling all keep running — that is what
   // makes the resume phrase hearable — and every admitted final stops at the
@@ -1813,7 +1813,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       count: voicePauseDropCountRef.current,
       textPreview: text.slice(0, 60),
     });
-    if (isBrandedCommandWithTrailingContent(text)) {
+    if (isCommandWithTrailingContent(text)) {
       clientDiagnostic('voice_pause_trailing_content_cue', { textPreview: text.slice(0, 60) });
     }
     if (stillPausedCueThrottleRef.current.admit(Date.now())) {
