@@ -212,6 +212,18 @@ describe('BS_STANDARD_NAMED_EXTRACTOR — the two remaining BS extractors', () =
     expect(named).toEqual([]);
   });
 
+  test.each(['BS EN 60898A', 'BS EN 60947-4-1A', 'BS 3871x'])(
+    'a trailing letter is not cut off into a shorter standard (%j) — EP cycle 1, Codex c1-2',
+    (text) => {
+      // Named and whole-value paths must agree: both refuse the token.
+      expect(parseOcpdStandard(text)).toBeNull();
+      const named = extractNamedFieldValues(text, ocpdSchema.slots).filter(
+        (w) => w.field === 'ocpd_bs_en'
+      );
+      expect(named).toEqual([]);
+    }
+  );
+
   test('a bare two-digit BS 88 is not a standard, so nothing is named-extracted', () => {
     const named = extractNamedFieldValues('BS 88 fuse', ocpdSchema.slots).filter(
       (w) => w.field === 'ocpd_bs_en'

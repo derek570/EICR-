@@ -485,7 +485,7 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       } catch {
         lineage = null;
       }
-      if (!lineage?.bulkInput) {
+      if (!lineage?.bulkInput || lineage.field !== 'ocpd_bs_en') {
         logAsk({
           sessionId,
           turnId,
@@ -1647,12 +1647,25 @@ async function buildResolvedBody({
     // `BS EN 60947-4-1`). Its own resolver runs FIRST and owns every outcome
     // for this field: `resolveEnumAnswer` is never reached for it.
     if (contextField === 'ocpd_bs_en') {
+      // A BULK lineage applies only to an ask that names NO target of its own
+      // and whose echoed rejection is about this same field. An ask naming
+      // circuit 1 that echoes the ref of a bulk rejection covering 1–3 is a
+      // question about circuit 1: honouring the bulk scope there would write
+      // (or refuse) circuits the inspector was never asked about. Any other
+      // stamp is ignored here, and the refusal keys on the ask's own targets.
+      const askNamesTarget =
+        Number.isInteger(contextCircuit) ||
+        (Array.isArray(contextCircuits) && contextCircuits.length > 0);
+      const bulkStamp =
+        !askNamesTarget && askRejectionStamp?.bulkInput && askRejectionStamp.field === 'ocpd_bs_en'
+          ? askRejectionStamp
+          : null;
       const ocpdVerdict = resolveOcpdStandardAnswer({
         userText: outcome.user_text,
         contextCircuit,
         contextCircuits,
         contextBoardId,
-        bulkInput: askRejectionStamp?.bulkInput ?? null,
+        bulkInput: bulkStamp?.bulkInput ?? null,
         sourceTurnId: turnId,
       });
       if (ocpdVerdict.kind === 'auto_resolve') {
@@ -1730,7 +1743,7 @@ async function buildResolvedBody({
             circuit: contextCircuit,
             circuits: contextCircuits,
             boardId: contextBoardId,
-            stamp: askRejectionStamp,
+            stamp: bulkStamp,
           });
         } catch {
           // swallowed — the tool_result below is the model's contract.

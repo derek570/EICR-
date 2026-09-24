@@ -1814,6 +1814,21 @@ function clearDeferredSlot(session, schemaName, circuit_ref, field) {
 }
 
 /**
+ * PLAN-CS (Decision 7) — did the utterance name a BS standard that no BS slot
+ * consumed? Only schemas that declare `unconsumedStandardPattern` (RCBO, whose
+ * two BS slots have no named extractor) are checked. `consumedFields` is the
+ * set of fields this turn produced an operation for, of any disposition; a BS
+ * slot among them means the standard was understood (written, satisfied,
+ * rejected or queued), so the check only fires when nothing took it.
+ */
+function bsStandardUnconsumed(schema, text, consumedFields) {
+  const pattern = schema?.unconsumedStandardPattern;
+  if (!(pattern instanceof RegExp) || typeof text !== 'string') return false;
+  if (!pattern.test(maskCircuitSpans(text))) return false;
+  return !schema.slots.some((s) => s.kind === 'bs_code' && consumedFields.has(s.field));
+}
+
+/**
  * Detect whether the utterance carries a number+unit pattern that's
  * worth handing to Sonnet when the entry parsers missed everything.
  * Covers the EICR test-reading vocabulary: ms, ohms / mΩ / MΩ, mA,
@@ -2376,6 +2391,25 @@ function runEntry({
     volunteered.length === 0 &&
     typeof schema.bareEntryParser === 'function' &&
     schema.bareEntryParser(maskedEntryText) != null;
+  // PLAN-CS (Decision 7) — an entry utterance that names a BS standard the
+  // schema cannot attribute ("RCBO on circuit 3, BS EN 61009", or the RCD-first
+  // "the RCD BS code is 61009, RCBO on circuit 3") is handed to the model
+  // rather than consumed as a bare entry that asks for the number again and
+  // drops the one already said. The model writes it; the post-dispatch entry
+  // hook then starts the walk with the value in place. Designation ambiguity
+  // still takes precedence: the engine owes that question.
+  const entryStandardUnconsumed =
+    designationCandidates.length === 0 &&
+    !bareParserWouldCapture &&
+    bsStandardUnconsumed(schema, text, new Set(volunteered.map((w) => w.field)));
+  if (entryStandardUnconsumed) {
+    logger?.info?.(`${schema.logEventPrefix}_entry_standard_handover_to_model`, {
+      sessionId,
+      circuit_ref: circuitRef,
+      textPreview: text.slice(0, 80),
+    });
+    return { handled: false };
+  }
   if (
     volunteered.length === 0 &&
     Object.keys(existing).length === 0 &&
@@ -5063,6 +5097,43 @@ function runActivePath({
       logger,
       now,
       responseEpoch,
+    });
+  }
+
+  // 9a. PLAN-CS (Decision 7) — a BS standard said on this turn that no BS slot
+  //     consumed. On RCBO neither BS slot is named-extracted, so "BS EN 61009,
+  //     type B" to the curve question writes the curve and would otherwise drop
+  //     the standard in silence — the asked slot WAS answered, so step 9b's
+  //     rule cannot see it. The writes stand and are read back once by the
+  //     handoff's terminal read-back; the utterance reaches the model in
+  //     `transcriptText`. Detection only: nothing here guesses the field.
+  if (
+    currentSlot &&
+    state.circuit_ref !== null &&
+    bsStandardUnconsumed(
+      schema,
+      reply,
+      new Set(
+        (Array.isArray(state.operations) ? state.operations : [])
+          .slice(opsAtTurnStart)
+          .map((op) => op.field)
+      )
+    )
+  ) {
+    return terminateWithHandoff({
+      ws,
+      session,
+      sessionId,
+      schema,
+      state,
+      logger,
+      now,
+      responseEpoch,
+      transcriptText,
+      kind: 'slot_miss',
+      askedField: currentSlot.field,
+      askedQuestion: currentSlot.question ?? null,
+      textPreview: text.slice(0, 80),
     });
   }
 

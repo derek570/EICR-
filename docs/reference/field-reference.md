@@ -243,7 +243,10 @@ PLAN-CC made both clients tolerate any string; PLAN-CS flips the backend to matc
   curve). `rcd_bs_en` counts as filled only when its stored value parses (`slotIsFilled`
   in `helpers/extraction.js`); a skip verb on a stored value that does not parse hands
   off to the model instead of keeping it. The RCBO finish line names the RCD's number
-  only when it differs from the OCPD standard.
+  only when it differs from the OCPD standard. A BS standard said but consumed by
+  neither BS slot — at entry ("RCBO on circuit 3, BS EN 61009") or on a turn that
+  answered another slot — is DETECTED, never attributed, and the turn goes to the
+  model (Decision 7) rather than being dropped.
 - **The prompt's Tier-1 list is rendered**, not written: `{{OCPD_STANDARD_TIER1}}` in
   `config/prompts/sonnet_agentic_system.md` is replaced from the manifest in both prompt
   variants by `renderAgenticSystemPrompt`.

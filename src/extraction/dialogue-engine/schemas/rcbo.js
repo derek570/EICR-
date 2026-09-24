@@ -18,13 +18,18 @@
  * value is collected only as the answer to its own question, through the
  * bare-value path, and a parser miss hands the turn to the model.
  *
- * Accepted costs, recorded in the plan: an entry utterance carrying a BS
- * number ("RCBO on circuit 3, BS EN 61009") does not fill either BS slot, so
- * both are asked; and a BS number volunteered on a turn that also answers a
- * different asked slot is not captured.
+ * What happens to a BS number the schema cannot attribute: the plan accepted
+ * that an entry utterance carrying one ("RCBO on circuit 3, BS EN 61009"), or
+ * a turn that also answered a different asked slot, would drop it. Decision 7
+ * forbids that silent skip, so `unconsumedStandardPattern` below DETECTS the
+ * standard (never attributes it) and the turn goes to the model instead.
  */
 
-import { parseOcpdStandard, parseRcdBsCode } from '../parsers/bs-code.js';
+import {
+  BS_STANDARD_MENTION_PATTERN,
+  parseOcpdStandard,
+  parseRcdBsCode,
+} from '../parsers/bs-code.js';
 import { parseMcbType } from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
@@ -181,6 +186,16 @@ const topicSwitchTriggers = [
 
 export const rcboSchema = {
   name: 'rcbo',
+  // PLAN-CS — Decision 7 applied to what the deletion of the two BS
+  // extractors leaves behind. This pattern DETECTS a BS standard in the
+  // utterance; it never decides which slot the number belongs to, which is
+  // the discriminator Decision 7 forbids. When one is said and no BS slot
+  // consumed it — at entry ("RCBO on circuit 3, BS EN 61009") or on a turn
+  // that answered a different slot ("BS EN 61009, type B" to the curve
+  // question) — the engine did not understand part of what the inspector
+  // said, so the turn goes to the model with the utterance instead of being
+  // silently dropped. See `bsStandardUnconsumed` in engine.js.
+  unconsumedStandardPattern: BS_STANDARD_MENTION_PATTERN,
   triggers,
   cancelTriggers,
   skipSlotTriggers,

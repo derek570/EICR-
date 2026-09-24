@@ -323,6 +323,65 @@ describe('acceptance 4b — a BULK lineage: the ask’s scope is preserved end t
     }
   });
 
+  // EP cycle 1, Codex c2-1: an ask naming ITS OWN circuit that echoes the ref
+  // of a bulk rejection must stay a question about that circuit.
+  async function mismatchedEcho(userText) {
+    const session = buildSession();
+    const writes = createPerTurnWrites();
+    const rejected = await modelWrite(session, writes, 'set_field_for_all_circuits', {
+      field: 'ocpd_bs_en',
+      value: 'There is no RCBO',
+      scope: 'all',
+      confidence: 0.9,
+      source_turn_id: 't1',
+    });
+    const asked = await runAsk({
+      session,
+      writes,
+      input: ocpdAsk({ context_circuit: 1, rejection_ref: rejected.body.rejection_ref }),
+      userText,
+    });
+    return { session, writes, ...asked };
+  }
+
+  test('a single-circuit ask echoing a bulk ref writes ONLY its own circuit', async () => {
+    const { session, body } = await mismatchedEcho('BS 3871');
+    expect(body.match_status).toBe('ocpd_standard_resolved');
+    expect(body.resolved_writes).toEqual([
+      expect.objectContaining({ tool: 'record_reading', circuit: 1, value: 'BS 3871' }),
+    ]);
+    expect(session.stateSnapshot.circuits[1].ocpd_bs_en).toBe('BS 3871');
+    for (const n of [2, 3, 4, 5])
+      expect(session.stateSnapshot.circuits[n].ocpd_bs_en).toBeUndefined();
+  });
+
+  test('its unreadable answer is refused for that circuit, not the bulk scope', async () => {
+    const { writes, body } = await mismatchedEcho('BS 123456');
+    expect(body.match_status).toBe('ocpd_standard_rejected_after_ask');
+    expect(bulkNotices(writes, 'enum_rejected_after_ask_bulk')).toHaveLength(0);
+    const single = bulkNotices(writes, 'enum_rejected_after_ask');
+    expect(single).toHaveLength(1);
+    expect(single[0].friendly).toContain('circuit 1');
+  });
+
+  test('a reference-only ask echoing a bulk rejection of a DIFFERENT field is refused (ask_requires_target)', async () => {
+    const session = buildSession();
+    const writes = createPerTurnWrites();
+    const rejected = await modelWrite(session, writes, 'set_field_for_all_circuits', {
+      field: 'rcd_bs_en',
+      value: 'nonsense',
+      confidence: 0.9,
+      source_turn_id: 't1',
+    });
+    expect(rejected.body.rejection_ref).toEqual(expect.any(String));
+    const { body } = await runAsk({
+      session,
+      writes,
+      input: ocpdAsk({ context_circuit: null, rejection_ref: rejected.body.rejection_ref }),
+    });
+    expect(body.code).toBe('ask_requires_target');
+  });
+
   test('the hook copies scope / spare_policy / exclude_circuits byte-equal from bulkInput', async () => {
     const session = buildSession();
     const writes = createPerTurnWrites();

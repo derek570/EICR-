@@ -11,6 +11,9 @@
  *   - CS-70: the RCBO finish line names the RCD's number only when it differs.
  *   - CS-105: an unanswered outstanding ask hands off even when the turn wrote
  *     something else (the contract PLAN-A implements at step 9b).
+ *   - Decision 7 (EP cycle 1): a BS standard said and consumed by no BS slot —
+ *     at entry or on a turn answering another slot — hands the turn to the
+ *     model instead of being dropped. Detected, never attributed.
  *   - The raw reply, not the annotated transcript, reaches the BS parsers,
  *     so annotated, unannotated and mismatched-annotation turns behave
  *     identically.
@@ -247,17 +250,21 @@ describe('acceptance 3 — OCPD script, the annotated BS answer', () => {
 // ── RCBO walk-through cases ──────────────────────────────────────────────────
 
 describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', () => {
-  test('(a) entry "RCBO on circuit 3, BS EN 61009" → zero BS operations, the OCPD BS question next', () => {
+  // EP cycle 1 (Codex c1-1 / c2-3, Decision 7): the plan let this entry ask for
+  // the number again and drop the one just said. Decision 7 forbids a silent
+  // skip after a failure to understand, so an entry utterance naming a BS
+  // standard the RCBO schema cannot attribute goes to the model instead.
+  test('(a) entry "RCBO on circuit 3, BS EN 61009" → handed to the model, nothing consumed or dropped', () => {
     const ws = new FakeWS();
     const session = buildSession({ 3: {} });
-    say(ws, session, 'RCBO on circuit 3, BS EN 61009', 1000);
-    expect(session.dialogueScriptState.schemaName).toBe('rcbo');
-    expect(opsFor(session, 'ocpd_bs_en')).toEqual([]);
-    expect(opsFor(session, 'rcd_bs_en')).toEqual([]);
+    const out = say(ws, session, 'RCBO on circuit 3, BS EN 61009', 1000);
+    // Not handled by the script: the utterance reaches the model unchanged.
+    expect(out.handled).toBe(false);
+    expect(session.dialogueScriptState ?? null).toBeNull();
     expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBeUndefined();
     expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBeUndefined();
-    expect(lastAsk(ws).question).toBe(Q_OCPD_BS);
-    expect(count(spoken(ws), '61009')).toBe(0);
+    // The script asked nothing — the model owns this turn.
+    expect(spoken(ws)).toEqual([]);
   });
 
   test.each(Object.keys(ANNOTATIONS))(
@@ -436,7 +443,8 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
   test('(f) stored legacy rcd_bs_en = 61009-1 parses: not asked, never spoken, legacy line suppressed', () => {
     const ws = new FakeWS();
     const session = buildSession({ 3: { rcd_bs_en: '61009-1' } });
-    say(ws, session, 'RCBO on circuit 3, BS EN 61009', 1000);
+    // A bare entry (a BS number at entry now goes to the model — case (a)).
+    say(ws, session, 'RCBO on circuit 3.', 1000);
     expect(opsFor(session, 'ocpd_bs_en')).toEqual([]);
     expect(opsFor(session, 'rcd_bs_en')).toEqual([]);
     expect(lastAsk(ws).question).toBe(Q_OCPD_BS);
@@ -451,17 +459,26 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('61009-1');
   });
 
-  test('(g) RCD-first prose at ENTRY → enters, zero BS operations, first slot question, no handoff', () => {
+  test('(f) the same legacy value with the number said AT ENTRY → the model, legacy bytes untouched', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { rcd_bs_en: '61009-1' } });
+    const out = say(ws, session, 'RCBO on circuit 3, BS EN 61009', 1000);
+    expect(out.handled).toBe(false);
+    expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('61009-1');
+    expect(spoken(ws)).toEqual([]);
+  });
+
+  test('(g) RCD-first prose at ENTRY ("the RCD BS code is 61009, …") → handed to the model', () => {
+    // The plan had this enter and ask the OCPD question, losing 61009. The
+    // detection pattern sees the "BS code is N" lead-in, which the extractor
+    // grammar never matched, and the turn goes to the model with it.
     const ws = new FakeWS();
     const session = buildSession({ 3: {} });
     const out = say(ws, session, 'the RCD BS code is 61009, RCBO on circuit 3', 1000);
-    expect(out.fallthrough).toBe(false);
-    expect(session.dialogueScriptState.schemaName).toBe('rcbo');
-    expect(session.dialogueScriptState.circuit_ref).toBe(3);
-    expect(opsFor(session, 'ocpd_bs_en')).toEqual([]);
-    expect(opsFor(session, 'rcd_bs_en')).toEqual([]);
-    expect(lastAsk(ws).question).toBe(Q_OCPD_BS);
-    expect(count(spoken(ws), '61009')).toBe(0);
+    expect(out.handled).toBe(false);
+    expect(session.dialogueScriptState ?? null).toBeNull();
+    expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBeUndefined();
+    expect(spoken(ws)).toEqual([]);
   });
 
   test('(h) OCPD pivot on 61009 asks the RCD BS exactly once', () => {
@@ -656,7 +673,7 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     }
   );
 
-  test('(o) siblings: an ordinary answer is not a miss; a compound answer that includes the asked slot drops the BS number', () => {
+  test('(o) siblings: an ordinary answer is not a miss; a compound answer that ALSO names a standard hands off', () => {
     const ws = new FakeWS();
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
@@ -666,18 +683,26 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const plain = say(ws, session, 'type B', 3000);
     expect(plain.fallthrough).toBe(false);
 
+    // EP cycle 1 (Codex c2-2, Decision 7): the plan recorded this as a residual
+    // silent loss. The standard is DETECTED (never attributed), so the turn
+    // keeps its curve write, reads it back once, and hands the utterance —
+    // BS number included — to the model instead of dropping it.
     const ws2 = new FakeWS();
     const session2 = buildSession({ 3: {} });
     say(ws2, session2, 'RCBO on circuit 3.', 1000);
     say(ws2, session2, 'BS EN 60898', 2000);
     say(ws2, session2, 'BS EN 61009', 2500);
     const compound = say(ws2, session2, 'BS EN 61009, type B', 3000);
-    // The residual loss CS-105 records: the asked slot is answered, so no
-    // rule fires, and the volunteered BS number is dropped — the stored OCPD
-    // standard stays what was dictated for it.
-    expect(compound.fallthrough).toBe(false);
+    expect(compound.fallthrough).toBe(true);
+    expect(compound.transcriptText).toContain('BS EN 61009, type B');
     expect(session2.stateSnapshot.circuits[3].ocpd_type).toBe('B');
+    // Nothing guessed: the stored OCPD standard is untouched by the engine.
     expect(session2.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS EN 60898');
+    expect(compound.serverNote.recorded.filter((r) => r.field === 'ocpd_type')).toHaveLength(1);
+    // PLAN-A's terminal read-back names everything the walk captured exactly
+    // once, the curve included.
+    expect(count(spoken(ws2), 'curve B')).toBe(1);
+    expect(count(spoken(ws2), 'BS EN 60898')).toBe(1);
   });
 });
 

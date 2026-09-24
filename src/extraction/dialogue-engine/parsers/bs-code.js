@@ -205,13 +205,28 @@ export const OCPD_STANDARD_ACCEPTED_FORMS =
  * Group 1 is the WHOLE standard token — the `BS` / `BS EN` prefix (Flux's
  * letter-split `a b s` / `b s e n` forms included) plus up to five digits and
  * the full two-suffix grammar — so the anchored parser sees exactly what was
- * said. The right boundary `(?![\d-])` stops a longer number or a dangling
- * hyphen being cut into a shorter standard. Not global: `extractNamedFieldValues`
+ * said. The right boundary `(?![A-Za-z0-9-])` stops a longer number, a
+ * dangling hyphen or a trailing letter (`BS EN 60898A`) being cut into a
+ * shorter, different standard: the token must be consumed whole or not at all. Not global: `extractNamedFieldValues`
  * reads capture groups through `String.prototype.match`, which returns none
  * for a `/g` regex.
  */
 export const BS_STANDARD_NAMED_EXTRACTOR =
-  /\b((?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*\d{2,5}(?:\s*-\s*\d{1,2})?(?:\s*-\s*\d)?)(?![\d-])/i;
+  /\b((?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*\d{2,5}(?:\s*-\s*\d{1,2})?(?:\s*-\s*\d)?)(?![A-Za-z0-9-])/i;
+
+/**
+ * DETECTION ONLY — does the utterance mention a BS standard at all? Broader
+ * than the extractor above: it also sees the spoken lead-ins "BS code is",
+ * "BS number", "BS standard" before the digits ("the RCD BS code is 61009").
+ * It is never used to WRITE anything and never decides which field a number
+ * belongs to; a schema uses it to notice that a standard was said and not
+ * consumed, so the turn can go to the model (Decision 7). Deliberately
+ * permissive on the digits (`BS 123456`, `BS EN 60898A` still count as a
+ * mention): a missed detection is a silent drop, an extra one is one model
+ * turn. Not global.
+ */
+export const BS_STANDARD_MENTION_PATTERN =
+  /\b(?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?(?:\s+(?:code|number|no\.?|standard)(?:\s+(?:is|was|of))?)?\s*\d{2,}/i;
 
 /**
  * `rcd_bs_en`'s closed option list, the `""` sentinel EXCLUDED. `rcd_bs_en`
