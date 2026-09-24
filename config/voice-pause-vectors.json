@@ -1,71 +1,105 @@
 {
-  "$comment": "PLAN-D (feedback wave 2026-09-17, Derek's decision 2) — hands-free pause and resume by voice. The ONE shared contract for both clients: the command grammar, the acceptance and near-miss vectors, the five spoken strings and the resume tone's parameters. Canonical copy lives here; iOS carries byte-identical copies (app bundle + test fixtures), pinned by scripts/check-voice-pause-fixture-sync.sh as a CertMateUnified/deploy-testflight.sh preflight. Tests assert against the keys in this file, never against literals.",
+  "$comment": "PLAN-D (feedback wave 2026-09-17, Derek's decision 2) — hands-free pause and resume by voice. The ONE shared contract for both clients: the command grammar (plain \"pause\" / \"resume\" since Decision 36), the acceptance and near-miss vectors, the five spoken strings and the resume tone's parameters. Canonical copy lives here; iOS carries byte-identical copies (app bundle + test fixtures), pinned by scripts/check-voice-pause-fixture-sync.sh as a CertMateUnified/deploy-testflight.sh preflight. Tests assert against the keys in this file, never against literals.",
   "schema_version": 1,
   "grammar": {
-    "$comment": "Whole-utterance match, case-insensitive, punctuation-stripped, anchored after an optional prefix, with nothing else in the utterance. The brand word is required. No fuzzy matching (the 2026-06-24 hard rule). Normalisation runs in the order listed; the pattern is then matched against the normalised text.",
+    "$comment": "Decision 36 (TAKEN 2026-09-24): the command is exactly one word said on its own — \"pause\" or \"resume\". Whole-utterance match, case-insensitive, punctuation-stripped, no prefix, no brand word, no aliases, no fuzzy matching (the 2026-06-24 hard rule). Normalisation runs in the order listed; the pattern is then matched against the normalised text. (Before Decision 36 the grammar required the brand word \"CertMate\"; Flux transcribed it as \"So it may\", \"Search made to\" and \"Certainly made\" in the device smoke.)",
     "normalisation": [
       "lowercase",
       "delete apostrophes (U+0027 and U+2019)",
       "replace every character outside [a-z0-9] with a space",
       "collapse runs of whitespace to one space and trim"
     ],
-    "optional_prefixes": ["hey", "okay", "ok"],
-    "brand_forms": ["certmate", "cert mate", "sert mate", "cert-mate"],
-    "brand_forms_normalised": ["certmate", "cert mate", "sert mate"],
-    "pause_commands": ["pause", "pause listening", "hold on"],
-    "resume_commands": ["carry on", "resume", "im back", "listen"],
-    "pattern": "^(?:(?:hey|okay|ok) )?(?:certmate|cert mate|sert mate) (?<command>pause|pause listening|hold on|carry on|resume|im back|listen)$"
+    "pause_commands": [
+      "pause"
+    ],
+    "resume_commands": [
+      "resume"
+    ],
+    "pattern": "^(?<command>pause|resume)$"
+  },
+  "keyterm_brand_forms": {
+    "$comment": "Recognition aid only, no longer part of the command grammar (Decision 36). The brand forms stay on both web keyterm lists and the iOS keyword boosts so the product name is transcribed well in ordinary speech.",
+    "forms": [
+      "certmate",
+      "cert mate",
+      "sert mate",
+      "cert-mate"
+    ]
   },
   "vectors": {
     "accept_pause": [
-      "certmate pause",
-      "CertMate pause",
-      "CertMate, pause.",
-      "Cert mate, pause.",
-      "Sert mate pause",
-      "cert-mate pause",
-      "Hey CertMate, pause.",
-      "Okay, CertMate, pause.",
-      "OK CertMate pause",
-      "CertMate, pause listening.",
-      "certmate hold on",
-      "CertMate, hold on."
+      "pause",
+      "Pause",
+      "Pause.",
+      "PAUSE!",
+      "Pause…",
+      " pause "
     ],
     "accept_resume": [
-      "certmate carry on",
-      "CertMate, carry on.",
-      "Cert mate, carry on.",
-      "Sert mate carry on",
-      "cert-mate carry on",
-      "Hey CertMate, carry on.",
-      "Okay CertMate, carry on!",
-      "CertMate, resume.",
-      "CertMate, I'm back.",
-      "CertMate, I’m back.",
-      "certmate listen",
-      "CertMate, listen."
+      "resume",
+      "Resume",
+      "Resume.",
+      "RESUME!",
+      "Resume?",
+      " resume "
     ],
     "near_miss": [
-      { "text": "pause the RCD test", "kind": "unbranded" },
-      { "text": "carry on to circuit 4", "kind": "unbranded" },
-      { "text": "carry on", "kind": "unbranded" },
-      { "text": "pause", "kind": "unbranded" },
-      { "text": "hold on a second", "kind": "unbranded" },
-      { "text": "certmate carry on, circuit two now", "kind": "branded_trailing" },
-      { "text": "certmate pause the RCD test", "kind": "branded_trailing" },
-      { "text": "CertMate, carry on with the ring test.", "kind": "branded_trailing" },
-      { "text": "CertMate, what's paused?", "kind": "question" },
-      { "text": "CertMate", "kind": "brand_only" },
-      { "text": "Hey CertMate", "kind": "brand_only" },
-      { "text": "Zs on circuit 3 is 0.42", "kind": "dictated_reading" }
+      {
+        "text": "pause the RCD test",
+        "kind": "trailing"
+      },
+      {
+        "text": "resume the ring test",
+        "kind": "trailing"
+      },
+      {
+        "text": "pause recording",
+        "kind": "trailing"
+      },
+      {
+        "text": "okay pause",
+        "kind": "prefix"
+      },
+      {
+        "text": "hey resume",
+        "kind": "prefix"
+      },
+      {
+        "text": "carry on",
+        "kind": "retired_alias"
+      },
+      {
+        "text": "carry on to circuit 4",
+        "kind": "retired_alias"
+      },
+      {
+        "text": "hold on",
+        "kind": "retired_alias"
+      },
+      {
+        "text": "certmate pause",
+        "kind": "retired_branded"
+      },
+      {
+        "text": "CertMate, carry on.",
+        "kind": "retired_branded"
+      },
+      {
+        "text": "What's paused?",
+        "kind": "question"
+      },
+      {
+        "text": "Zs on circuit 3 is 0.42",
+        "kind": "dictated_reading"
+      }
     ]
   },
   "strings": {
-    "$comment": "Decision 10 (TAKEN 2026-09-20) pins the first four; Decision 24(c) (TAKEN 2026-09-21) approves resume_line and retires resume_ack FOR THE VOICE-PAUSE ROUTE ONLY (a per-entry flag, not a deletion, so its bytes stay pinned). A test that enumerates what the voice-pause route PRODUCES reads each entry's status and finds four. Every string is also a must-not-command vector.",
+    "$comment": "Decision 10 (TAKEN 2026-09-20) pins the first four; Decision 24(c) (TAKEN 2026-09-21) approves resume_line and retires resume_ack FOR THE VOICE-PAUSE ROUTE ONLY (a per-entry flag, not a deletion, so its bytes stay pinned). A test that enumerates what the voice-pause route PRODUCES reads each entry's status and finds four. Every string is also a must-not-command vector. Decision 36 (TAKEN 2026-09-24) rewords pause_ack, reminder and still_paused_cue to name the new command 'resume'.",
     "pause_ack": {
-      "text": "Paused. Say 'CertMate, carry on' when you're ready.",
+      "text": "Paused. Say 'resume' when you're ready.",
       "status": "active",
-      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 1"
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 1; reworded by Decision 36 (TAKEN 2026-09-24)"
     },
     "resume_ack": {
       "text": "Carrying on.",
@@ -74,14 +108,14 @@
       "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 2; retired for the voice-pause route by Decision 24(c) (TAKEN 2026-09-21)"
     },
     "reminder": {
-      "text": "Still paused. Say 'CertMate, carry on' to resume.",
+      "text": "Still paused. Say 'resume' to carry on.",
       "status": "active",
-      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 3"
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 3; reworded by Decision 36 (TAKEN 2026-09-24)"
     },
     "still_paused_cue": {
-      "text": "Still paused — say 'CertMate, carry on' on its own to resume.",
+      "text": "Still paused — say 'resume' on its own to carry on.",
       "status": "active",
-      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 4"
+      "decision": "WAVE-CONTEXT.md Decision 10 (TAKEN 2026-09-20), string 4; reworded by Decision 36 (TAKEN 2026-09-24)"
     },
     "resume_line": {
       "text": "Carrying on — anything said while paused wasn't recorded.",
