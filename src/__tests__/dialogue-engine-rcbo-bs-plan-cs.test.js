@@ -873,3 +873,45 @@ describe('EP cycle 3 — a circuit designated "BS 3" is not a stated standard (c
     expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
   });
 });
+
+describe('EP cycle 4 — recall first, designations masked (c5-1, c5-2)', () => {
+  test('a circuit designated "BS 32" is not a stated standard at entry', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'BS 32' } });
+    const out = say(ws, session, 'RCBO on circuit BS 32', 1000);
+    expect(out.handled).toBe(true);
+    expect(lastAsk(ws).question).toBe(Q_OCPD_BS);
+  });
+
+  test('"curve B on circuit BS 3, 32 amps" mid-walk writes both readings and continues', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'BS 3' } });
+    say(ws, session, 'RCBO on circuit 3.', 1000);
+    say(ws, session, 'BS EN 60898', 2000);
+    say(ws, session, 'BS EN 61009', 2500);
+    const out = say(ws, session, 'curve B on circuit BS 3, 32 amps', 3000);
+    expect(out.fallthrough).toBe(false);
+    expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
+    expect(session.stateSnapshot.circuits[3].ocpd_rating_a).toBe('32');
+  });
+
+  test('comma-separated dictated digits "BS 6, 1, 0, 0, 9" are detected at entry', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    const out = say(ws, session, 'RCBO on circuit 3, BS 6, 1, 0, 0, 9', 1000);
+    expect(out.handled).toBe(false);
+    expect(spoken(ws)).toEqual([]);
+  });
+
+  test('"curve B, BS 6, 1, 0, 0, 9" mid-walk keeps the curve and hands off the standard', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    say(ws, session, 'RCBO on circuit 3.', 1000);
+    say(ws, session, 'BS EN 60898', 2000);
+    say(ws, session, 'BS EN 61009', 2500);
+    const out = say(ws, session, 'curve B, BS 6, 1, 0, 0, 9', 3000);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toContain('BS 6, 1, 0, 0, 9');
+    expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
+  });
+});

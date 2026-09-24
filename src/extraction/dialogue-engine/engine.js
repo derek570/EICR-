@@ -1840,11 +1840,35 @@ function fieldsParsedFromReply(operations) {
   );
 }
 
-function bsStandardUnconsumed(schema, text, consumedFields) {
+function bsStandardUnconsumed(schema, text, consumedFields, session = null) {
   const pattern = schema?.unconsumedStandardPattern;
   if (!(pattern instanceof RegExp) || typeof text !== 'string') return false;
-  if (!pattern.test(maskCircuitSpans(text))) return false;
+  if (!pattern.test(maskKnownDesignations(maskCircuitSpans(text), session))) return false;
   return !schema.slots.some((s) => s.kind === 'bs_code' && consumedFields.has(s.field));
+}
+
+/**
+ * Blank out every circuit designation the job already holds before the
+ * detector looks, so a circuit NAMED like a standard ("BS 3", "BS 32") is
+ * not mistaken for one being dictated. Length-preserving and case-blind.
+ * This removes the detector's one concrete false-positive source; any other
+ * over-detection costs one model turn, which Decision 7 accepts, whereas an
+ * under-detection would be a silent drop.
+ */
+function maskKnownDesignations(text, session) {
+  const circuits = session?.stateSnapshot?.circuits;
+  if (!circuits || typeof circuits !== 'object') return text;
+  const names = new Set();
+  for (const bucket of Object.values(circuits)) {
+    const d = bucket?.circuit_designation;
+    if (typeof d === 'string' && d.trim().length >= 2) names.add(d.trim());
+  }
+  let out = text;
+  for (const name of [...names].sort((a, b) => b.length - a.length)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escaped, 'gi'), (m) => ' '.repeat(m.length));
+  }
+  return out;
 }
 
 /**
@@ -2420,7 +2444,7 @@ function runEntry({
   const entryStandardUnconsumed =
     designationCandidates.length === 0 &&
     !bareParserWouldCapture &&
-    bsStandardUnconsumed(schema, text, new Set(volunteered.map((w) => w.field)));
+    bsStandardUnconsumed(schema, text, new Set(volunteered.map((w) => w.field)), session);
   if (entryStandardUnconsumed) {
     logger?.info?.(`${schema.logEventPrefix}_entry_standard_handover_to_model`, {
       sessionId,
@@ -4465,7 +4489,7 @@ function runActivePath({
     // is understood, the standard is not attributable, so the whole turn goes
     // to the model rather than skipping and dropping the standard.
     const skipDropsStandard =
-      state.circuit_ref !== null && bsStandardUnconsumed(schema, reply, new Set());
+      state.circuit_ref !== null && bsStandardUnconsumed(schema, reply, new Set(), session);
     if (
       skipDropsStandard ||
       (currentSlot.askWhenStoredUnparseable &&
@@ -5140,7 +5164,8 @@ function runActivePath({
     bsStandardUnconsumed(
       schema,
       reply,
-      fieldsParsedFromReply((state.operations ?? []).slice(opsAtTurnStart))
+      fieldsParsedFromReply((state.operations ?? []).slice(opsAtTurnStart)),
+      session
     )
   ) {
     return terminateWithHandoff({

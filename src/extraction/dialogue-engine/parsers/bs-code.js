@@ -224,18 +224,16 @@ const DIGIT_TOKEN = String.raw`(?:\d|\b(?:zero|oh|nought|one|two|three|four|five
  * broader than the extractor above: `BS` (or Flux's letter-split `b s`)
  * followed, within the same sentence and 40 characters, by a digit or a
  * spoken digit word — so "the RCD BS code is 61009", "the BS code for the RCD
- * is 61009" and "BS 6 1 zero zero 9" all count. It needs TWO adjacent digit
- * tokens, because every device standard has at least two digits: a circuit
- * designated "BS 3" is not a stated standard (EP cycle 3, c4-1).
- * It is never used to WRITE anything and never decides which field a number
- * belongs to; a schema uses it to notice that a standard was said and not
- * consumed, so the turn can go to the model (Decision 7). Deliberately
- * permissive on the digits (`BS 123456`, `BS EN 60898A` still count as a
- * mention): a missed detection is a silent drop, an extra one is one model
- * turn. Not global.
+ * is 61009", "BS 6 1 zero zero 9" and "BS 6, 1, 0, 0, 9" all count.
+ * Deliberately permissive: a missed detection is a silent drop, which Decision
+ * 7 forbids; an extra one costs one model turn, which Decision 7 accepts
+ * ("Cost accepted. One extra model turn…"). The engine blanks known circuit
+ * designations before testing, so a circuit NAMED "BS 3" is not a standard
+ * (EP cycles 3–4; an interim two-adjacent-digit rule traded recall for
+ * precision and dropped "BS 6, 1, 0, 0, 9", so it was withdrawn).
  */
 export const BS_STANDARD_MENTION_PATTERN = new RegExp(
-  String.raw`\b(?:a\.?\s+)?b\.?\s*s\.?\b(?=[^.?!]{0,40}?${DIGIT_TOKEN}\s*-?\s*${DIGIT_TOKEN})`,
+  String.raw`\b(?:a\.?\s+)?b\.?\s*s\.?\b(?=[^.?!]{0,40}?${DIGIT_TOKEN})`,
   'i'
 );
 
