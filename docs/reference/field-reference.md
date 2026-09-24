@@ -157,7 +157,7 @@ a plausible-looking first word, destroying the evidence a guard would need.
 - **Deliberately NOT ported from the backend BS-code parser:** its Levenshtein-1 fuzzy
   fallback. That maps `1362` → `BS 1361`, a DIFFERENT protective device; a silently
   substituted device standard on a certificate is exactly the failure this guard exists
-  to prevent.
+  to prevent. PLAN-CS (2026-09-24) removed that fallback from the backend too.
 - **Guarded ingresses:** both client-local voice dispatchers on each platform
   (`update_field` and `apply_field`), the wire-frame apply boundary, and web's regex
   instant-fill (`applyRegexMatchToJob`) — the instant-fill path is GUARDED because it
@@ -207,6 +207,46 @@ list, so dictating one drew a re-ask and the certificate recorded nothing.
   `CIRCUIT_FIELD_ORDER` + `CIRCUIT_HEADERS`); no WebSocket frame carries it, and it is
   deliberately absent from `config/field_schema.json` so ADR-008 derives no model tool
   enum for it — the model must never set its own provenance.
+
+### The backend half (PLAN-CS, 2026-09-24)
+
+PLAN-CC made both clients tolerate any string; PLAN-CS flips the backend to match.
+
+- **Schema.** `ocpd_bs_en` is `type: "text"` in `config/field_schema.json`, with
+  `suggestions` (Tier 1) and `suggestions_extended` (Tier 2) arrays asserted identical to
+  `config/ocpd-bs-suggestions.json` by `ocpd-bs-suggestions.test.js`. It left
+  `CIRCUIT_FIELD_VALUE_ENUMS`, so the dispatcher's closed-enum gate no longer covers it.
+  `rcd_bs_en` stays a `select`.
+- **Two parsers** in `src/extraction/dialogue-engine/parsers/bs-code.js`, each bound to its
+  own slots. `parseOcpdStandard` is the backend twin of the client canonicaliser, driven
+  through every manifest vector byte for byte. `parseRcdBsCode` canonicalises the same way
+  and then accepts only an `rcd_bs_en` option (the `""` sentinel excluded).
+  `parseBsCode` and its Levenshtein-1 fallback are gone.
+- **One shape rule at every boundary.** `record_reading` and `set_field_for_all_circuits`
+  reject an unreadable standard as `ocpd_standard_shape` (the tool result lists the
+  accepted forms); the Loaded Barrel speculator skips pre-synthesis for it
+  (`voice_latency.speculator_skipped_ocpd_shape`); a dialogue seed drops it as
+  `seed_unparseable`. The rule is registered as the `parser_backed` descriptor for
+  `ocpd_bs_en` in `circuit-value-descriptors.js`, so the handoff note's validation entry
+  and the dispatcher gate share one predicate.
+- **The one ask after a rejection** is read by `resolveOcpdStandardAnswer`
+  (`stage6-answer-resolver.js`), ahead of the enum resolver. A readable answer is written
+  (`match_status: "ocpd_standard_resolved"`); a bulk answer is written through
+  `set_field_for_all_circuits` carrying the rejected call's own `scope`, `spare_policy`
+  and `exclude_circuits` verbatim. An unreadable answer stages PLAN-C3's post-ask refusal
+  and returns `ocpd_standard_rejected_after_ask`, which is terminal. An `ask_user` about
+  `ocpd_bs_en` with no circuit, no circuit set and no bulk lineage is refused before
+  registration as `ask_requires_target`.
+- **RCBO dialogue.** Neither RCBO BS slot is named-extracted and no BS mirror exists
+  anywhere: one utterance used to fill both slots, so an RCD answer overwrote the OCPD
+  standard. Both are ordinary asked slots (`ocpd_bs_en`, then `rcd_bs_en`, then the
+  curve). `rcd_bs_en` counts as filled only when its stored value parses (`slotIsFilled`
+  in `helpers/extraction.js`); a skip verb on a stored value that does not parse hands
+  off to the model instead of keeping it. The RCBO finish line names the RCD's number
+  only when it differs from the OCPD standard.
+- **The prompt's Tier-1 list is rendered**, not written: `{{OCPD_STANDARD_TIER1}}` in
+  `config/prompts/sonnet_agentic_system.md` is replaced from the manifest in both prompt
+  variants by `renderAgenticSystemPrompt`.
 
 ## Installation Details Tab (`/job/[id]/installation`)
 
@@ -278,7 +318,7 @@ list, so dictating one drew a re-ask and the certificate recorded nothing.
 
 | Field | AI Extraction Guidance |
 |-------|----------------------|
-| `ocpd_bs_en` | "60898" (MCB), "61009" (RCBO) |
+| `ocpd_bs_en` | Free text, canonicalised: "60898" → "BS EN 60898" (MCB), "61009" → "BS EN 61009" (RCBO), "3871" → "BS 3871". Any standard-shaped value; see the PLAN-CS section above. |
 | `ocpd_type` | "B" domestic, "C" motors |
 | `ocpd_rating_a` | 6A lights, 16/20A radial, 32A ring/cooker, 40A shower |
 | `ocpd_breaking_capacity_ka` | Usually "6" domestic |

@@ -133,9 +133,11 @@ certificate is worse than a miss. The ONLY sanctioned corrections are:
    never fires inside "isolation"/"tolerance" — see the `MEGAOHMS_VALUE_GROUP` comment).
 2. **Curated equal-weight Deepgram keyterms** (Flux) / keyword boosts (Nova-3) — fix upstream at
    the STT layer (the WS4 probe showed `keyterm=` corrects "lion"→"LIM").
-3. **Scoped Lev-1 matching against a CLOSED enum** — `dialogue-engine/parsers/bs-code.js` and
-   `stage6-answer-resolver.js:1407` allow Levenshtein-distance-1 on BS-code DIGITS against the
-   canonical device-standard list ("6898"→"60898"). This is enum snapping, not free-text correction.
+3. **A Lev-1 SUGGESTION, never a write** — `resolveEnumAnswer` in `stage6-answer-resolver.js`
+   returns `did_you_mean` suggestions at Levenshtein distance 1 on the digits of a CLOSED enum
+   (for example `rcd_bs_en`), for the model to offer aloud. The BS-code parser's Lev-1 AUTO-WRITE
+   ("6898"→"60898") was removed by PLAN-CS (2026-09-24): a dropped digit is no longer repaired
+   into a different real standard.
 Do not add a general fuzzy matcher, ever, without explicit user mandate.
 
 ## 4. Observation codes C1/C2/C3/FI and the auto-classification flow
@@ -232,20 +234,41 @@ must ask one open question ("For circuit N, what was that reading for?"), no opt
 ## 7. BS EN device standards and RCD types
 
 BS/BS EN numbers identify the device standard; inspectors dictate digits only ("sixty zero eight
-nine eight"). Canonicalised by `parseBsCode` (dictation) and `BS_EN_LOOKUP` at
-`src/routes/extraction.js:278` (CCU pipeline; a second definition exists in
-`src/extract.js:221`). Schema option lists are the closed enums.
+nine eight"). `ocpd_bs_en` is FREE TEXT (PLAN-CC clients, PLAN-CS backend): any
+standard-shaped value is canonicalised by `parseOcpdStandard` (dictation, model writes, seeds)
+and its client twins, against `config/ocpd-bs-suggestions.json`; Tier 1 and Tier 2 there are
+suggestions, not a closed list. `rcd_bs_en` stays a closed enum (`parseRcdBsCode`). The CCU
+pipeline writes canonical forms through `BS_EN_LOOKUP` at `src/routes/extraction.js:278` (a
+second definition exists in `src/extract.js:221`). A bare `88` is not a standard: it cannot say
+which BS 88 part (`-1`, `-2`, `-3` or `-6`) is on the device.
 
-| Standard | Device |
-|---|---|
-| BS EN 60898 | MCB (miniature circuit breaker — the standard "breaker") |
-| BS EN 61009 | RCBO (combined MCB + RCD, one per circuit) |
-| BS EN 61008 | RCCB (standalone RCD, protects a group of circuits) |
-| BS EN 62423 | Type F / B RCDs |
-| BS EN 60947-2 / -3 | MCCB / switch-disconnector (isolator) |
-| BS EN 60269-2 | HRC fuse (historically "BS 88-2/88-3") |
-| BS 3036 | Rewireable (semi-enclosed) fuse — old boards, colour-coded fuse-wire carriers |
-| BS 1361 | Cartridge fuse (also the classic DNO cut-out fuse) |
+| Standard | Device | Suggestion tier |
+|---|---|---|
+| BS EN 60898 | MCB (miniature circuit breaker — the standard "breaker") | 1 |
+| BS EN 61009 | RCBO (combined MCB + RCD, one per circuit) | 1 |
+| BS EN 60947-2 | MCCB (moulded-case circuit breaker) | 1 |
+| BS EN 60269-2 | HRC fuse, harmonised standard for domestic/commercial use | 1 |
+| BS 88-2 / BS 88-3 | HRC fuse (BS 88 parts; recorded as dictated, NOT folded into 60269-2) | 1 |
+| BS 3036 | Rewireable (semi-enclosed) fuse — old boards, colour-coded fuse-wire carriers | 1 |
+| BS 1361 | Cartridge fuse (also the classic DNO cut-out fuse) | 1 |
+| BS 1362 | Plug-top / fused-spur cartridge fuse | 1 |
+| N/A | No OCPD standard applies | 1 |
+| BS EN 60269-1 / -3 / -4 | Low-voltage fuses: general / domestic / semiconductor protection | 2 |
+| BS 88-1 / BS 88-6 | HRC fuse, general requirements / supplementary requirements | 2 |
+| BS EN 60947-3 | Switch-disconnector (isolator) | 2 |
+| BS EN 60947-4-1 | Contactor or motor starter | 2 |
+| BS 3871 | Older MCB standard (superseded by BS EN 60898) | 2 |
+| BS EN 62423 | Type F / B RCD | 2 |
+| BS EN 62606 | AFDD (arc-fault detection device) | 2 |
+| BS EN 60127 | Miniature fuse | 2 |
+| BS 4752 | Older circuit-breaker standard | 2 |
+| BS 646 | Cartridge fuse links up to 5 A, older standard | 2 |
+| BS 2950 | Cartridge fuse links for light electrical apparatus | 2 |
+| BS EN 61008 | RCCB (standalone RCD, protects a group of circuits) | not a suggestion; accepted when dictated, and an `rcd_bs_en` option |
+
+Tier 1 is rendered into the agentic prompt and heads the pickers; Tier 2 sits behind "More
+standards". The tiers are curated SUGGESTIONS read from `config/ocpd-bs-suggestions.json`;
+`ocpd_bs_en` accepts any standard-shaped value, listed or not.
 
 RCD types = which fault WAVEFORM the device can detect (schema enum on `rcd_type`:
 `AC, A, F, B, S, A-S, B-S, B+, N/A`): **AC** = AC sinusoidal only (oldest); **A** = AC + pulsating
@@ -334,7 +357,7 @@ Grounded 2026-07-06 against the working tree (branch `main`). One-line re-verifi
 | circuit_fields = 31 keys / groups / options | `python3 -c "import json;d=json.load(open('config/field_schema.json'));print(len(d['circuit_fields']),[g['name'] for g in d['field_groups']])"` |
 | LIM garble set + sentinels | `sed -n 1,70p src/extraction/dialogue-engine/parsers/megaohms.js` |
 | Fuzzy-correction ban wording | `grep -n "fuzzy" web/audit/INDEX-2026-07.md` |
-| Scoped Lev-1 BS-code exception | `grep -rn "levenshtein" src/extraction/dialogue-engine/parsers/bs-code.js src/extraction/stage6-answer-resolver.js` |
+| Lev-1 is a suggestion only; the BS parser has none | `grep -rn "levenshtein" src/extraction/stage6-answer-resolver.js` (hits) and `grep -rni "levenshtein" src/extraction/dialogue-engine/parsers/bs-code.js` (none) |
 | C1/C2/C3/FI criteria + BPG4 issue | `sed -n 110,150p src/extraction/observation-code-lookup.js` |
 | Regulation table size (68) + caveat | `sed -n 1,30p src/extraction/regulation-lookup.js` |
 | main-fuse → spd_* routing rules | `sed -n 130,160p config/prompts/sonnet_agentic_system.md` |
