@@ -497,7 +497,7 @@
     ]
   },
   "combined_sha256": "9d7c9df4ad4637353a0f789f39282565294a5b1bfd73af77ce14365e0424ccc9",
-  "semantic_oracle_digest": "090ec0d7aad42362267696f639c3413cd080adca49e8faa1c5c567a40e9dd888",
+  "semantic_oracle_digest": "651c4f291672a63114ae5d8f74bad41bcbdbbd2b9b0b5db52ddf66df629982e7",
   "semantic_oracle_inputs": [
     {
       "path": "src/extraction/stage6-snapshot-mutators.js",
@@ -537,7 +537,7 @@
     },
     {
       "path": "src/extraction/dialogue-engine/engine.js",
-      "sha256": "6c9f68bbcef3998b42f43bc3ea7064a2a9aaba9f7c456ef048ebd32e7be7e123"
+      "sha256": "86a4ace318ee93bb1e275714efd1c982784d44437d66ea46b28f7bfdf8f5cfc8"
     },
     {
       "path": "src/extraction/dialogue-engine/helpers/snapshot-write.js",
@@ -597,7 +597,7 @@
     },
     {
       "path": "src/extraction/stage6-dispatcher-ask.js",
-      "sha256": "772f72270f65db5782dd036a098d904128cc5487dc0fa16e98e2691f4a806ae6"
+      "sha256": "6961f38946513393c27ac6a904ae3ebb969df0d735b6641af595f09dffdd8a1f"
     },
     {
       "path": "src/extraction/address-mirror-controller.js",

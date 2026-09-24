@@ -1817,10 +1817,29 @@ function clearDeferredSlot(session, schemaName, circuit_ref, field) {
  * PLAN-CS (Decision 7) — did the utterance name a BS standard that no BS slot
  * consumed? Only schemas that declare `unconsumedStandardPattern` (RCBO, whose
  * two BS slots have no named extractor) are checked. `consumedFields` is the
- * set of fields this turn produced an operation for, of any disposition; a BS
- * slot among them means the standard was understood (written, satisfied,
- * rejected or queued), so the check only fires when nothing took it.
+ * set of fields THIS REPLY was parsed into (see `fieldsParsedFromReply`), of
+ * any disposition; a BS slot among them means the standard was understood, so
+ * the check only fires when nothing took it.
  */
+/**
+ * The fields an operation this turn was PARSED FROM THE CURRENT REPLY for.
+ * A pending write drained on this turn came from an earlier utterance, so it
+ * says nothing about whether a standard named in THIS reply was understood.
+ */
+const REPLY_PARSE_SOURCES = new Set([
+  'step7_named',
+  'step8_bare',
+  'runActivePath_same_reply_upsert',
+  'runEntry_volunteered',
+]);
+function fieldsParsedFromReply(operations) {
+  return new Set(
+    (Array.isArray(operations) ? operations : [])
+      .filter((op) => REPLY_PARSE_SOURCES.has(op?.source))
+      .map((op) => op.field)
+  );
+}
+
 function bsStandardUnconsumed(schema, text, consumedFields) {
   const pattern = schema?.unconsumedStandardPattern;
   if (!(pattern instanceof RegExp) || typeof text !== 'string') return false;
@@ -4442,10 +4461,16 @@ function runActivePath({
     // Deliberately NOT `!slotIsFilled(...)`: that is true for a BLANK value
     // too, and a skip on a blank flagged slot stays an ordinary skip.
     const storedValue = state.values[currentSlot.field];
+    // PLAN-CS (Decision 7) — "skip that, BS EN 61009" on RCBO: the skip verb
+    // is understood, the standard is not attributable, so the whole turn goes
+    // to the model rather than skipping and dropping the standard.
+    const skipDropsStandard =
+      state.circuit_ref !== null && bsStandardUnconsumed(schema, reply, new Set());
     if (
-      currentSlot.askWhenStoredUnparseable &&
-      isNonBlank(storedValue) &&
-      !slotParses(currentSlot, storedValue)
+      skipDropsStandard ||
+      (currentSlot.askWhenStoredUnparseable &&
+        isNonBlank(storedValue) &&
+        !slotParses(currentSlot, storedValue))
     ) {
       return terminateWithHandoff({
         ws,
@@ -5107,17 +5132,15 @@ function runActivePath({
   //     rule cannot see it. The writes stand and are read back once by the
   //     handoff's terminal read-back; the utterance reaches the model in
   //     `transcriptText`. Detection only: nothing here guesses the field.
+  //     Not gated on `currentSlot`: a turn whose drained pending write filled
+  //     the last slot has none, and would otherwise finish with the standard
+  //     it also named dropped.
   if (
-    currentSlot &&
     state.circuit_ref !== null &&
     bsStandardUnconsumed(
       schema,
       reply,
-      new Set(
-        (Array.isArray(state.operations) ? state.operations : [])
-          .slice(opsAtTurnStart)
-          .map((op) => op.field)
-      )
+      fieldsParsedFromReply((state.operations ?? []).slice(opsAtTurnStart))
     )
   ) {
     return terminateWithHandoff({
@@ -5131,8 +5154,8 @@ function runActivePath({
       responseEpoch,
       transcriptText,
       kind: 'slot_miss',
-      askedField: currentSlot.field,
-      askedQuestion: currentSlot.question ?? null,
+      askedField: currentSlot?.field ?? null,
+      askedQuestion: currentSlot?.question ?? null,
       textPreview: text.slice(0, 80),
     });
   }

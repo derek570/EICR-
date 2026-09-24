@@ -205,6 +205,16 @@ describe('BS_STANDARD_NAMED_EXTRACTOR — the two remaining BS extractors', () =
     expect(named).toEqual([{ field: 'ocpd_bs_en', value: expected }]);
   });
 
+  test.each([
+    ['BS 3036.', 'BS 3036'],
+    ['BS EN 60898, 32 amps', 'BS EN 60898'],
+  ])('sentence punctuation after the token still extracts (%j)', (text, expected) => {
+    const named = extractNamedFieldValues(text, ocpdSchema.slots).filter(
+      (w) => w.field === 'ocpd_bs_en'
+    );
+    expect(named).toEqual([{ field: 'ocpd_bs_en', value: expected }]);
+  });
+
   test('a longer digit run is never cut into a shorter standard (right boundary)', () => {
     const named = extractNamedFieldValues('BS 123456', ocpdSchema.slots).filter(
       (w) => w.field === 'ocpd_bs_en'
@@ -212,7 +222,7 @@ describe('BS_STANDARD_NAMED_EXTRACTOR — the two remaining BS extractors', () =
     expect(named).toEqual([]);
   });
 
-  test.each(['BS EN 60898A', 'BS EN 60947-4-1A', 'BS 3871x'])(
+  test.each(['BS EN 60898A', 'BS EN 60947-4-1A', 'BS 3871x', 'BS EN 60898/1', 'BS EN 60947-4-1/2'])(
     'a trailing letter is not cut off into a shorter standard (%j) — EP cycle 1, Codex c1-2',
     (text) => {
       // Named and whole-value paths must agree: both refuse the token.

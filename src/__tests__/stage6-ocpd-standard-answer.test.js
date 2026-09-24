@@ -364,6 +364,28 @@ describe('acceptance 4b — a BULK lineage: the ask’s scope is preserved end t
     expect(single[0].friendly).toContain('circuit 1');
   });
 
+  test('a reference-only ask naming a DIFFERENT board than the echoed bulk rejection is refused (c3-5)', async () => {
+    const session = buildSession();
+    session.stateSnapshot.boards.push({ id: 'b2', designation: 'DB-2', board_type: 'sub' });
+    const writes = createPerTurnWrites();
+    const rejected = await modelWrite(session, writes, 'set_field_for_all_circuits', {
+      field: 'ocpd_bs_en',
+      value: 'There is no RCBO',
+      confidence: 0.9,
+      source_turn_id: 't1',
+    });
+    const { body } = await runAsk({
+      session,
+      writes,
+      input: ocpdAsk({
+        context_circuit: null,
+        context_board_id: 'b2',
+        rejection_ref: rejected.body.rejection_ref,
+      }),
+    });
+    expect(body.code).toBe('ask_requires_target');
+  });
+
   test('a reference-only ask echoing a bulk rejection of a DIFFERENT field is refused (ask_requires_target)', async () => {
     const session = buildSession();
     const writes = createPerTurnWrites();

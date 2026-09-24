@@ -773,3 +773,85 @@ describe('model-write entry routing (tryEnterScriptFromWrites specificity rankin
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
   });
 });
+
+// ── EP review cycle 2 (Codex c3) — the same Decision 7 rule on every path ──
+
+describe('EP cycle 2 — an unattributed BS standard is never dropped', () => {
+  test.each([
+    'RCBO on circuit 3, the BS code for the RCD is 61009',
+    'RCBO on circuit 3, BS 6 1 zero zero 9',
+  ])('entry phrasing %j goes to the model (c3-1)', (text) => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    const out = say(ws, session, text, 1000);
+    expect(out.handled).toBe(false);
+    expect(spoken(ws)).toEqual([]);
+  });
+
+  test('"skip that, BS EN 61009" on the curve question hands off instead of skipping (c3-2)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    say(ws, session, 'RCBO on circuit 3.', 1000);
+    say(ws, session, 'BS EN 60898', 2000);
+    say(ws, session, 'BS EN 61009', 2500);
+    expect(lastAsk(ws).context_field).toBe('ocpd_type');
+    const out = say(ws, session, 'skip that, BS EN 61009', 3000);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toContain('skip that, BS EN 61009');
+    expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS EN 60898');
+  });
+
+  test('a drained pending write that fills the last slot still hands off a newly named standard (c3-3)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      3: {
+        ocpd_type: 'B',
+        ocpd_rating_a: '32',
+        ocpd_breaking_capacity_ka: '6',
+        rcd_type: 'A',
+        rcd_operating_current_ma: '30',
+        rcd_bs_en: 'BS EN 61008',
+      },
+    });
+    const entered = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'rcbo',
+      circuit_ref: null,
+      pending_writes: [{ field: 'ocpd_bs_en', value: 'BS 9999' }],
+      ws,
+      logger: silentLog,
+      now: 1000,
+    });
+    expect(entered.queued_writes).toEqual(['ocpd_bs_en']);
+    const out = say(ws, session, 'circuit 3, RCD BS EN 61009', 2000);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toContain('RCD BS EN 61009');
+    // The drained write landed and is read back once; the stored RCD value is
+    // untouched — the model owns the unattributed one.
+    expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS 9999');
+    expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('BS EN 61008');
+    expect(count(spoken(ws), 'BS 9999')).toBe(1);
+  });
+
+  test('ordinary RCBO answers never trip the detection (no false hand-off)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: {} });
+    say(ws, session, 'RCBO on circuit 3.', 1000);
+    for (const [reply, t] of [
+      ['BS EN 61009', 2000],
+      ['61009', 2500],
+      ['type B', 3000],
+      ['32 amps', 4000],
+      ['6 kA', 5000],
+      ['type A', 6000],
+    ]) {
+      const out = say(ws, session, reply, t);
+      expect({ reply, fallthrough: out.fallthrough }).toEqual({ reply, fallthrough: false });
+    }
+    const out = say(ws, session, '30', 7000);
+    expect(out.fallthrough).toBe(false);
+    expect(lastAsk(ws).question).toMatch(/^Got it\./);
+  });
+});

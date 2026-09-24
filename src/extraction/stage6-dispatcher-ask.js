@@ -485,7 +485,15 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
       } catch {
         lineage = null;
       }
-      if (!lineage?.bulkInput || lineage.field !== 'ocpd_bs_en') {
+      const askBoard =
+        input.context_board_id != null
+          ? (resolveEffectiveBoardId(session, input.context_board_id) ?? null)
+          : null;
+      if (
+        !lineage?.bulkInput ||
+        lineage.field !== 'ocpd_bs_en' ||
+        (askBoard !== null && (lineage.boardId ?? null) !== askBoard)
+      ) {
         logAsk({
           sessionId,
           turnId,
@@ -1656,8 +1664,16 @@ async function buildResolvedBody({
       const askNamesTarget =
         Number.isInteger(contextCircuit) ||
         (Array.isArray(contextCircuits) && contextCircuits.length > 0);
+      // …and on the SAME board: an ask that names `context_board_id` b2 is not
+      // about a bulk rejection on main. An ask that names no board takes the
+      // rejection's board, which is what a reference-only ask means.
+      const askBoard =
+        contextBoardId != null ? (resolveEffectiveBoardId(session, contextBoardId) ?? null) : null;
       const bulkStamp =
-        !askNamesTarget && askRejectionStamp?.bulkInput && askRejectionStamp.field === 'ocpd_bs_en'
+        !askNamesTarget &&
+        askRejectionStamp?.bulkInput &&
+        askRejectionStamp.field === 'ocpd_bs_en' &&
+        (askBoard === null || (askRejectionStamp.boardId ?? null) === askBoard)
           ? askRejectionStamp
           : null;
       const ocpdVerdict = resolveOcpdStandardAnswer({
