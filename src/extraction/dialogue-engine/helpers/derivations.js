@@ -6,9 +6,12 @@
  *     isn't asked again for something the BS code uniquely
  *     determines).
  *   - Applies `mirrors: ['otherField', ...]` — copy the slot's
- *     value to additional canonical fields on the snapshot. Used
- *     for the RCBO BS code, which is the same value on both
- *     ocpd_bs_en and rcd_bs_en columns by convention.
+ *     value to additional canonical fields on the snapshot. NO schema
+ *     declares a mirror since PLAN-CS (CS-64 / CS-100): the RCBO BS
+ *     mirror it existed for wrote the OCPD standard into the RCD column
+ *     whether or not the two matched. The branch is kept, and pinned by
+ *     `dialogue-engine-rcbo-bs-mirror.test.js`, only so a future schema
+ *     can reintroduce a mirror deliberately.
  *   - Reports a `pivot: 'schemaName'` request — caller schedules
  *     the schema transition; this helper does NOT mutate the
  *     active script state, only reports the intent.
