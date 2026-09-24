@@ -268,7 +268,7 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
   });
 
   test.each(Object.keys(ANNOTATIONS))(
-    '(b) "BS EN 61009" answering the OCPD BS question → ONE step-8 operation, RCD BS next [%s annotation]',
+    '(b) "BS EN 61009" answering the OCPD BS question → ONE step-8 operation, curve next [%s annotation]',
     (annotation) => {
       const ws = new FakeWS();
       const session = buildSession({ 3: {} });
@@ -280,30 +280,41 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
       expect(ops).toHaveLength(1);
       expect(ops[0]).toMatchObject({ disposition: 'applied', source: 'step8_bare' });
       expect(opsFor(session, 'rcd_bs_en')).toEqual([]);
-      expect(lastAsk(ws).question).toBe(Q_RCD_BS);
+      // Decision 39: the curve follows the MCB standard, as on main.
+      expect(lastAsk(ws).context_field).toBe('ocpd_type');
     }
   );
 
-  function walkToFinish(ws, session, start = 3000) {
+  // Decision 39 order: the MCB half (standard, curve, rating, breaking
+  // capacity), then the RCD half (BS number, type, operating current).
+  function mcbHalf(ws, session, start = 3000) {
     say(ws, session, 'B', start);
     say(ws, session, '32', start + 1000);
-    say(ws, session, '6', start + 2000);
-    say(ws, session, 'AC', start + 3000);
-    return say(ws, session, '30', start + 4000);
+    return say(ws, session, '6', start + 2000);
+  }
+  function rcdTail(ws, session, start = 8000) {
+    say(ws, session, 'AC', start);
+    return say(ws, session, '30', start + 1000);
+  }
+  function walkToFinish(ws, session, start = 3000) {
+    mcbHalf(ws, session, start);
+    return rcdTail(ws, session, start + 5000);
   }
 
-  test('(c) bare 61009 twice → both slots written, curve next, finish names ONE BS number', () => {
+  test('(c) bare 61009 twice → both slots written, curve after the MCB standard, finish names ONE BS number', () => {
     const ws = new FakeWS();
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, '61009', 2000);
     expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS EN 61009');
     expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBeUndefined();
-    expect(lastAsk(ws).question).toBe(Q_RCD_BS);
-    say(ws, session, '61009', 2500);
-    expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('BS EN 61009');
     expect(lastAsk(ws).context_field).toBe('ocpd_type');
-    walkToFinish(ws, session);
+    mcbHalf(ws, session);
+    expect(lastAsk(ws).question).toBe(Q_RCD_BS);
+    say(ws, session, '61009', 7000);
+    expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('BS EN 61009');
+    expect(lastAsk(ws).context_field).toBe('rcd_type');
+    rcdTail(ws, session);
     const finish = lastAsk(ws).question;
     expect(finish).toMatch(/^Got it\. BS EN 61009, type B/);
     expect(count([finish], '61009')).toBe(1);
@@ -316,8 +327,10 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
       const session = buildSession({ 3: {} });
       say(ws, session, 'RCBO on circuit 3.', 1000);
       say(ws, session, 'BS 9999', 2000, { annotation, question: Q_OCPD_BS });
+      mcbHalf(ws, session);
+      expect(lastAsk(ws).question).toBe(Q_RCD_BS);
       const ocpdOpsBefore = opsFor(session, 'ocpd_bs_en').length;
-      const out = say(ws, session, 'BS EN 61009', 2500, { annotation, question: Q_RCD_BS });
+      const out = say(ws, session, 'BS EN 61009', 7000, { annotation, question: Q_RCD_BS });
       // madeProgress TRUE — the asked slot's own parser succeeded and wrote.
       expect(out.fallthrough).toBe(false);
       expect(opsFor(session, 'rcd_bs_en')).toHaveLength(1);
@@ -326,7 +339,7 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
       expect(opsFor(session, 'ocpd_bs_en')).toHaveLength(ocpdOpsBefore);
       expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS 9999');
       expect(session.stateSnapshot.circuits[3].rcd_bs_en).toBe('BS EN 61009');
-      walkToFinish(ws, session);
+      rcdTail(ws, session);
       const finish = lastAsk(ws).question;
       expect(finish).toMatch(/^Got it\. BS 9999, RCD BS BS EN 61009, type B/);
       expect(count(spoken(ws), 'BS 9999')).toBe(1);
@@ -427,11 +440,12 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 61009', 2000);
+    mcbHalf(ws, session);
     expect(lastAsk(ws).question).toBe(Q_RCD_BS);
-    const out = say(ws, session, 'leave it blank', 2500);
+    const out = say(ws, session, 'leave it blank', 7000);
     expect(out.fallthrough).toBe(false);
-    expect(lastAsk(ws).context_field).toBe('ocpd_type');
-    walkToFinish(ws, session);
+    expect(lastAsk(ws).context_field).toBe('rcd_type');
+    rcdTail(ws, session);
     const finish = lastAsk(ws).question;
     // rcd_bs_en is finish-covered and never dictated, so allCoveredScriptOwned
     // is false: no combined "Got it." line; each dictated field once instead.
@@ -481,12 +495,18 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     expect(spoken(ws)).toEqual([]);
   });
 
-  test('(h) OCPD pivot on 61009 asks the RCD BS exactly once', () => {
+  test('(h) OCPD pivot on 61009 asks the curve next, then the RCD BS exactly once (Decision 39)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     say(ws, session, 'MCB on circuit 5.', 1000);
     say(ws, session, 'BS EN 61009', 2000);
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
+    expect(lastAsk(ws).context_field).toBe('ocpd_type');
+    expect(spoken(ws).filter((q) => q === Q_RCD_BS)).toHaveLength(0);
+    mcbHalf(ws, session);
+    expect(lastAsk(ws).question).toBe(Q_RCD_BS);
+    say(ws, session, '61009', 7000);
+    rcdTail(ws, session);
     expect(spoken(ws).filter((q) => q === Q_RCD_BS)).toHaveLength(1);
   });
 
@@ -499,7 +519,9 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
       say(ws, session, 'BS 9999', 2000, { annotation, question: Q_OCPD_BS });
       const ocpdOps = opsFor(session, 'ocpd_bs_en');
       expect(ocpdOps).toHaveLength(1);
-      const out = say(ws, session, 'BS 9999', 2500, { annotation, question: Q_RCD_BS });
+      mcbHalf(ws, session);
+      expect(lastAsk(ws).question).toBe(Q_RCD_BS);
+      const out = say(ws, session, 'BS 9999', 7000, { annotation, question: Q_RCD_BS });
       // madeProgress false → the miss is counted and hands off.
       expect(out.fallthrough).toBe(true);
       expect(out.serverNote.remaining.map((r) => r.field)).toContain('rcd_bs_en');
@@ -566,7 +588,6 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 61009', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     expect(lastAsk(ws).context_field).toBe('ocpd_type');
     const out = say(ws, session, 'the BS code is 60898', 3000);
     expect(out.fallthrough).toBe(true);
@@ -581,7 +602,6 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
       const session = buildSession({ 3: {} });
       say(ws, session, 'RCBO on circuit 3.', 1000);
       say(ws, session, 'BS EN 60898', 2000);
-      say(ws, session, 'BS EN 61009', 2500);
       expect(lastAsk(ws).context_field).toBe('ocpd_type');
       expect(extractNamedFieldValues('BS EN 61009', rcboSchema.slots)).toEqual([]);
       const before = {
@@ -612,7 +632,7 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
           'schema',
         ].sort()
       );
-      expect(before).toEqual({ ocpd: 1, rcd: 1 });
+      expect(before).toEqual({ ocpd: 1, rcd: 0 });
       expect(out.serverNote.recorded.filter((r) => r.field === 'ocpd_bs_en')).toHaveLength(1);
       expect(out.serverNote.recorded.find((r) => r.field === 'ocpd_bs_en').value).toBe(
         'BS EN 60898'
@@ -678,7 +698,6 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 61009', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     expect(lastAsk(ws).context_field).toBe('ocpd_type');
     const plain = say(ws, session, 'type B', 3000);
     expect(plain.fallthrough).toBe(false);
@@ -691,7 +710,6 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const session2 = buildSession({ 3: {} });
     say(ws2, session2, 'RCBO on circuit 3.', 1000);
     say(ws2, session2, 'BS EN 60898', 2000);
-    say(ws2, session2, 'BS EN 61009', 2500);
     const compound = say(ws2, session2, 'BS EN 61009, type B', 3000);
     expect(compound.fallthrough).toBe(true);
     expect(compound.transcriptText).toContain('BS EN 61009, type B');
@@ -793,7 +811,6 @@ describe('EP cycle 2 — an unattributed BS standard is never dropped', () => {
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 60898', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     expect(lastAsk(ws).context_field).toBe('ocpd_type');
     const out = say(ws, session, 'skip that, BS EN 61009', 3000);
     expect(out.fallthrough).toBe(true);
@@ -841,10 +858,10 @@ describe('EP cycle 2 — an unattributed BS standard is never dropped', () => {
     say(ws, session, 'RCBO on circuit 3.', 1000);
     for (const [reply, t] of [
       ['BS EN 61009', 2000],
-      ['61009', 2500],
       ['type B', 3000],
       ['32 amps', 4000],
       ['6 kA', 5000],
+      ['61009', 5500],
       ['type A', 6000],
     ]) {
       const out = say(ws, session, reply, t);
@@ -864,8 +881,6 @@ describe('EP cycle 3 — a circuit designated "BS 3" is not a stated standard (c
     expect(out.handled).toBe(true);
     const out2 = say(ws, session, 'BS EN 61009', 2000);
     expect(out2.fallthrough).toBe(false);
-    const out3 = say(ws, session, 'BS EN 61009', 2500);
-    expect(out3.fallthrough).toBe(false);
     // "curve B on circuit BS 3" answers the curve; the designation's single
     // digit is not a standard, so the walk continues.
     const out4 = say(ws, session, 'curve B on circuit BS 3', 3000);
@@ -888,7 +903,6 @@ describe('EP cycle 4 — recall first, designations masked (c5-1, c5-2)', () => 
     const session = buildSession({ 3: { circuit_designation: 'BS 3' } });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 60898', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     const out = say(ws, session, 'curve B on circuit BS 3, 32 amps', 3000);
     expect(out.fallthrough).toBe(false);
     expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
@@ -908,7 +922,6 @@ describe('EP cycle 4 — recall first, designations masked (c5-1, c5-2)', () => 
     const session = buildSession({ 3: {} });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 60898', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     const out = say(ws, session, 'curve B, BS 6, 1, 0, 0, 9', 3000);
     expect(out.fallthrough).toBe(true);
     expect(out.transcriptText).toContain('BS 6, 1, 0, 0, 9');
@@ -933,7 +946,6 @@ describe('EP cycle 5 — a designation never masks a dictated standard (c6-1)', 
     const session = buildSession({ 3: { circuit_designation: 'BS 3' } });
     say(ws, session, 'RCBO on circuit 3.', 1000);
     say(ws, session, 'BS EN 60898', 2000);
-    say(ws, session, 'BS EN 61009', 2500);
     const out = say(ws, session, 'curve B, OCPD standard BS 3036', 3000);
     expect(out.fallthrough).toBe(true);
     expect(out.transcriptText).toContain('BS 3036');

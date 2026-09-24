@@ -136,16 +136,16 @@ describe('path (a) — the script COMPLETES on the off-list answer', () => {
   test('RCBO: the same, on the schema with its own finishMessage and a finishCoveredFields opt-in', () => {
     const ws = new FakeWS();
     const session = buildSession({
-      6: { rcd_type: 'A', rcd_operating_current_ma: '30' },
+      // PLAN-CS (CS-64) — no mirror fills the RCD's BS number from the OCPD
+      // standard any more, and Decision 39 asks it at the start of the RCD
+      // half, after breaking capacity. It is stored here so the walk still
+      // COMPLETES on the breaking-capacity answer, which is this path.
+      6: { rcd_bs_en: 'BS EN 61009', rcd_type: 'A', rcd_operating_current_ma: '30' },
     });
     const logger = { info: () => {}, warn: () => {} };
-    // PLAN-CS (CS-64) — no mirror fills the RCD's BS number from the OCPD
-    // standard any more, so the RCBO walk asks it next and needs its own
-    // answer before the curve.
     for (const [transcriptText, now] of [
       ['RCBO on circuit 6.', 1000],
       ['BS EN 61009', 2000],
-      ['BS EN 61009', 2500],
       ['type B', 3000],
       ['32 amps', 4000],
       ['66 kA', 5000],

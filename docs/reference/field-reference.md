@@ -239,8 +239,9 @@ PLAN-CC made both clients tolerate any string; PLAN-CS flips the backend to matc
   registration as `ask_requires_target`.
 - **RCBO dialogue.** Neither RCBO BS slot is named-extracted and no BS mirror exists
   anywhere: one utterance used to fill both slots, so an RCD answer overwrote the OCPD
-  standard. Both are ordinary asked slots (`ocpd_bs_en`, then `rcd_bs_en`, then the
-  curve). `rcd_bs_en` counts as filled only when its stored value parses (`slotIsFilled`
+  standard. Both are ordinary asked slots: `ocpd_bs_en` opens the MCB half and is
+  followed by the curve, as before; `rcd_bs_en` opens the RCD half, after breaking
+  capacity (WAVE-CONTEXT § Decision 39). `rcd_bs_en` counts as filled only when its stored value parses (`slotIsFilled`
   in `helpers/extraction.js`); a skip verb on a stored value that does not parse hands
   off to the model instead of keeping it. The RCBO finish line names the RCD's number
   only when it differs from the OCPD standard. A BS standard said but consumed by

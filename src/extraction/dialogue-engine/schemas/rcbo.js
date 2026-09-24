@@ -4,9 +4,10 @@
  * "BS EN 61009" — and the direct entry path when they say "RCBO on
  * circuit N".
  *
- * Slots, in asked order: ocpd_bs_en, rcd_bs_en, ocpd_type (curve),
- * ocpd_rating_a, ocpd_breaking_capacity_ka, rcd_type (waveform),
- * rcd_operating_current_ma.
+ * Slots, in asked order: the MCB half — ocpd_bs_en, ocpd_type (curve),
+ * ocpd_rating_a, ocpd_breaking_capacity_ka — then the RCD half — rcd_bs_en,
+ * rcd_type (waveform), rcd_operating_current_ma (Decision 39: the curve
+ * follows the MCB standard, as it did before rcd_bs_en became an asked slot).
  *
  * The two BS numbers are ORDINARY ASKED SLOTS with no named extractor and
  * no mirror (PLAN-CS, feedback-2026-09-17, CS-64 / CS-100, under Decision 7).
@@ -49,26 +50,6 @@ const slots = [
     acceptsBareValue: true,
   },
   {
-    field: 'rcd_bs_en',
-    kind: 'bs_code',
-    label: 'RCD BS number',
-    question: "What's the RCD's BS number?",
-    // PLAN-CS — strict: must canonicalise to one of `rcd_bs_en`'s options.
-    parser: parseRcdBsCode,
-    acceptsBareValue: true,
-    // PLAN-CS (CS-64 / CS-66) — an ordinary asked slot. It used to be
-    // `volunteeredOnly`, filled only by the OCPD mirror, which wrote the
-    // RCBO's OCPD standard into the RCD column whether or not the two
-    // matched. A stored value `parseRcdBsCode` rejects counts as unfilled and
-    // is asked (`slotIsFilled`).
-    askWhenStoredUnparseable: true,
-    // Entry routing only: a model write of `rcd_bs_en` ALONE still routes to
-    // the RCD walk, as it did while this slot was `volunteeredOnly`
-    // (tryEnterScriptFromWrites' specificity ranking, 2026-06-02). An RCD's
-    // number on its own says "RCD", not "RCBO".
-    entryScoreAuxiliary: true,
-  },
-  {
     field: 'ocpd_type',
     label: 'curve',
     question: 'What MCB curve? B, C, or D?',
@@ -96,6 +77,30 @@ const slots = [
     namedExtractor:
       /\b(\d+(?:\.\d+)?)\s*kA\b|\b(?:breaking\s+capacity|kilo\s*amps?|kA)\b\s*(?:(?:is|was|reads?|equals?|of)\b\s*)?(?:[:=]\s*)?(?:an?\s+)?(lim|limb|limp|limitation)\b/i,
     acceptsBareValue: true,
+  },
+  {
+    field: 'rcd_bs_en',
+    kind: 'bs_code',
+    label: 'RCD BS number',
+    question: "What's the RCD's BS number?",
+    // PLAN-CS — strict: must canonicalise to one of `rcd_bs_en`'s options.
+    parser: parseRcdBsCode,
+    acceptsBareValue: true,
+    // PLAN-CS (CS-64 / CS-66) — an ordinary asked slot. It used to be
+    // `volunteeredOnly`, filled only by the OCPD mirror, which wrote the
+    // RCBO's OCPD standard into the RCD column whether or not the two
+    // matched. A stored value `parseRcdBsCode` rejects counts as unfilled and
+    // is asked (`slotIsFilled`).
+    askWhenStoredUnparseable: true,
+    // Entry routing only: a model write of `rcd_bs_en` ALONE still routes to
+    // the RCD walk, as it did while this slot was `volunteeredOnly`
+    // (tryEnterScriptFromWrites' specificity ranking, 2026-06-02). An RCD's
+    // number on its own says "RCD", not "RCBO".
+    entryScoreAuxiliary: true,
+    // WAVE-CONTEXT § Decision 39 (Derek, 2026-09-24) — asked at the START of
+    // the RCD half, after the MCB curve, rating and breaking capacity. While
+    // this slot was `volunteeredOnly` the walk never asked it, so an MCB
+    // standard was always followed by the curve; the curve stays first.
   },
   {
     field: 'rcd_type',

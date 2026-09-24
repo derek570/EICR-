@@ -438,20 +438,14 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       transcriptText: 'RCBO on circuit 5.',
       now: 1000,
     });
-    // First-asked slot is ocpd_bs_en, then rcd_bs_en — each its own answer.
+    // Each BS slot gets its own answer: ocpd_bs_en first, rcd_bs_en at the
+    // start of the RCD half (Decision 39 — the curve follows the MCB standard).
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
       transcriptText: 'BS EN 61009',
       now: 2000,
-    });
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: 'BS EN 61009',
-      now: 2500,
     });
     processProtectiveDeviceTurn({
       ws,
@@ -473,6 +467,13 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       sessionId: SESSION_ID,
       transcriptText: '6',
       now: 5000,
+    });
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS EN 61009',
+      now: 5500,
     });
     processProtectiveDeviceTurn({
       ws,

@@ -5,8 +5,8 @@
  *   - OCPD walk-through (BS / curve / amps / kA)
  *   - RCD walk-through (BS / type / mA)
  *   - RCBO direct entry walk-through
- *   - OCPD → RCBO pivot via BS EN 61009 (mirror writes both bs_en
- *     fields, RCBO's nextMissingSlot starts at the curve)
+ *   - OCPD → RCBO pivot via BS EN 61009 (no mirror since PLAN-CS; the
+ *     curve still follows the MCB standard, per Decision 39)
  *   - RCD → RCBO pivot (the opposite next ask: no BS mirror since PLAN-CS)
  *   - BS-code derivations: BS 3036 → ocpd_type=Rew (skip curve question)
  *   - Per-slot skip
@@ -498,7 +498,7 @@ describe('RCD walk-through', () => {
 });
 
 describe('RCBO pivot', () => {
-  test('OCPD → RCBO pivot via BS EN 61009 writes the OCPD standard only and asks the RCD BS next (PLAN-CS h)', () => {
+  test('OCPD → RCBO pivot via BS EN 61009 writes the OCPD standard only and asks the curve next (PLAN-CS h, Decision 39)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     processProtectiveDeviceTurn({
@@ -522,8 +522,10 @@ describe('RCBO pivot', () => {
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
     expect(session.stateSnapshot.circuits[5].ocpd_bs_en).toBe('BS EN 61009');
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBeUndefined();
-    // …and the RCD's BS number is asked once, before the curve.
-    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    // …and the curve follows the MCB standard, as it did before the RCD's BS
+    // number became an asked slot (WAVE-CONTEXT § Decision 39). The RCD's
+    // number is asked at the start of the RCD half.
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
     expect(ws.sent.at(-1).tool_call_id).toMatch(/^srv-rcbo-/);
   });
 
@@ -590,16 +592,6 @@ describe('RCBO pivot', () => {
       transcriptText: 'BS EN 61009',
       now: 2000,
     });
-    // PLAN-CS (CS-64) — no mirror: the RCD's BS number is its own answer.
-    // Without this turn 'B' would land on the RCD BS slot, miss
-    // `parseRcdBsCode` and end the walk in a first-miss handoff.
-    processProtectiveDeviceTurn({
-      ws,
-      session,
-      sessionId: SESSION_ID,
-      transcriptText: '61009',
-      now: 2500,
-    });
     processProtectiveDeviceTurn({
       ws,
       session,
@@ -620,6 +612,16 @@ describe('RCBO pivot', () => {
       sessionId: SESSION_ID,
       transcriptText: '6',
       now: 5000,
+    });
+    // PLAN-CS (CS-64) — no mirror: the RCD's BS number is its own answer,
+    // asked at the start of the RCD half (Decision 39).
+    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '61009',
+      now: 5500,
     });
     processProtectiveDeviceTurn({
       ws,
@@ -839,9 +841,9 @@ describe('Flux artefact tolerance — session 9FC3A6F1 (2026-04-30)', () => {
       ocpd_bs_en: 'BS EN 61009',
     });
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBeUndefined();
-    // Pivoted to RCBO — PLAN-CS (CS-64): no mirror, so the RCD's BS number is
-    // the next ask, not the curve.
-    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    // Pivoted to RCBO — PLAN-CS (CS-64): no mirror, and the curve follows the
+    // MCB standard (Decision 39); the RCD's BS number comes later.
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
   });
 });
 
