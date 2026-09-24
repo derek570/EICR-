@@ -915,3 +915,28 @@ describe('EP cycle 4 — recall first, designations masked (c5-1, c5-2)', () => 
     expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
   });
 });
+
+describe('EP cycle 5 — a designation never masks a dictated standard (c6-1)', () => {
+  test.each([
+    [{ 3: { circuit_designation: 'BS 3' } }, 'same circuit'],
+    [{ 3: {}, 4: { circuit_designation: 'BS 3' } }, 'another circuit'],
+  ])('entry "RCBO on circuit 3, OCPD standard BS 3036" hands off (%s)', (circuits) => {
+    const ws = new FakeWS();
+    const session = buildSession(circuits);
+    const out = say(ws, session, 'RCBO on circuit 3, OCPD standard BS 3036', 1000);
+    expect(out.handled).toBe(false);
+    expect(spoken(ws)).toEqual([]);
+  });
+
+  test('mid-walk "curve B, OCPD standard BS 3036" keeps the curve and hands off', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 3: { circuit_designation: 'BS 3' } });
+    say(ws, session, 'RCBO on circuit 3.', 1000);
+    say(ws, session, 'BS EN 60898', 2000);
+    say(ws, session, 'BS EN 61009', 2500);
+    const out = say(ws, session, 'curve B, OCPD standard BS 3036', 3000);
+    expect(out.fallthrough).toBe(true);
+    expect(out.transcriptText).toContain('BS 3036');
+    expect(session.stateSnapshot.circuits[3].ocpd_type).toBe('B');
+  });
+});

@@ -1848,9 +1848,10 @@ function bsStandardUnconsumed(schema, text, consumedFields, session = null) {
 }
 
 /**
- * Blank out every circuit designation the job already holds before the
- * detector looks, so a circuit NAMED like a standard ("BS 3", "BS 32") is
- * not mistaken for one being dictated. Length-preserving and case-blind.
+ * Blank out every circuit designation the job already holds, where it is
+ * spoken as a circuit reference ("circuit BS 32"), before the detector looks,
+ * so a circuit NAMED like a standard is not mistaken for one being dictated.
+ * Whole-designation matches only; length-preserving and case-blind.
  * This removes the detector's one concrete false-positive source; any other
  * over-detection costs one model turn, which Decision 7 accepts, whereas an
  * under-detection would be a silent drop.
@@ -1866,7 +1867,12 @@ function maskKnownDesignations(text, session) {
   let out = text;
   for (const name of [...names].sort((a, b) => b.length - a.length)) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    out = out.replace(new RegExp(escaped, 'gi'), (m) => ' '.repeat(m.length));
+    // Only a WHOLE designation spoken as a circuit reference ("circuit BS
+    // 32"): a bare substring match let a circuit named "BS 3" blank the start
+    // of a separately dictated "BS 3036" (EP cycle 5, c6-1) — a silent drop.
+    out = out.replace(new RegExp(`\\bcircuit\\s+${escaped}(?![A-Za-z0-9])`, 'gi'), (m) =>
+      ' '.repeat(m.length)
+    );
   }
   return out;
 }
