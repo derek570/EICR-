@@ -825,13 +825,15 @@ deliberately breaks the equation and the harness re-scopes to pre-purge state.
 
 ## Hands-free voice pause (PLAN-D, 2026-09-23)
 
-"CertMate pause" stops INPUT; "CertMate carry on" resumes it. Pausing never holds, mutes, defers or drops
+Saying "pause" (or "paws") stops INPUT; saying "resume" resumes it. Pausing never holds, mutes, defers or drops
 speech (WAVE-CONTEXT Decision 8). Both clients implement one contract, pinned by
 `config/voice-pause-vectors.json` (iOS byte copy under `Tests/CertMateUnifiedTests/Fixtures/`, guarded by
 `scripts/check-voice-pause-fixture-sync.sh` before TestFlight).
 
-- **Grammar.** Whole utterance, case-insensitive, punctuation stripped, an optional `hey|okay|ok` prefix, and
-  the brand word required. There is no fuzzy matching. The fixture carries the normalisation steps, the pattern
+- **Grammar (Decision 36).** Exactly one word said on its own: "pause" (or its transcription "paws") or
+  "resume". Case-insensitive and punctuation stripped, with no prefix, no brand word, no aliases and no fuzzy
+  matching. The brand word was dropped after Flux transcribed "CertMate pause" as "So it may pause." in the device
+  smoke. The fixture carries the normalisation steps, the pattern
   and the accept and near-miss vectors. Every spoken string is also a must-not-command vector.
 - **State.** `voicePaused` is a client-only flag. It is NOT `isPaused` (iOS) or `status === 'sleeping'`
   (web), because those tear down capture, and a torn-down microphone cannot hear the resume phrase. The mic and
@@ -856,6 +858,11 @@ speech (WAVE-CONTEXT Decision 8). Both clients implement one contract, pinned by
   only a turn already showing interim text at the tap is dropped; a final-only nova-3 turn is admitted (Decision
   34a). The post-TTS hold's contents at the tap are discarded (`voice_pause_held_audio_discarded`). The phrase route
   needs nothing, because finals on one socket arrive in order.
+- **Known limits accepted (Decisions 36 and 37).** The commands are single common words, so recognition is reliable;
+  the cost is two own-speech echo paths. Both clients hold and replay the audio captured after a spoken line ends. If
+  the output device lags the playback-end event by longer than the words after "resume" in a cue (about half a second),
+  the cue's own "resume" can be admitted as the command. A model-authored one-word ask "Resume?" has the same timing
+  path. Both are accepted, not fixed; the device smoke is the field check.
 - **The one speech-rule change.** While paused, `resumeDeferredTTSIfNeeded()` skips its 6-second staleness
   drop, so a direct clip deferred behind local speech is played rather than discarded.
 - **Resume tone.** A second lazily built `AVAudioPlayer` over an in-code 22.05 kHz WAV (440 Hz for 60 ms, then
