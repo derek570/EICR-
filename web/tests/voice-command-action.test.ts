@@ -309,3 +309,29 @@ describe('mapServerActionToVoiceCommand — unknown / malformed actions', () => 
     expect(mapServerActionToVoiceCommand({ type: 'update_field' })).toBeNull();
   });
 });
+
+describe('PLAN-C2 — a server ocpd_type action is decoded tolerantly (iOS parity)', () => {
+  it('stringifies a numeric type and forwards a blank one to the applier', () => {
+    expect(
+      mapServerActionToVoiceCommand({
+        type: 'update_field',
+        params: { field: 'ocpd_type', value: 2, circuit: 4 },
+      })
+    ).toEqual({ type: 'update_field', field: 'ocpd_type', value: '2', circuit: 4 });
+    expect(
+      mapServerActionToVoiceCommand({
+        type: 'update_field',
+        params: { field: 'ocpd_type', value: '', circuit: 4 },
+      })
+    ).toEqual({ type: 'update_field', field: 'ocpd_type', value: '', circuit: 4 });
+  });
+
+  it('an apply_field with no resolvable scope is routed to the missing-target line, not dropped', () => {
+    expect(
+      mapServerActionToVoiceCommand({
+        type: 'apply_field',
+        params: { field: 'ocpd_type', value: 'B' },
+      })
+    ).toEqual({ type: 'update_field', field: 'ocpd_type', value: 'B' });
+  });
+});

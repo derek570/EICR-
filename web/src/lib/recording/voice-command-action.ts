@@ -58,12 +58,6 @@ export function mapServerActionToVoiceCommand(
     return '';
   };
 
-  /** PLAN-C2 — `ocpd_type` left the guarded set (free text, Decision 6), so it
-   *  keeps the ordinary `!value → null` rule, but a finite number is a real
-   *  type (`2`) and stringifies rather than dropping the action. */
-  const asTypeValue = (v: unknown): string | undefined =>
-    typeof v === 'number' && Number.isFinite(v) ? String(v) : asString(v);
-
   /** PLAN-F item 1 — the orthogonal spare filter, decoded defensively:
    *  only the three known tokens survive, anything else is dropped to
    *  `undefined` (= 'automatic', the per-field-family default). Web
@@ -98,12 +92,15 @@ export function mapServerActionToVoiceCommand(
       // On every other field keep the historical `!value → null`:
       // forwarding '' there would be a BLANKING write, which is a
       // behaviour change well outside this plan's scope.
-      if (isValueCheckedCircuitField(field)) {
+      // PLAN-C2 — `ocpd_type` left the guarded set but keeps the tolerant
+      // decode: a numeric type (`2`) is a real value, and a blank or
+      // wrong-typed one must reach the applier so the inspector hears its
+      // truthful missing-value line instead of the server's success text
+      // (iOS canon: its decoder forwards the same way).
+      if (isValueCheckedCircuitField(field) || field === 'ocpd_type') {
         return { type: 'update_field', field, value: asGuardedValue(params.value), circuit };
       }
-      // PLAN-C2 — `ocpd_type` is free text, so a numeric type (`2`) is a real
-      // value and must not be dropped for failing `asString`.
-      const value = field === 'ocpd_type' ? asTypeValue(params.value) : asString(params.value);
+      const value = asString(params.value);
       if (!value) return null;
       return { type: 'update_field', field, value, circuit };
     }
@@ -135,7 +132,7 @@ export function mapServerActionToVoiceCommand(
       if (!field) return null;
       const scope = scopeFromParams();
       const sparePolicy = asSparePolicy(params.spare_policy);
-      if (isValueCheckedCircuitField(field)) {
+      if (isValueCheckedCircuitField(field) || field === 'ocpd_type') {
         const value = asGuardedValue(params.value);
         // PLAN-C — a guarded action is never dropped. With no resolvable
         // scope, route it through `update_field` with no circuit so the
@@ -151,7 +148,7 @@ export function mapServerActionToVoiceCommand(
           ...(sparePolicy ? { sparePolicy } : {}),
         };
       }
-      const value = field === 'ocpd_type' ? asTypeValue(params.value) : asString(params.value);
+      const value = asString(params.value);
       if (!value || !scope) return null;
       return { type: 'apply_field', field, value, scope, ...(sparePolicy ? { sparePolicy } : {}) };
     }
