@@ -456,6 +456,76 @@ frames, replays and not-yet-deployed-backend windows still reach the client appl
 
 ---
 
+## Client-local OCPD standard miss: the model owns the turn (PLAN-CD, feedback-2026-09-17 wave)
+
+> Added 2026-09-25. Web + iOS. No backend behaviour change and no wire change.
+
+**What happens.** The inspector dictates a local apply-field command such as *"OCPD
+standard grey square for all"*. The client parses it (`ApplyFieldIntent.parse` on iOS,
+`parseVoiceCommand` on web), and the shared guard refuses the value because
+`canonicaliseOcpdStandard` cannot read it. The refusal to WRITE is unchanged. What
+happens next depends on one question: is a backend ask open?
+
+| Backend ask open? | Local speech | Forwarded? | Transcript append |
+|---|---|---|---|
+| No | None: no re-ask and no "Done." | Yes, as an ordinary transcript; the model speaks the outcome | Once, by the forward path |
+| Yes | Today's single re-ask | No: no chime, no transcript, no `ask_user_answered` | Once, locally |
+
+A canonicalised success still writes locally, reads back once and returns early, so
+the model never makes a second, conflicting extraction. Only a canonicaliser MISS
+takes this branch: an empty value, a missing target and every other closed-enum
+field keep their re-ask. The guard reports the miss as a typed verdict
+(`VoiceCommandOutcome.ocpdStandardMiss` on web,
+`VoiceCommandExecutor.LocalCommandDisposition.ocpdStandardMiss` on iOS), never as
+text to match. Server-driven voice commands (Decision 5) ignore it.
+
+**The local forward authority (CD1).** The forwarded utterance carries no digit, no
+trigger word and no regex hit, so each client's own `shouldForward` would block the
+`for all` scope form. A per-utterance, LOCAL-ONLY flag feeds that gate's
+`hasRegexHit` input and nothing else. It never becomes `client_command` (Decision 13
+forbids a marker) and never enters `regexResults`: a hinted field name becomes the
+model's "DO NOT extract" instruction for the very field the inspector dictated. The
+forward then rests on `VOICE_AGENTIC_ANSWERS`, which turns the backend gate's
+`LOW_CONTENT` drop into `BORDERLINE_FORWARD`. Derek accepted that dependency; it is
+pinned by `src/__tests__/pre-llm-gate-cd-agentic-dependency.test.js`.
+
+**Why an open ask blocks the handoff (CD2).** A forwarded utterance can be consumed
+as the answer to an unrelated open question (for example `observation_clarify`),
+which loses the reading and falsely resolves the question. That backend arbitration
+defect is unowned residue; this change avoids driving it.
+
+**The authority CD2 reads.** Exactly one structure per client:
+`SonnetSession.hasUnresolvedBackendAsk()` on web and `unresolvedAskAuthority` in
+`DeepgramRecordingViewModel` on iOS. It latches on an INTERACTIVE `ask_user_started`
+(never `expected_answer_shape: "none"`, which is a spoken acknowledgement) and is a
+set keyed by `tool_call_id`. It clears only on an answer, a `cancel_pending_tts`, the
+ask class's backend lifetime, or session reset. Reading it consumes nothing. The
+client's attribution structures (the in-flight slot, the pending question FIFO, the
+alert card) all expire before a backend ask does, so none of them is consulted.
+
+**The lifetime comes from a fixture.** `config/ask-class-lifetimes-v1.json` maps a
+`tool_call_id` to its class and lifetime by ordered prefix rows plus a default row.
+Its `match` field is the only statement of the rule. Web compiles it in through a
+generated module; iOS bundles a byte-identical copy and falls back to the default
+row's lifetime if the copy is unreadable. The guard is
+`scripts/check-ask-class-lifetimes-fixture-sync.sh`; see
+[deploy-testflight.md](deploy-testflight.md).
+
+**Out of scope, with a revisit trigger (Decision 12).** The regex instant-fill path
+(write path 18) matches only literal standard numbers, so it cannot produce a miss.
+Comments at `BS_EN_STANDARD_PATTERN` (web) and `bsEnStandardPattern` (iOS) record that
+widening those patterns reopens the decision.
+
+**Key files:** `web/src/lib/recording-context.tsx` (`dispatchFinal`),
+`web/src/lib/recording/sonnet-session.ts`, `web/src/lib/recording/unresolved-ask-authority.ts`,
+`packages/shared-utils/src/voice-commands.ts` (`guardOcpdStandardWrite`),
+`CertMateUnified/Sources/Recording/DeepgramRecordingViewModel.swift`
+(`handleLocalApplyField`, the `ApplyFieldIntent.parse` call site),
+`CertMateUnified/Sources/Recording/VoiceCommandExecutor.swift`
+(`executeWithDisposition`), `CertMateUnified/Sources/Recording/UnresolvedAskAuthority.swift`.
+
+---
+
 ## Observation apply identity (P7 — server-id keying, marker ④)
 
 > Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.

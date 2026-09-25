@@ -139,6 +139,36 @@ Both clients compile the strings into production constants, and each client's te
 suite pins those constants against its copy. A missing file or a differing byte fails
 closed. `deploy-testflight.sh` runs this as a named preflight.
 
+PLAN-CD (2026-09-25) adds the ask-class lifetimes check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-ask-class-lifetimes-fixture-sync.sh
+```
+
+`config/ask-class-lifetimes-v1.json` classifies an open backend question by its
+`tool_call_id` and says how long it stays live. Both clients read it to decide
+whether a rejected OCPD-standard dictation can go to the model. Unlike the fixtures
+above, the iOS copy is a BUNDLE resource at `Sources/Resources/`, because the app
+reads it at runtime. The script checks four things, each with its own failure
+message:
+
+1. Byte identity across the canonical file, the iOS bundle copy and the generated
+   web module `web/src/lib/recording/ask-class-lifetimes-v1.generated.ts`.
+2. No lifetime is shorter than the backend constant it derives from, read from
+   backend source (`ASK_USER_TIMEOUT_MS`, each dialogue-engine schema's
+   `hardTimeoutMs`).
+3. Every live `toolCallIdPrefix` in `src/extraction/dialogue-engine/schemas/*.js`
+   begins with the dialogue-script row's prefix.
+4. Every vector resolves to its expected class and lifetime.
+
+`deploy-testflight.sh` runs this as the named preflight
+`ASK_CLASS_LIFETIMES_SYNC_SCRIPT` and fails when the script is missing. After the
+archive succeeds and before upload, it also checks that the archived
+`CertMateUnified.app` contains `ask-class-lifetimes-v1.json`. The project is static
+and the script never runs `xcodegen`, so a file missing from the committed
+`project.pbxproj` would otherwise be silently absent from the build.
+
 ## App Store Connect credentials
 
 | Field | Value |
