@@ -39,6 +39,7 @@ import {
   applyWrapPolicy,
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
+import { OCPD_STANDARD_TIER1 } from './dialogue-engine/parsers/bs-code.js';
 import {
   applyPostcodeLookupToSnapshot,
   resolveEffectiveLocalityTail,
@@ -1172,6 +1173,17 @@ const _WRAG_BS7671_EICR = fssync.readFileSync(
   path.join(__dirname, '..', '..', 'config', 'prompts', 'wrag-bs7671-eicr.md'),
   'utf8'
 );
+// PLAN-CS (feedback-2026-09-17) — the prompt's OCPD standard block carries a
+// full-line `{{OCPD_STANDARD_TIER1}}` placeholder, replaced here from
+// `config/ocpd-bs-suggestions.json` (via `bs-code.js`, its one loader).
+// Four hand-maintained copies of this list were the root cause of the
+// September 17 rejection; `stage6-agentic-prompt.test.js` asserts the rendered
+// block EQUALS this builder's output in both variants.
+export const OCPD_STANDARD_TIER1_PLACEHOLDER = '{{OCPD_STANDARD_TIER1}}';
+export function buildOcpdStandardTier1Block() {
+  return `  - ${OCPD_STANDARD_TIER1.join(', ')}.`;
+}
+
 // A1 agentic-voice (2026-07-23) — deterministic conditional-prompt render.
 // The base .md carries marker-delimited blocks (`<!--A1:ON-->` /
 // `<!--A1:OFF-->`, full-line markers): OFF blocks hold the ORIGINAL pre-A1
@@ -1192,6 +1204,15 @@ export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
   let block = 'common';
   for (const line of _AGENTIC_BASE_PROMPT.split('\n')) {
     const t = line.trim();
+    // PLAN-CS — the OCPD Tier-1 list is rendered from the shared manifest in
+    // BOTH variants, so the prompt can never hold a fourth hand-maintained
+    // copy of it. The placeholder is a full line and is never emitted raw.
+    if (t === OCPD_STANDARD_TIER1_PLACEHOLDER) {
+      if (block === 'on' && !enabled) continue;
+      if (block === 'off' && enabled) continue;
+      out.push(buildOcpdStandardTier1Block());
+      continue;
+    }
     if (t === '<!--A1:ON-->') {
       block = 'on';
       continue;

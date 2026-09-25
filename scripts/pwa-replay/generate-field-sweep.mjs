@@ -78,6 +78,9 @@ const VALUE_OVERRIDES = {
   rcd_time_ms: '28',
   rcd_operating_current_ma: '30',
   ocpd_rating_a: '32',
+  // PLAN-CS — `ocpd_bs_en` is free text now, so the select-option fallback
+  // below no longer applies; keep the realistic standard the sweep always used.
+  ocpd_bs_en: 'BS EN 60898',
   number_of_points: '8',
   live_csa_mm2: '2.5',
   cpc_csa_mm2: '1.5',

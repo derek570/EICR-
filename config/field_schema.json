@@ -90,20 +90,37 @@
     },
     "ocpd_bs_en": {
       "label": "OCPD BS/EN",
-      "type": "select",
-      "options": [
-        "",
+      "type": "text",
+      "suggestions": [
         "BS EN 60898",
         "BS EN 61009",
         "BS EN 60947-2",
-        "BS EN 60947-3",
         "BS EN 60269-2",
+        "BS 88-2",
+        "BS 88-3",
         "BS 3036",
         "BS 1361",
+        "BS 1362",
         "N/A"
       ],
+      "suggestions_extended": [
+        "BS EN 60269-1",
+        "BS EN 60269-3",
+        "BS EN 60269-4",
+        "BS 88-1",
+        "BS 88-6",
+        "BS EN 60947-3",
+        "BS EN 60947-4-1",
+        "BS 3871",
+        "BS EN 62423",
+        "BS EN 62606",
+        "BS EN 60127",
+        "BS 4752",
+        "BS 646",
+        "BS 2950"
+      ],
       "description": "OCPD British/European Standard reference",
-      "ai_guidance": "Inspectors usually dictate digits only ('sixty zero eight nine eight'). The CCU pipeline writes canonical forms via BS_EN_LOOKUP at src/routes/extraction.js:257; the dialogue-engine parseBsCode parser writes the same canonical from dictation. Common: BS EN 60898 (MCB), BS EN 61009 (RCBO), BS EN 60947-2 (MCCB), BS EN 60947-3 (switch/isolator), BS EN 60269-2 (HRC fuse — historically 'BS 88-2'/'BS 88-3'), BS 3036 (rewireable fuse), BS 1361 (cartridge fuse).",
+      "ai_guidance": "Free text (Decision 4, PLAN-CC/PLAN-CS): record the standard printed on the device. Any standard-shaped value is accepted and canonicalised (BS EN 60898, BS 3871, BS 88-2, BS EN 60947-4-1, N/A); 'suggestions' (Tier 1) and 'suggestions_extended' (Tier 2) are the curated picker lists from config/ocpd-bs-suggestions.json and are offered, never enforced. Inspectors usually dictate digits only ('sixty zero eight nine eight'); a bare five-digit number starting 6 takes 'BS EN', any other bare number takes 'BS'. A bare '88' is not a standard (it cannot say which BS 88 part). Anything not standard-shaped is rejected as ocpd_standard_shape; never write an empty string.",
       "pdf_column": "BS(EN)",
       "group": "OCPD"
     },

@@ -68,11 +68,13 @@ import {
   validateNumericReadingValue,
   canonicaliseNumericReadingField,
 } from './value-enum-validator.js';
-import {
-  CIRCUIT_FIELD_VALUE_ENUMS,
-  BOARD_FIELD_VALUE_ENUMS,
-} from './circuit-value-descriptors.js';
+import { CIRCUIT_FIELD_VALUE_ENUMS, BOARD_FIELD_VALUE_ENUMS } from './circuit-value-descriptors.js';
 import { STRUCTURAL_READING_FIELDS } from './client-routable-reading-fields.js';
+import {
+  OCPD_STANDARD_ACCEPTED_FORMS,
+  OCPD_STANDARD_TIER1,
+  ocpdStandardShapeAccepts,
+} from './dialogue-engine/parsers/bs-code.js';
 import {
   isBlankWrite,
   EMPTY_WRITE_REJECTION_CODE,
@@ -160,6 +162,21 @@ export const ENUM_REJECTION_CODES = Object.freeze(
 );
 
 /**
+ * PLAN-CS — the `ocpd_standard_shape` rejection body, shared by
+ * `record_reading` and `set_field_for_all_circuits`. It carries the accepted
+ * forms and the Tier-1 suggestions (offered, never a closed list) so the
+ * model's one ask can say them.
+ */
+export function ocpdStandardShapeRejection() {
+  return {
+    code: 'ocpd_standard_shape',
+    field: 'value',
+    accepted_forms: OCPD_STANDARD_ACCEPTED_FORMS,
+    suggestions: [...OCPD_STANDARD_TIER1],
+  };
+}
+
+/**
  * record_reading: circuit must exist; confidence (when present) must be a
  * finite number in [0, 1]. The bound used to live on the input_schema as
  * `minimum: 0, maximum: 1` but Anthropic strict-mode tools reject those
@@ -234,6 +251,21 @@ export function validateRecordReading(input, snapshot) {
         valid_options: Array.from(allowed),
       };
     }
+  }
+  // PLAN-CS (feedback-2026-09-17, Decision 4) — `ocpd_bs_en` is free text,
+  // so it left CIRCUIT_FIELD_VALUE_ENUMS with its `select` → `text` flip and the
+  // gate above no longer covers it. This is its replacement: ONE shape rule,
+  // the same `parseOcpdStandard` every other boundary uses. Coercion has
+  // already canonicalised a readable value, so only an unreadable one reaches
+  // the rejection — prose ("There is no RCBO"), a six-digit number, a bare
+  // `88`. The rejection lists the accepted forms so the model's single ask
+  // (PLAN-C3's one-ask flow) can say them.
+  //
+  // Registered in `circuit-value-descriptors.js` PARSER_BACKED_FIELD_GATES
+  // with the SAME predicate, so the handoff note's validation descriptor and
+  // this gate cannot disagree (PLAN-A's A-101 oracle enforces it).
+  if (input.field === 'ocpd_bs_en' && !ocpdStandardShapeAccepts(input.value)) {
+    return ocpdStandardShapeRejection();
   }
   // Audit-2026-06-02 Phase 1 — numeric range gate for free-text numeric
   // fields (rcd_time_ms, measured_zs_ohm, ocpd_rating_a, …) that have

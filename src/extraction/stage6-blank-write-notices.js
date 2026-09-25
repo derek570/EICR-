@@ -617,7 +617,36 @@ export function recordAskRegistration(
     circuits: refs,
     boardId: resolvedBoardId,
   });
+  return lineageFor(perTurnWrites, { rejectionRef, field, refs, resolvedBoardId });
+}
 
+/**
+ * PLAN-CS — the SAME lineage resolution as `recordAskRegistration`, with NO
+ * journal write. The ask dispatcher needs to know whether an `ocpd_bs_en` ask
+ * with no circuit carries a bulk lineage BEFORE it decides to register the ask
+ * at all (`ask_requires_target`). Journaling an ask that is then refused would
+ * make the drain treat it as a covering ask and suppress a pending rejection
+ * notice for a question the inspector never heard.
+ *
+ * @returns {object|null} the matched rejection journal entry, or null.
+ */
+export function resolveAskRejectionLineage(
+  session,
+  perTurnWrites,
+  { rejectionRef, field, circuit, circuits, boardId }
+) {
+  if (!perTurnWrites) return null;
+  const resolvedBoardId = resolveEffectiveBoardId(session, boardId) ?? null;
+  const refs =
+    Array.isArray(circuits) && circuits.length > 0
+      ? [...circuits]
+      : Number.isInteger(circuit)
+        ? [circuit]
+        : [];
+  return lineageFor(perTurnWrites, { rejectionRef, field, refs, resolvedBoardId });
+}
+
+function lineageFor(perTurnWrites, { rejectionRef, field, refs, resolvedBoardId }) {
   const echoed = findRejection(perTurnWrites, rejectionRef);
   if (echoed) return echoed;
   const journal = perTurnWrites.rejections;

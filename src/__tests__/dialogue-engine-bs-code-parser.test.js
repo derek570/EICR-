@@ -1,162 +1,254 @@
 /**
- * Unit tests for the BS-code parser's fuzzy fallback. Covers the
- * production failure shape from session C4467E35 (2026-05-06):
- * Deepgram dropped a digit ("BS 60898" → "BS 6898"), the strict
- * regex patterns missed it, the engine looped re-asking forever.
+ * PLAN-CS (feedback-2026-09-17) — the backend BS-standard parsers.
  *
- * Lev-1 fuzzy fallback closes that loop. Tests assert both the
- * happy fuzzy paths and the deliberate fall-throughs (ambiguity,
- * length-bounds, total miss) so future loosening of the matcher
- * doesn't accidentally accept noise.
+ * `parseOcpdStandard` is the backend twin of PLAN-CC's client canonicaliser
+ * (`packages/shared-utils/src/ocpd-standard.ts`, Swift `OcpdStandard.swift`).
+ * The enforcement of byte-identity is the SHARED MANIFEST: every vector in
+ * `config/ocpd-bs-suggestions.json` is driven through the real function and
+ * the returned bytes compared, exactly as the web and iOS suites do.
+ *
+ * `parseRcdBsCode` is strict: `rcd_bs_en` stays a closed list.
+ *
+ * The Levenshtein-1 fuzzy fallback that this file used to pin is GONE (HARD
+ * RULE: no fuzzy garble correction). Its old cases are kept below as
+ * regressions that must stay non-fuzzy.
  */
 
-import { parseBsCode, bsCodeDigits } from '../extraction/dialogue-engine/parsers/bs-code.js';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as bsCode from '../extraction/dialogue-engine/parsers/bs-code.js';
+import { extractNamedFieldValues } from '../extraction/dialogue-engine/helpers/extraction.js';
+import { ocpdSchema } from '../extraction/dialogue-engine/schemas/ocpd.js';
+import { rcdSchema } from '../extraction/dialogue-engine/schemas/rcd.js';
 
-describe('parseBsCode — exact regex patterns', () => {
-  test('"BS EN 60898" → canonical', () => {
-    expect(parseBsCode('BS EN 60898')).toBe('BS EN 60898');
+const {
+  parseOcpdStandard,
+  parseRcdBsCode,
+  bsCodeDigits,
+  ocpdStandardShapeAccepts,
+  BS_STANDARD_NAMED_EXTRACTOR,
+  OCPD_STANDARD_TIER1,
+  OCPD_STANDARD_TIER2,
+} = bsCode;
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const MANIFEST = JSON.parse(
+  readFileSync(resolve(REPO_ROOT, 'config/ocpd-bs-suggestions.json'), 'utf8')
+);
+
+describe('parseOcpdStandard — the shared manifest (byte-identity with the TS and Swift twins)', () => {
+  test('the manifest carries both vector sets', () => {
+    expect(MANIFEST.accepted_value_vectors.length).toBeGreaterThan(0);
+    expect(MANIFEST.rejected_value_vectors.length).toBeGreaterThan(0);
   });
 
-  test('bare "60898" → canonical', () => {
-    expect(parseBsCode('60898')).toBe('BS EN 60898');
-  });
+  test.each(MANIFEST.accepted_value_vectors.map((v) => [v.input, v.expected]))(
+    'accepted %j → %j',
+    (input, expected) => {
+      expect(parseOcpdStandard(input)).toBe(expected);
+    }
+  );
 
-  test('"BS 60898" (no EN) → canonical — ordinary speech', () => {
-    expect(parseBsCode('BS 60898')).toBe('BS EN 60898');
-  });
+  test.each(MANIFEST.rejected_value_vectors.map((v) => [v.input, v.reason]))(
+    'rejected %j (%s) → null',
+    (input) => {
+      expect(parseOcpdStandard(input)).toBeNull();
+    }
+  );
 
-  test('"BS EN 61009" → canonical (RCBO pivot value)', () => {
-    expect(parseBsCode('BS EN 61009')).toBe('BS EN 61009');
-  });
-
-  test('"BS EN 61008" → canonical (RCD)', () => {
-    expect(parseBsCode('BS EN 61008')).toBe('BS EN 61008');
-  });
-
-  test('"BS EN 60947-2" → canonical (MCCB)', () => {
-    expect(parseBsCode('BS EN 60947-2')).toBe('BS EN 60947-2');
-  });
-
-  test('"BS EN 60947-3" → canonical (switch-disconnector)', () => {
-    expect(parseBsCode('BS EN 60947-3')).toBe('BS EN 60947-3');
-  });
-
-  test('"BS 3036" → canonical (rewireable fuse)', () => {
-    expect(parseBsCode('BS 3036')).toBe('BS 3036');
-  });
-
-  test('"BS 1361" → canonical (cartridge fuse)', () => {
-    expect(parseBsCode('BS 1361')).toBe('BS 1361');
-  });
-
-  // 2026-05-06 BS-EN alignment: BS 88-2 / BS 88-3 (legacy UK
-  // designation for HRC fuses) collapse to the harmonised European
-  // canonical BS EN 60269-2 — the only HRC option in the schema.
-  test('"BS 88-2" → BS EN 60269-2 (legacy UK → harmonised EN)', () => {
-    expect(parseBsCode('BS 88-2')).toBe('BS EN 60269-2');
-  });
-
-  test('"BS 88-3" → BS EN 60269-2 (legacy UK → harmonised EN)', () => {
-    expect(parseBsCode('BS 88-3')).toBe('BS EN 60269-2');
-  });
-
-  test('"88-2" bare → BS EN 60269-2', () => {
-    expect(parseBsCode('88-2')).toBe('BS EN 60269-2');
-  });
-
-  test('"BS EN 60269-2" → canonical (HRC fuse, harmonised)', () => {
-    expect(parseBsCode('BS EN 60269-2')).toBe('BS EN 60269-2');
-  });
-
-  // AFDD (BS EN 62606) and BS 4293 are NOT in the schema option list
-  // and the parser deliberately doesn't recognise them — inspectors
-  // dictating these will be re-asked rather than write a value the
-  // resolver will reject.
-  test('"BS EN 62606" → null (AFDD out of scope)', () => {
-    expect(parseBsCode('BS EN 62606')).toBe(null);
-  });
-
-  test('"BS 4293" → null (legacy non-EN RCD out of scope)', () => {
-    expect(parseBsCode('BS 4293')).toBe(null);
+  test('the tier exports are the manifest tiers, never a second copy', () => {
+    expect([...OCPD_STANDARD_TIER1]).toEqual(MANIFEST.tier1);
+    expect([...OCPD_STANDARD_TIER2]).toEqual(MANIFEST.tier2);
   });
 });
 
-describe('parseBsCode — fuzzy fallback (Lev-1)', () => {
-  // Production failure: session C4467E35 OCPD ask_user loop.
-  // Inspector said "BS 60898" three times; Deepgram emitted "BS 6898".
-  test('"6898" (Deepgram dropped 0) → BS EN 60898 via insertion', () => {
-    expect(parseBsCode('6898')).toBe('BS EN 60898');
-  });
+describe('parseOcpdStandard — structural twin check against the TypeScript source', () => {
+  // The vectors are the enforcement; this is a cheap tripwire for the three
+  // literals most likely to be edited on one side only.
+  const tsSource = readFileSync(
+    resolve(REPO_ROOT, 'packages/shared-utils/src/ocpd-standard.ts'),
+    'utf8'
+  );
+  const jsSource = readFileSync(
+    resolve(REPO_ROOT, 'src/extraction/dialogue-engine/parsers/bs-code.js'),
+    'utf8'
+  );
+  const literal = (src, name) => {
+    // Up to the statement-ending `;` at END OF LINE: EDGE_PUNCTUATION has a
+    // `;` inside its character class.
+    const m = new RegExp(`const ${name}[^=]*=\\s*([\\s\\S]*?);\\n`).exec(src);
+    return m ? m[1].replace(/\s+/g, ' ').trim() : null;
+  };
 
-  test('"BS 6898" (named-extractor passes "6898" → fuzzy)', () => {
-    expect(parseBsCode('BS 6898')).toBe('BS EN 60898');
-  });
+  test.each(['CAPTURE_GRAMMAR', 'WHITESPACE_CLASS', 'EDGE_PUNCTUATION'])(
+    '%s is byte-identical to the TS twin',
+    (name) => {
+      expect(literal(jsSource, name)).not.toBeNull();
+      expect(literal(jsSource, name)).toBe(literal(tsSource, name));
+    }
+  );
 
-  test('"6898." (trailing punctuation matches the production shape)', () => {
-    expect(parseBsCode('6898.')).toBe('BS EN 60898');
-  });
-
-  test('"60008" (1 substitution from 61008) → BS EN 61008', () => {
-    // "60008" sits at Lev-1 from "61008" (single sub at index 1) and
-    // Lev-2 from "60898" (subs at indices 2 and 3). The matcher picks
-    // the unique closest target.
-    expect(parseBsCode('60008')).toBe('BS EN 61008');
-  });
-
-  test('"610008" (1 insertion in 61008) → BS EN 61008', () => {
-    expect(parseBsCode('610008')).toBe('BS EN 61008');
-  });
-
-  test('"6100" (1 deletion from 61009 OR 61008) → null on ambiguity', () => {
-    // Both 61008 and 61009 are at Lev-1 from "6100" — the matcher
-    // must NOT guess. Inspector re-asks via the engine.
-    expect(parseBsCode('6100')).toBe(null);
-  });
-
-  test('"1234" (no Lev-1 candidate) → null', () => {
-    expect(parseBsCode('1234')).toBe(null);
+  test('the alias rows are identical to the TS twin', () => {
+    const rows = (src) =>
+      [...src.matchAll(/^\s*'(BS[^']*)': '(BS[^']*)',$/gm)].map((m) => `${m[1]}=>${m[2]}`);
+    expect(rows(jsSource).length).toBeGreaterThan(0);
+    expect(rows(jsSource)).toEqual(rows(tsSource));
   });
 });
 
-describe('parseBsCode — fuzzy fallback length bounds', () => {
-  test('digit run shorter than 4 chars → no fuzzy attempt', () => {
-    // "988" alone is 3 digits — too short to be a BS code.
-    expect(parseBsCode('it was 988')).toBe(null);
+describe('parseOcpdStandard — acceptance 2 (plan)', () => {
+  test('whitespace forms normalise from captures, never echo the input bytes', () => {
+    expect(parseOcpdStandard('b s en 12345 - 12 - 3')).toBe('BS EN 12345-12-3');
+    expect(parseOcpdStandard('BS   EN   60898')).toBe('BS EN 60898');
   });
 
-  test('digit run longer than 6 chars → no fuzzy attempt', () => {
-    // 7+ digits can only be a phone / serial number, not a BS code.
-    expect(parseBsCode('reading was 60898123')).toBe(null);
+  test('a value over 24 characters made only of internal whitespace is normalised, not rejected', () => {
+    const padded = 'BS      EN      12345   -   12   -   3';
+    expect(padded.length).toBeGreaterThan(24);
+    const out = parseOcpdStandard(padded);
+    expect(out).toBe('BS EN 12345-12-3');
+    expect(out).toHaveLength(16);
   });
 
-  test('text with no digits at all → null', () => {
-    expect(parseBsCode('I have no idea')).toBe(null);
+  test('never "" and never whitespace-bearing output', () => {
+    for (const v of MANIFEST.accepted_value_vectors) {
+      const out = parseOcpdStandard(v.input);
+      expect(out).not.toBe('');
+      expect(out).not.toMatch(/\s{2,}/);
+    }
+  });
+
+  test('non-string, non-number input is a miss', () => {
+    expect(parseOcpdStandard(null)).toBeNull();
+    expect(parseOcpdStandard(undefined)).toBeNull();
+    expect(parseOcpdStandard({})).toBeNull();
+    expect(parseOcpdStandard(Number.NaN)).toBeNull();
+  });
+
+  test('ocpdStandardShapeAccepts is the same predicate', () => {
+    expect(ocpdStandardShapeAccepts('BS 3871')).toBe(true);
+    expect(ocpdStandardShapeAccepts('N/A')).toBe(true);
+    expect(ocpdStandardShapeAccepts('There is no RCBO')).toBe(false);
+    expect(ocpdStandardShapeAccepts('LIM')).toBe(false);
+    expect(ocpdStandardShapeAccepts('')).toBe(false);
   });
 });
 
-describe('parseBsCode — fuzzy fallback does not break existing exact-match paths', () => {
-  test('"6 zero 8 9 8" still resolves to BS EN 60898 via zero-word collapse', () => {
-    expect(parseBsCode('6 zero 8 9 8')).toBe('BS EN 60898');
+describe('parseRcdBsCode — strict closed list', () => {
+  test.each([
+    ['61008', 'BS EN 61008'],
+    ['BS EN 61008', 'BS EN 61008'],
+    ['62423', 'BS EN 62423'],
+    ['N/A', 'N/A'],
+    // Legacy stored forms canonicalise INTO the list, so the fill predicate
+    // never re-asks a healthy legacy value (CS-66).
+    ['61009-1', 'BS EN 61009'],
+    ['BS EN 61009-1', 'BS EN 61009'],
+    ['61009', 'BS EN 61009'],
+  ])('%j → %j', (input, expected) => {
+    expect(parseRcdBsCode(input)).toBe(expected);
   });
 
-  test('"a b s 60898" letter-split → BS EN 60898', () => {
-    expect(parseBsCode('a b s 60898')).toBe('BS EN 60898');
+  test.each(['6898', 'BS EN 60898', 'BS 3871', 'BS 3036', 'BS 9999', '', '   ', 'no idea'])(
+    '%j → null',
+    (input) => {
+      expect(parseRcdBsCode(input)).toBeNull();
+    }
+  );
+});
+
+describe('no fuzzy matching anywhere (HARD RULE)', () => {
+  test('the old fuzzy entry points no longer exist', () => {
+    expect(bsCode.parseBsCode).toBeUndefined();
+    expect(bsCode.fuzzyMatchBsCode).toBeUndefined();
   });
 
-  test('"61008" exact match takes precedence over fuzzy', () => {
-    expect(parseBsCode('61008')).toBe('BS EN 61008');
+  test('a dropped digit is NOT repaired into a different real standard', () => {
+    // Pre-PLAN-CS, Levenshtein-1 turned "6898" into BS EN 60898. It is a
+    // standard-shaped OCPD value in its own right now, recorded as said…
+    expect(parseOcpdStandard('6898')).toBe('BS 6898');
+    // …and on the strict RCD list it is simply a miss.
+    expect(parseRcdBsCode('6898')).toBeNull();
+    expect(parseRcdBsCode('60008')).toBeNull();
+    expect(parseRcdBsCode('610008')).toBeNull();
+  });
+
+  test('prose containing a standard is a miss — the grammar is anchored', () => {
+    expect(parseOcpdStandard('the BS code is 60898')).toBeNull();
+    expect(parseOcpdStandard('There is no RCBO')).toBeNull();
   });
 });
 
-describe('bsCodeDigits — derivation lookup helper', () => {
+describe('BS_STANDARD_NAMED_EXTRACTOR — the two remaining BS extractors', () => {
+  test('is shared by the OCPD and RCD schemas and by nothing else', () => {
+    const ocpdBs = ocpdSchema.slots.find((s) => s.field === 'ocpd_bs_en');
+    const rcdBs = rcdSchema.slots.find((s) => s.field === 'rcd_bs_en');
+    expect(ocpdBs.namedExtractor).toBe(BS_STANDARD_NAMED_EXTRACTOR);
+    expect(rcdBs.namedExtractor).toBe(BS_STANDARD_NAMED_EXTRACTOR);
+    expect(BS_STANDARD_NAMED_EXTRACTOR.global).toBe(false);
+  });
+
+  test.each([
+    // The old capture stopped after ONE single-digit suffix: 60947-4-1 was
+    // written and read back as 60947-4.
+    ['the breaker is BS EN 60947-4-1', 'BS EN 60947-4-1'],
+    ['BS EN 12345-12-3 on this one', 'BS EN 12345-12-3'],
+    ['b s en 12345 - 12 - 3', 'BS EN 12345-12-3'],
+    ['BS 88-2', 'BS 88-2'],
+    ['a b s 60898', 'BS EN 60898'],
+    ['BS 3871', 'BS 3871'],
+  ])('OCPD named extraction of %j → %j', (text, expected) => {
+    const named = extractNamedFieldValues(text, ocpdSchema.slots).filter(
+      (w) => w.field === 'ocpd_bs_en'
+    );
+    expect(named).toEqual([{ field: 'ocpd_bs_en', value: expected }]);
+  });
+
+  test.each([
+    ['BS 3036.', 'BS 3036'],
+    ['BS EN 60898, 32 amps', 'BS EN 60898'],
+  ])('sentence punctuation after the token still extracts (%j)', (text, expected) => {
+    const named = extractNamedFieldValues(text, ocpdSchema.slots).filter(
+      (w) => w.field === 'ocpd_bs_en'
+    );
+    expect(named).toEqual([{ field: 'ocpd_bs_en', value: expected }]);
+  });
+
+  test('a longer digit run is never cut into a shorter standard (right boundary)', () => {
+    const named = extractNamedFieldValues('BS 123456', ocpdSchema.slots).filter(
+      (w) => w.field === 'ocpd_bs_en'
+    );
+    expect(named).toEqual([]);
+  });
+
+  test.each(['BS EN 60898A', 'BS EN 60947-4-1A', 'BS 3871x', 'BS EN 60898/1', 'BS EN 60947-4-1/2'])(
+    'a trailing letter is not cut off into a shorter standard (%j) — EP cycle 1, Codex c1-2',
+    (text) => {
+      // Named and whole-value paths must agree: both refuse the token.
+      expect(parseOcpdStandard(text)).toBeNull();
+      const named = extractNamedFieldValues(text, ocpdSchema.slots).filter(
+        (w) => w.field === 'ocpd_bs_en'
+      );
+      expect(named).toEqual([]);
+    }
+  );
+
+  test('a bare two-digit BS 88 is not a standard, so nothing is named-extracted', () => {
+    const named = extractNamedFieldValues('BS 88 fuse', ocpdSchema.slots).filter(
+      (w) => w.field === 'ocpd_bs_en'
+    );
+    expect(named).toEqual([]);
+  });
+});
+
+describe('bsCodeDigits — derivation lookup helper (unchanged)', () => {
   test('"BS EN 61009" → "61009" (RCBO pivot trigger)', () => {
     expect(bsCodeDigits('BS EN 61009')).toBe('61009');
   });
-
   test('"BS 3036" → "3036" (Rew derivation trigger)', () => {
     expect(bsCodeDigits('BS 3036')).toBe('3036');
   });
-
   test('"BS 1361" → "1361" (cartridge derivation trigger)', () => {
     expect(bsCodeDigits('BS 1361')).toBe('1361');
   });

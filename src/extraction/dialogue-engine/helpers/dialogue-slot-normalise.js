@@ -12,9 +12,11 @@
  *     validateNumericReadingValue) AND the slot's `allowedValues` when the
  *     schema declares one (e.g. the OCPD-kA ladder). A failure returns
  *     {ok:false} so the caller DROPS the write.
- *   - Non-numeric-reading fields (bs_en, rcd_type, Y/N, …) pass through with
+ *   - `ocpd_bs_en` / `rcd_bs_en` canonicalise through their own parser and a
+ *     miss is dropped as `seed_unparseable` (PLAN-CS).
+ *   - Other non-numeric-reading fields (rcd_type, Y/N, …) pass through with
  *     their value UNCHANGED — preserving the pre-P3 seed behaviour, which
- *     deliberately coerced only `ir_live_*` and left bs_en / Y-N alone.
+ *     deliberately coerced only `ir_live_*` and left Y-N alone.
  *   - Non-string coerced values pass through unchanged (seeds are strings in
  *     practice; this avoids rejecting a rare numeric seed on a ranged field).
  *
@@ -29,11 +31,18 @@ import { clampReadingForDispatch } from '../../impedance-clamp.js';
 // dialogue engine, can share the one definition rather than keep a copy.
 import { isBlankWrite } from '../../blank-write-policy.js';
 import { coerceRecordReadingValue } from '../../record-reading-coercion.js';
+import { parseOcpdStandard, parseRcdBsCode } from '../parsers/bs-code.js';
 import {
   NUMERIC_READING_FIELDS,
   canonicaliseNumericReadingField,
   validateNumericReadingValue,
 } from '../../value-enum-validator.js';
+
+/** PLAN-CS — keyed by field, never by slot kind: the two BS fields differ. */
+const BS_SEED_PARSERS = new Map([
+  ['ocpd_bs_en', parseOcpdStandard],
+  ['rcd_bs_en', parseRcdBsCode],
+]);
 
 /**
  * Plan D Seam A (2026-07-25, feedback id 100(b), session C06B9904) — the
@@ -76,6 +85,19 @@ export function normaliseDialogueSlotWrite(schema, field, value, earthing = null
   // an invalid seed — the SCRIPT still enters, and the slot is simply asked.
   if (isBlankWrite(value)) {
     return { ok: false, reason: 'seed_blank' };
+  }
+  // PLAN-CS (feedback-2026-09-17) — the BS-standard fields canonicalise
+  // through their OWN parser, second, on the surviving non-blank value. Seeds
+  // used to pass these through verbatim, so a seed was the one `rcd_bs_en`
+  // write path that could store `BS 3871` or prose. A value the parser cannot
+  // read is dropped (`seed_unparseable`) exactly like an invalid numeric seed:
+  // the script still enters and the slot is asked.
+  const bsParser = BS_SEED_PARSERS.get(field);
+  if (bsParser) {
+    const canonical = bsParser(value);
+    return canonical === null
+      ? { ok: false, reason: 'seed_unparseable' }
+      : { ok: true, value: canonical, correction: null };
   }
   const canonicalField = canonicaliseNumericReadingField(field);
   // Non-numeric-reading field → preserve pre-P3 seed behaviour verbatim.

@@ -441,9 +441,11 @@ describe('enterScriptByName — engine back door', () => {
     expect(result.schema).toBe('rcbo');
     // Active script is now RCBO, not OCPD.
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
-    // Both bs_en columns mirrored (RCBO writes ocpd_bs_en + rcd_bs_en).
     expect(session.stateSnapshot.circuits[4].ocpd_bs_en).toBe('BS EN 61009');
-    expect(session.stateSnapshot.circuits[4].rcd_bs_en).toBe('BS EN 61009');
+    // PLAN-CS (CS-64 / CS-77) — the pivot survives (`ocpd.js` keeps
+    // `{ value: '61009', pivot: 'rcbo' }`) but nothing mirrors the OCPD
+    // standard into the RCD column: the RCBO walk asks for it.
+    expect(session.stateSnapshot.circuits[4].rcd_bs_en).toBeUndefined();
   });
 
   test('all-slots-filled via pending_writes triggers immediate finishScript', () => {

@@ -1354,3 +1354,68 @@ describe('acceptance 5f/6 — the ask hooks and the CC9E0915 shape', () => {
     expect(session.stateSnapshot.circuits[4].ocpd_bs_en).toBeUndefined();
   });
 });
+
+// PLAN-CS (feedback-2026-09-17, acceptance 1) — the September 17 turn that
+// started the OCPD half of this wave, replayed with the model's RECORDED tool
+// calls (session CC9E0915, 11:27:49 "for circuit 1 is BS 381... sorry.
+// Correction. 387130 amps."). On the day `BS 3871` was rejected as
+// value_not_in_options; with `ocpd_bs_en` free text it is written.
+describe('PLAN-CS acceptance 1 — CC9E0915 11:27:49 replayed', () => {
+  test('ocpd_bs_en = BS 3871 and ocpd_rating_a = 30 are written, each read back once, zero asks', async () => {
+    const session = makeSession(SINGLE_BOARD, 'main', {
+      0: {},
+      1: { circuit_designation: 'Upstairs Lighting' },
+    });
+    loopDispatching([
+      {
+        id: 'r1',
+        name: 'clear_reading',
+        input: { field: 'ocpd_bs_en', circuit: 1, reason: 'user_correction' },
+      },
+      {
+        id: 'r2',
+        name: 'clear_reading',
+        input: { field: 'ocpd_rating_a', circuit: 1, reason: 'user_correction' },
+      },
+      {
+        id: 'r3',
+        name: 'record_reading',
+        input: {
+          field: 'ocpd_bs_en',
+          circuit: 1,
+          value: 'BS 3871',
+          confidence: 0.72,
+          source_turn_id: 'current',
+        },
+      },
+      {
+        id: 'r4',
+        name: 'record_reading',
+        input: {
+          field: 'ocpd_rating_a',
+          circuit: 1,
+          value: '30',
+          confidence: 0.82,
+          source_turn_id: 'current',
+        },
+      },
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, 'CC9E0915 11:27:49', [], opts);
+    expect(session.stateSnapshot.circuits[1].ocpd_bs_en).toBe('BS 3871');
+    expect(session.stateSnapshot.circuits[1].ocpd_rating_a).toBe('30');
+    const lines = spoken(result);
+    const mentions = (needle) => lines.reduce((n, t) => n + (t.split(needle).length - 1), 0);
+    expect(mentions('3871')).toBe(1);
+    expect(mentions('30')).toBe(1);
+    // No rejection spoke, and the standard was never asked about. (The model
+    // write still opens the pre-existing RCBO walk-through for circuit 1,
+    // which asks its next unfilled slot; that engine question is not an ask
+    // about the value just written.)
+    expect(lines.some((t) => /isn't one of the options|still blank/.test(t))).toBe(false);
+    const asks = opts.ws.send.mock.calls
+      .map((c) => JSON.parse(String(c[0])))
+      .filter((m) => m.type === 'ask_user_started');
+    expect(asks.filter((m) => m.context_field === 'ocpd_bs_en')).toEqual([]);
+  });
+});

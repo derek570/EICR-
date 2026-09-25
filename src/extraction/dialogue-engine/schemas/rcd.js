@@ -9,9 +9,10 @@
  * per circuit, not a shared property of the RCD device.
  *
  * Pivot: when `rcd_bs_en` fills with "BS EN 61009", the device IS
- * an RCBO — derivation pivots to the RCBO schema and mirrors the
- * BS code into ocpd_bs_en (both columns hold the same value for
- * RCBOs by convention).
+ * an RCBO — derivation pivots to the RCBO schema, whose walk then asks
+ * the OCPD standard first. Nothing copies the RCD's number into
+ * `ocpd_bs_en` (PLAN-CS, CS-64): an RCBO's two standards are dictated or
+ * asked separately.
  *
  * Bulk apply: after BS / type / mA all fill (the three RCD device
  * properties), the engine emits a follow-up TTS prompt: "Apply these
@@ -22,7 +23,7 @@
  * branch for the implementation.
  */
 
-import { parseBsCode } from '../parsers/bs-code.js';
+import { BS_STANDARD_NAMED_EXTRACTOR, parseRcdBsCode } from '../parsers/bs-code.js';
 import { parseRcdType } from '../parsers/rcd-type.js';
 import { parseMa } from '../parsers/ma.js';
 import { parseMs } from '../parsers/ms.js';
@@ -87,9 +88,16 @@ const slots = [
     kind: 'bs_code',
     label: 'BS number',
     question: "What's the BS number of the RCD? Or do you want to fill that in later?",
-    parser: parseBsCode,
-    namedExtractor: /\bBS(?:\s*EN)?\s*(\d{4,5}(?:[-\s]*\d)?)/i,
+    // PLAN-CS — strict: the value must canonicalise to one of `rcd_bs_en`'s
+    // options. The old shared parser accepted OCPD-only codes such as
+    // `BS 3036` here.
+    parser: parseRcdBsCode,
+    namedExtractor: BS_STANDARD_NAMED_EXTRACTOR,
     acceptsBareValue: true,
+    // PLAN-CS (CS-66) — a stored value this parser rejects (`BS 9999`)
+    // counts as UNFILLED, so the walk asks for it rather than leaving an
+    // invalid standard on the certificate. See `slotIsFilled`.
+    askWhenStoredUnparseable: true,
     // Defer answer: when the inspector says "fill later" / "later" /
     // "skip" in response to this ask, the engine clears the script
     // and marks the per-session, per-circuit RCD asks as deferred so
@@ -100,8 +108,8 @@ const slots = [
     // tutorial.
     acceptsDeferAnswer: true,
     derivations: [
-      // RCBO pivot — mirror the BS code into ocpd_bs_en.
-      { value: '61009', mirrors: ['ocpd_bs_en'], pivot: 'rcbo' },
+      // RCBO pivot. No mirror into ocpd_bs_en (PLAN-CS, CS-64/CS-77).
+      { value: '61009', pivot: 'rcbo' },
     ],
   },
   {

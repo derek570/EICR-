@@ -263,6 +263,7 @@ import {
 // composition site below; the ask dispatcher itself never holds it.
 import {
   recordAskRegistration,
+  resolveAskRejectionLineage,
   stagePostAskRejection,
   UNRELATED_REJECTION_REF,
   bulkSlotKey,
@@ -2189,6 +2190,10 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         // closed over THIS turn's accumulator for the same reason the Plan-2A
         // callback above is.
         recordAskRegistration: (spec) => recordAskRegistration(liveSession, perTurnWrites, spec),
+        // PLAN-CS — the same lineage, read WITHOUT journaling, for the
+        // `ask_requires_target` decision that precedes registration.
+        resolveAskRejectionLineage: (spec) =>
+          resolveAskRejectionLineage(liveSession, perTurnWrites, spec),
         stageEnumRejectionAfterAsk: (spec) =>
           stagePostAskRejection(liveSession, perTurnWrites, turnId, spec),
       });

@@ -148,7 +148,12 @@ VALUE NORMALISATION (mapping speech → field value; the server treats the liste
 - N/A is VALID. "NA", "N.A.", "not applicable" → "N/A". Use for fields the inspector explicitly marks not-applicable.
 - Insulation ">200" / ">999" — keep the `>` prefix.
 - PFC normalises to kA: "1200 amps" → "1.2", "nought 88" → "0.88".
-- BS EN split digits: "608 98" → "60898-1" (MCB); "610 09" → "61009" (RCBO).
+- BS EN split digits: "608 98" → "BS EN 60898" (MCB); "610 09" → "BS EN 61009" (RCBO).
+
+OCPD STANDARD (`ocpd_bs_en` is FREE TEXT; `rcd_bs_en` stays a closed list). Common:
+{{OCPD_STANDARD_TIER1}}
+- Write the standard as read off the device when it is standard-shaped, EVEN if unlisted ("BS 3871", "BS 88-2", "BS EN 60947-4-1", "N/A"). Never `""`, never a listed one instead. Bare "88" is not a standard.
+- Not standard-shaped → `ocpd_standard_shape`: follow Enum rejection, speaking `accepted_forms`. An ask about `ocpd_bs_en` MUST carry `context_circuit`, `context_circuits` or the bulk rejection's `rejection_ref`. `ocpd_standard_resolved` = server wrote it, end the turn; `ocpd_standard_rejected_after_ask` = terminal.
 
 OCPD vs RCD DISAMBIGUATION:
 - "type B 32" = ocpd_type "B" + ocpd_rating 32 (amp rating → OCPD).

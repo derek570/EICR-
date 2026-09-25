@@ -93,6 +93,10 @@
  */
 
 import { validateAskUser } from './stage6-dispatch-validation.js';
+import {
+  OCPD_STANDARD_ACCEPTED_FORMS,
+  OCPD_STANDARD_TIER1,
+} from './dialogue-engine/parsers/bs-code.js';
 import { logAskUser } from './stage6-dispatcher-logger.js';
 import {
   AskRegistrationHookError,
@@ -107,6 +111,7 @@ import {
   resolveMultiDescriptionFollowup,
   resolveValueAnswer,
   resolveEnumAnswer,
+  resolveOcpdStandardAnswer,
   resolveBoardIdAnswer,
   extractCircuitRef,
   decorateCircuitCensusRow,
@@ -373,6 +378,10 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
     typeof opts?.recordAskRegistration === 'function' ? opts.recordAskRegistration : null;
   const stageEnumRejectionAfterAsk =
     typeof opts?.stageEnumRejectionAfterAsk === 'function' ? opts.stageEnumRejectionAfterAsk : null;
+  // PLAN-CS (CS-51) — the side-effect-free twin of `recordAskRegistration`,
+  // used only for the `ask_requires_target` decision below.
+  const resolveAskRejectionLineage =
+    typeof opts?.resolveAskRejectionLineage === 'function' ? opts.resolveAskRejectionLineage : null;
   const addressMirrorController = opts?.addressMirrorController ?? null;
   // PLAN-2B lifecycle fence — one dispatcher instance belongs to one live
   // model generation. When the inspector abandons the server-brokered mdr-*
@@ -447,6 +456,68 @@ export function createAskDispatcher(session, logger, turnId, pendingAsks, ws, op
         }),
         is_error: true,
       };
+    }
+
+    // Step 1a — PLAN-CS (feedback-2026-09-17, CS-51): an ask about the OCPD
+    // standard must say WHERE the answer goes. Its resolver writes through the
+    // ordinary tools, so an ask naming no circuit, no circuit set and no bulk
+    // lineage would parse a correct answer and have nowhere to put it — a
+    // dictated reading heard and dropped. Refused BEFORE registration, so
+    // nothing is journaled, nothing is emitted and nothing is spoken; the
+    // tool result tells the model to ask again with a target. A bulk lineage
+    // arrives only through the rejection's `rejection_ref`, which an ask with
+    // no circuits can still echo.
+    if (
+      input.context_field === 'ocpd_bs_en' &&
+      (input.context_circuit === null || input.context_circuit === undefined) &&
+      !(Array.isArray(input.context_circuits) && input.context_circuits.length > 0)
+    ) {
+      let lineage = null;
+      try {
+        lineage =
+          resolveAskRejectionLineage?.({
+            rejectionRef: typeof input.rejection_ref === 'string' ? input.rejection_ref : null,
+            field: 'ocpd_bs_en',
+            circuit: null,
+            circuits: null,
+            boardId: input.context_board_id ?? null,
+          }) ?? null;
+      } catch {
+        lineage = null;
+      }
+      const askBoard =
+        input.context_board_id != null
+          ? (resolveEffectiveBoardId(session, input.context_board_id) ?? null)
+          : null;
+      if (
+        !lineage?.bulkInput ||
+        lineage.field !== 'ocpd_bs_en' ||
+        (askBoard !== null && (lineage.boardId ?? null) !== askBoard)
+      ) {
+        logAsk({
+          sessionId,
+          turnId,
+          mode,
+          tool_call_id: toolCallId,
+          question: typeof input.question === 'string' ? input.question : '(invalid)',
+          reason: typeof input.reason === 'string' ? input.reason : 'missing_context',
+          context_field: input.context_field,
+          context_circuit: null,
+          answer_outcome: 'validation_error',
+          validation_error: 'ask_requires_target',
+          wait_duration_ms: 0,
+        });
+        return {
+          tool_use_id: toolCallId,
+          content: JSON.stringify({
+            answered: false,
+            reason: 'validation_error',
+            code: 'ask_requires_target',
+            hint: 'An ask for ocpd_bs_en must name where the answer goes: context_circuit, context_circuits, or the rejection_ref of the rejected set_field_for_all_circuits it is about. Ask again with one of them.',
+          }),
+          is_error: true,
+        };
+      }
     }
 
     // Step 1b — Plan 04-26 Layer 2: prompt-leak filter (pre-dispatch).
@@ -1578,6 +1649,153 @@ async function buildResolvedBody({
     // against the field's option list and surfaces invalid values to Sonnet
     // with a structured `match_status` so the prompt's re-ask-once rule
     // can fire instead of looping.
+    // PLAN-CS (feedback-2026-09-17) — `ocpd_bs_en` is free text, so the enum
+    // resolver below would return `no_value_context` for it and the value
+    // resolver would treat the answer as a number (escalating `N/A`, splitting
+    // `BS EN 60947-4-1`). Its own resolver runs FIRST and owns every outcome
+    // for this field: `resolveEnumAnswer` is never reached for it.
+    if (contextField === 'ocpd_bs_en') {
+      // A BULK lineage applies only to an ask that names NO target of its own
+      // and whose echoed rejection is about this same field. An ask naming
+      // circuit 1 that echoes the ref of a bulk rejection covering 1–3 is a
+      // question about circuit 1: honouring the bulk scope there would write
+      // (or refuse) circuits the inspector was never asked about. Any other
+      // stamp is ignored here, and the refusal keys on the ask's own targets.
+      const askNamesTarget =
+        Number.isInteger(contextCircuit) ||
+        (Array.isArray(contextCircuits) && contextCircuits.length > 0);
+      // …and on the SAME board: an ask that names `context_board_id` b2 is not
+      // about a bulk rejection on main. An ask that names no board takes the
+      // rejection's board, which is what a reference-only ask means.
+      const askBoard =
+        contextBoardId != null ? (resolveEffectiveBoardId(session, contextBoardId) ?? null) : null;
+      const bulkStamp =
+        !askNamesTarget &&
+        askRejectionStamp?.bulkInput &&
+        askRejectionStamp.field === 'ocpd_bs_en' &&
+        (askBoard === null || (askRejectionStamp.boardId ?? null) === askBoard)
+          ? askRejectionStamp
+          : null;
+      const ocpdVerdict = resolveOcpdStandardAnswer({
+        userText: outcome.user_text,
+        contextCircuit,
+        contextCircuits,
+        contextBoardId,
+        bulkInput: bulkStamp?.bulkInput ?? null,
+        sourceTurnId: turnId,
+      });
+      if (ocpdVerdict.kind === 'auto_resolve') {
+        const dispatched = [];
+        for (const write of ocpdVerdict.writes) {
+          try {
+            throwIfStage6Cancelled(signal);
+            const result = await autoResolveWrite(write, { sessionId, turnId, toolCallId });
+            const ok = result?.ok !== false;
+            dispatched.push({
+              tool: write.tool,
+              field: write.field,
+              circuit: write.circuit,
+              value: write.value,
+              ok,
+            });
+            if (!ok) {
+              stageAskAutoResolveFailure(stagePartialFailureNotice, {
+                write,
+                result,
+                producer: 'ask_auto_resolve_ocpd_standard',
+              });
+            }
+          } catch (err) {
+            // Same handling as the enum branch below, cancellation included.
+            stageAskAutoResolveFailure(stagePartialFailureNotice, {
+              write,
+              result: null,
+              producer: 'ask_auto_resolve_ocpd_standard_throw',
+            });
+            logger?.warn?.('stage6.ask_user_ocpd_standard_dispatch_failed', {
+              sessionId,
+              turnId,
+              tool_call_id: toolCallId,
+              circuit: write.circuit,
+              error: err?.message || String(err),
+            });
+            dispatched.push({
+              tool: write.tool,
+              field: write.field,
+              circuit: write.circuit,
+              value: write.value,
+              ok: false,
+              error: err?.message || String(err),
+            });
+          }
+        }
+        logger?.info?.('stage6.ask_user_ocpd_standard_resolved', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          circuit: contextCircuit,
+          circuits: contextCircuits ?? null,
+          bulk: askRejectionStamp?.bulkInput ? true : false,
+          write_count: dispatched.length,
+          all_ok: dispatched.every((d) => d.ok),
+        });
+        return {
+          answered: true,
+          untrusted_user_text: outcome.user_text,
+          auto_resolved: true,
+          match_status: 'ocpd_standard_resolved',
+          resolved_writes: dispatched,
+        };
+      }
+      if (ocpdVerdict.kind === 'rejected') {
+        // PLAN-C3's post-ask terminal, extended to this field: the inspector
+        // answered the one ask and the answer is not a readable standard
+        // either. The server speaks the refusal (single- or bulk-keyed from
+        // the ask's lineage); the model emits nothing further for the slot.
+        try {
+          stageEnumRejectionAfterAsk?.({
+            toolCallId,
+            field: contextField,
+            circuit: contextCircuit,
+            circuits: contextCircuits,
+            boardId: contextBoardId,
+            stamp: bulkStamp,
+          });
+        } catch {
+          // swallowed — the tool_result below is the model's contract.
+        }
+        logger?.info?.('stage6.ask_user_ocpd_standard_rejected', {
+          sessionId,
+          turnId,
+          tool_call_id: toolCallId,
+          circuit: contextCircuit,
+          received: ocpdVerdict.received,
+        });
+        return {
+          answered: true,
+          untrusted_user_text: outcome.user_text,
+          auto_resolved: false,
+          match_status: 'ocpd_standard_rejected_after_ask',
+          field: contextField,
+          circuit: contextCircuit,
+          received: ocpdVerdict.received,
+          accepted_forms: OCPD_STANDARD_ACCEPTED_FORMS,
+          suggestions: [...OCPD_STANDARD_TIER1],
+          post_ask_rejection_policy:
+            'Do not ask again and do not narrate this slot — the server has told the inspector. Never write an empty string or a guessed standard; use a clear tool if the value should be removed.',
+        };
+      }
+      // `no_target` — unreachable: registration refuses a zero-target ask for
+      // this field (`ask_requires_target`). Logged, and the bare body lets the
+      // model act on the quoted answer rather than leaving silence.
+      logger?.warn?.('stage6.ask_user_ocpd_standard_no_target', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+      });
+      return { answered: true, untrusted_user_text: outcome.user_text };
+    }
+
     const enumVerdict = resolveEnumAnswer({
       userText: outcome.user_text,
       contextField,

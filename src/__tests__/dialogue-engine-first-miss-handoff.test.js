@@ -403,9 +403,7 @@ describe('acceptance 5 — tombstone matrix', () => {
     expect(session.dialogueScriptState).toBeFalsy();
     // No ask was emitted about the other board's circuit.
     expect(ws.sent.filter((m) => m.type === 'ask_user_started')).toHaveLength(0);
-    expect(
-      rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))
-    ).toBe(true);
+    expect(rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))).toBe(true);
   });
 
   test('ENTRY-HOOK BOARD: on a SELECTED sub-board the stamp and the tombstone lookup agree', () => {
@@ -481,75 +479,70 @@ describe('acceptance 5 — tombstone matrix', () => {
   test.each([
     ['tombstoned reading FIRST', ['main', 'board-b']],
     ['tombstoned reading SECOND', ['board-b', 'main']],
-  ])(
-    'a fenced reading never suppresses evaluation of the others (%s)',
-    (_label, order) => {
-      // The loop must `continue`, never `return`: a `return` on the first
-      // reading would make the whole turn's entry decision depend on READING
-      // ORDER, and the later reading would never be considered at all. Both
-      // orders run for that reason.
-      //
-      // One circuit on two boards is the shape that reaches this — a turn
-      // naming two different circuits is intercepted earlier as a broadcast
-      // (`multi_circuit_broadcast`). Neither reading enters now: one is
-      // tombstoned, the other is on a board the inspector is not standing at.
-      // What is under test is that BOTH were evaluated and both said why.
-      const session = {
-        sessionId: SESSION_ID,
-        stateSnapshot: {
-          circuits: { 3: { rcd_type: 'A' }, 'board-b::3': { rcd_type: 'A' } },
-          boards: [
-            { id: 'main', board_type: 'main' },
-            { id: 'board-b', board_type: 'sub' },
-          ],
-          currentBoardId: 'main',
-        },
-      };
-      const ws = new FakeWS();
+  ])('a fenced reading never suppresses evaluation of the others (%s)', (_label, order) => {
+    // The loop must `continue`, never `return`: a `return` on the first
+    // reading would make the whole turn's entry decision depend on READING
+    // ORDER, and the later reading would never be considered at all. Both
+    // orders run for that reason.
+    //
+    // One circuit on two boards is the shape that reaches this — a turn
+    // naming two different circuits is intercepted earlier as a broadcast
+    // (`multi_circuit_broadcast`). Neither reading enters now: one is
+    // tombstoned, the other is on a board the inspector is not standing at.
+    // What is under test is that BOTH were evaluated and both said why.
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: {
+        circuits: { 3: { rcd_type: 'A' }, 'board-b::3': { rcd_type: 'A' } },
+        boards: [
+          { id: 'main', board_type: 'main' },
+          { id: 'board-b', board_type: 'sub' },
+        ],
+        currentBoardId: 'main',
+      },
+    };
+    const ws = new FakeWS();
 
-      const seed = tryEnterScriptFromWrites({
-        session,
-        ws,
-        schemas: ALL_DIALOGUE_SCHEMAS,
-        readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
-        logger: silentLog,
-        now: 1000,
-        effectiveBoardIdForReading: () => 'main',
-      });
-      expect(seed.entered).toBe(true);
-      const schemaName = session.dialogueScriptState.schemaName;
-      processProtectiveDeviceTurn({
-        ws,
-        session,
-        sessionId: SESSION_ID,
-        transcriptText: 'nothing that parses',
-        logger: silentLog,
-        now: 2000,
-      });
-      expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
-      expect(isHandedOff(session, 'board-b', schemaName, 3)).toBe(false);
+    const seed = tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: [{ field: 'rcd_type', circuit: 3, value: 'A' }],
+      logger: silentLog,
+      now: 1000,
+      effectiveBoardIdForReading: () => 'main',
+    });
+    expect(seed.entered).toBe(true);
+    const schemaName = session.dialogueScriptState.schemaName;
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'nothing that parses',
+      logger: silentLog,
+      now: 2000,
+    });
+    expect(isHandedOff(session, 'main', schemaName, 3)).toBe(true);
+    expect(isHandedOff(session, 'board-b', schemaName, 3)).toBe(false);
 
-      // ONE turn, both boards' writes, in the order under test.
-      const rows = [];
-      const boards = [...order];
-      let call = 0;
-      tryEnterScriptFromWrites({
-        session,
-        ws,
-        schemas: ALL_DIALOGUE_SCHEMAS,
-        readings: order.map(() => ({ field: 'rcd_type', circuit: 3, value: 'A' })),
-        logger: capturingLog(rows),
-        now: 3000,
-        effectiveBoardIdForReading: () => boards[call++] ?? null,
-      });
+    // ONE turn, both boards' writes, in the order under test.
+    const rows = [];
+    const boards = [...order];
+    let call = 0;
+    tryEnterScriptFromWrites({
+      session,
+      ws,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      readings: order.map(() => ({ field: 'rcd_type', circuit: 3, value: 'A' })),
+      logger: capturingLog(rows),
+      now: 3000,
+      effectiveBoardIdForReading: () => boards[call++] ?? null,
+    });
 
-      // Both readings were evaluated, each declining for its OWN reason.
-      expect(rows.some((r) => r.event === 'stage6.script_reentered_after_handoff')).toBe(true);
-      expect(
-        rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))
-      ).toBe(true);
-    }
-  );
+    // Both readings were evaluated, each declining for its OWN reason.
+    expect(rows.some((r) => r.event === 'stage6.script_reentered_after_handoff')).toBe(true);
+    expect(rows.some((r) => r.event.endsWith('_entry_from_write_skipped_other_board'))).toBe(true);
+  });
 
   test('a fenced reading with no eligible sibling still reports handed_off', () => {
     // The complement: skipping the reading must not turn a fenced turn into a
@@ -1138,12 +1131,8 @@ describe('an episode on a SELECTED sub-board writes to that board, not main', ()
     expect(entry.entered).toBe(true);
     expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
 
-    // One utterance exercising the direct write AND a derived write, which are
-    // two different call sites and were both bare. The hook's own scoring sends
-    // every `ocpd_*` field into `rcbo`, whose `ocpd_bs_en` slot MIRRORS into
-    // `rcd_bs_en` — so this covers `applyDerivations`' mirror branch. Its
-    // `sets` branch takes the identical `boardId` argument six lines away and
-    // is covered on the main board by the `derived_replaced` suite below.
+    // The DIRECT write. The hook's own scoring sends every `ocpd_*` field into
+    // `rcbo`, whose first asked slot is `ocpd_bs_en`.
     processProtectiveDeviceTurn({
       ws,
       session,
@@ -1156,12 +1145,48 @@ describe('an episode on a SELECTED sub-board writes to that board, not main', ()
     const boardB = session.stateSnapshot.circuits['board-b::3'];
     const main = session.stateSnapshot.circuits[3];
     expect(boardB.ocpd_bs_en).toBe('BS 3036');
-    // The derived target followed its producer onto board B.
-    expect(boardB.rcd_bs_en).toBe('BS 3036');
+    // PLAN-CS (CS-64) — RCBO no longer MIRRORS the OCPD standard into
+    // `rcd_bs_en`, on any board.
+    expect(boardB.rcd_bs_en).toBeUndefined();
     // Main's circuit 3 is a DIFFERENT circuit on a different board. Nothing the
     // board-B walk did may appear in it.
     expect(main.ocpd_bs_en).toBeUndefined();
     expect(main.rcd_bs_en).toBeUndefined();
+  });
+
+  test('a DERIVED write follows its producer onto board B (the `sets` branch)', () => {
+    // The derived half of the test above used to ride RCBO's BS mirror, which
+    // PLAN-CS retired. `applyDerivations`' `sets` branch takes the identical
+    // `boardId` argument, and the OCPD schema still derives `ocpd_type = Rew`
+    // from `BS 3036`, so the same property is pinned through it.
+    const session = boardBSession();
+    const ws = new FakeWS();
+    const entered = enterScriptByName({
+      session,
+      sessionId: SESSION_ID,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      schemaName: 'ocpd',
+      circuit_ref: 3,
+      ws,
+      logger: silentLog,
+      now: 1000,
+    });
+    expect(entered.ok).toBe(true);
+    expect(session.dialogueScriptState.effectiveBoardId).toBe('board-b');
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'BS 3036',
+      logger: silentLog,
+      now: 2000,
+    });
+    const boardB = session.stateSnapshot.circuits['board-b::3'];
+    const main = session.stateSnapshot.circuits[3];
+    expect(boardB.ocpd_bs_en).toBe('BS 3036');
+    expect(boardB.ocpd_type).toBe('Rew');
+    expect(main.ocpd_bs_en).toBeUndefined();
+    expect(main.ocpd_type).toBeUndefined();
   });
 
   test('the same episode on the MAIN board is unchanged — bare numeric key, no composite', () => {
@@ -1414,34 +1439,45 @@ describe('an episode ends when the board moves out from under it', () => {
 });
 
 describe('a derivation reads its baseline from the snapshot when the schema does not seed it', () => {
-  // The gap the fix round found: an RCD episode seeds only RCD slots, so a
-  // `61009` mirror into `ocpd_bs_en` sees `state.values.ocpd_bs_en` undefined
-  // while the circuit's bucket carries a value from the CCU photo. Recording no
-  // baseline there lets a later device-absence handoff clear it.
-  test('a mirror over a snapshot-only value records the baseline it replaced', () => {
+  // The gap the fix round found: an episode seeds only its own schema's slots,
+  // so a derivation into a field the schema does not seed sees
+  // `state.values[field]` undefined while the circuit's bucket carries a value
+  // from the CCU photo. Recording no baseline there lets a later
+  // device-absence handoff clear it.
+  //
+  // This case used to ride the RCD → OCPD `61009` MIRROR, which PLAN-CS
+  // retired. The same `priorValueOf` fallback serves the `sets` branch, so it
+  // is pinned through OCPD's `BS 3036` → `ocpd_type = Rew` derivation. The
+  // target is written to the bucket AFTER entry, so it is on the snapshot but
+  // not in `state.values` — the exact gap the fallback exists for.
+  test('a derived write over a snapshot-only value records the baseline it replaced', () => {
     const rows = [];
     const ws = new FakeWS();
-    const session = buildSession({ 6: { ocpd_bs_en: 'BS EN 60898' } });
+    const session = buildSession({ 6: {} });
     enterScriptByName({
       session,
       sessionId: SESSION_ID,
       schemas: ALL_DIALOGUE_SCHEMAS,
-      schemaName: 'rcd',
+      schemaName: 'ocpd',
       circuit_ref: 6,
       ws,
       logger: capturingLog(rows),
       now: 1000,
     });
+    // Snapshot-only: present on the bucket, absent from `state.values`.
+    session.stateSnapshot.circuits[6].ocpd_type = 'B';
+    expect(session.dialogueScriptState.values.ocpd_type).toBeUndefined();
     processProtectiveDeviceTurn({
       ws,
       session,
       sessionId: SESSION_ID,
-      transcriptText: 'BS EN 61009',
+      transcriptText: 'BS 3036',
       logger: capturingLog(rows),
       now: 2000,
     });
+    expect(session.stateSnapshot.circuits[6].ocpd_type).toBe('Rew');
     const baselines = session.dialogueScriptState?.derivedBaselines ?? {};
-    expect(baselines.ocpd_bs_en).toBe('BS EN 60898');
+    expect(baselines.ocpd_type).toBe('B');
   });
 });
 

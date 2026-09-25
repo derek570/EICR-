@@ -5,9 +5,9 @@
  *   - OCPD walk-through (BS / curve / amps / kA)
  *   - RCD walk-through (BS / type / mA)
  *   - RCBO direct entry walk-through
- *   - OCPD → RCBO pivot via BS EN 61009 (mirror writes both bs_en
- *     fields, RCBO's nextMissingSlot starts at the curve)
- *   - RCD → RCBO pivot symmetric to above
+ *   - OCPD → RCBO pivot via BS EN 61009 (no mirror since PLAN-CS; the
+ *     curve still follows the MCB standard, per Decision 39)
+ *   - RCD → RCBO pivot (the opposite next ask: no BS mirror since PLAN-CS)
  *   - BS-code derivations: BS 3036 → ocpd_type=Rew (skip curve question)
  *   - Per-slot skip
  *   - Topic switch
@@ -498,7 +498,7 @@ describe('RCD walk-through', () => {
 });
 
 describe('RCBO pivot', () => {
-  test('OCPD → RCBO pivot via BS EN 61009 mirrors both bs_en fields', () => {
+  test('OCPD → RCBO pivot via BS EN 61009 writes the OCPD standard only and asks the curve next (PLAN-CS h, Decision 39)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     processProtectiveDeviceTurn({
@@ -517,16 +517,19 @@ describe('RCBO pivot', () => {
       transcriptText: 'BS EN 61009',
       now: 2000,
     });
-    // After pivot, schemaName flipped to RCBO, both bs_en fields filled.
+    // After pivot, schemaName flipped to RCBO. PLAN-CS (CS-64): `ocpd.js:47`'s
+    // mirror is gone, so only the OCPD standard is written…
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
     expect(session.stateSnapshot.circuits[5].ocpd_bs_en).toBe('BS EN 61009');
-    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 61009');
-    // Next ask is the curve (next missing slot in RCBO's slot list).
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBeUndefined();
+    // …and the curve follows the MCB standard, as it did before the RCD's BS
+    // number became an asked slot (WAVE-CONTEXT § Decision 39). The RCD's
+    // number is asked at the start of the RCD half.
     expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
     expect(ws.sent.at(-1).tool_call_id).toMatch(/^srv-rcbo-/);
   });
 
-  test('RCD → RCBO pivot symmetric: mirror to ocpd_bs_en', () => {
+  test('RCD → RCBO pivot writes the RCD standard only and asks the OCPD BS next (PLAN-CS h2)', () => {
     const ws = new FakeWS();
     const session = buildSession({ 5: {} });
     processProtectiveDeviceTurn({
@@ -547,8 +550,15 @@ describe('RCBO pivot', () => {
     });
     expect(session.dialogueScriptState.schemaName).toBe('rcbo');
     expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBe('BS EN 61009');
-    expect(session.stateSnapshot.circuits[5].ocpd_bs_en).toBe('BS EN 61009');
-    expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
+    // PLAN-CS (CS-114) — the OPPOSITE direction from the OCPD pivot: with
+    // `rcd.js:104`'s mirror gone the OCPD standard is blank, and RCBO declares
+    // `ocpd_bs_en` first, so it is the next ask — not `rcd_bs_en`, not the curve.
+    expect(session.stateSnapshot.circuits[5].ocpd_bs_en).toBeUndefined();
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_bs_en');
+    // The pivot turn wrote the RCD's field only: no `ocpd_bs_en` operation of
+    // any disposition.
+    const ops = session.dialogueScriptState.operations ?? [];
+    expect(ops.filter((op) => op.field === 'ocpd_bs_en')).toEqual([]);
   });
 
   test('Direct RCBO entry asks for BS first', () => {
@@ -602,6 +612,16 @@ describe('RCBO pivot', () => {
       sessionId: SESSION_ID,
       transcriptText: '6',
       now: 5000,
+    });
+    // PLAN-CS (CS-64) — no mirror: the RCD's BS number is its own answer,
+    // asked at the start of the RCD half (Decision 39).
+    expect(ws.sent.at(-1).context_field).toBe('rcd_bs_en');
+    processProtectiveDeviceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: '61009',
+      now: 5500,
     });
     processProtectiveDeviceTurn({
       ws,
@@ -819,9 +839,10 @@ describe('Flux artefact tolerance — session 9FC3A6F1 (2026-04-30)', () => {
     expect(out.handled).toBe(true);
     expect(session.stateSnapshot.circuits[5]).toMatchObject({
       ocpd_bs_en: 'BS EN 61009',
-      rcd_bs_en: 'BS EN 61009',
     });
-    // Pivoted to RCBO — ocpd_type still pending so the next ask is the curve.
+    expect(session.stateSnapshot.circuits[5].rcd_bs_en).toBeUndefined();
+    // Pivoted to RCBO — PLAN-CS (CS-64): no mirror, and the curve follows the
+    // MCB standard (Decision 39); the RCD's BS number comes later.
     expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
   });
 });
@@ -925,8 +946,11 @@ describe('OCPD breaking capacity is RECORDED, not gated (Decision 9, feedback-20
     // longer arise from a live ingress.
     for (const schema of ALL_DIALOGUE_SCHEMAS) {
       for (const slot of schema.slots) {
-        expect({ schema: schema.name, field: slot.field, allowedValues: slot.allowedValues })
-          .toEqual({ schema: schema.name, field: slot.field, allowedValues: undefined });
+        expect({
+          schema: schema.name,
+          field: slot.field,
+          allowedValues: slot.allowedValues,
+        }).toEqual({ schema: schema.name, field: slot.field, allowedValues: undefined });
       }
     }
   });
@@ -960,8 +984,10 @@ describe('OCPD breaking capacity is RECORDED, not gated (Decision 9, feedback-20
       ['1.5', '1.5'],
     ]) {
       const { session, rows } = answerBreakingCapacity(spoken);
-      expect({ spoken, stored: session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka })
-        .toEqual({ spoken, stored });
+      expect({
+        spoken,
+        stored: session.stateSnapshot.circuits[5].ocpd_breaking_capacity_ka,
+      }).toEqual({ spoken, stored });
       expect(rows.filter((r) => /_slot_value_out_of_set$/.test(r.event))).toEqual([]);
     }
   });

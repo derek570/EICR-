@@ -85,7 +85,9 @@ import {
   validateBoardScope,
   blankWriteAppliesToReadingField,
   ENUM_REJECTION_CODES,
+  ocpdStandardShapeRejection,
 } from './stage6-dispatch-validation.js';
+import { ocpdStandardShapeAccepts } from './dialogue-engine/parsers/bs-code.js';
 // PLAN-C3 (Decision 5) — the blank predicate itself lives in a leaf with zero
 // imports so the dialogue engine can share ONE definition with the
 // dispatchers (see blank-write-policy.js for why that matters).
@@ -145,10 +147,7 @@ import {
 import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // PLAN-A (feedback-2026-09-17) — a rename MIGRATES the handoff tombstone; it is
 // not a fresh trigger. Zero-import leaf, so no cycle.
-import {
-  migrateHandoffsForRename,
-  clearHandoffsForCircuit,
-} from './dialogue-handoff-tombstone.js';
+import { migrateHandoffsForRename, clearHandoffsForCircuit } from './dialogue-handoff-tombstone.js';
 import {
   classifyStructuralReading,
   STRUCTURAL_READING_FIELDS,
@@ -325,7 +324,9 @@ function stageCircuitOpRejectionNotice(call, ctx, input, err, op) {
   const boardId = resolveEffectiveBoardId(session, input.board_id) ?? null;
   const keyRef = op === 'rename' ? input.from_ref : input.circuit_ref;
   const existing =
-    op === 'rename' ? getCircuitBucket(session.stateSnapshot, input.from_ref, input.board_id) : null;
+    op === 'rename'
+      ? getCircuitBucket(session.stateSnapshot, input.from_ref, input.board_id)
+      : null;
   const staged = stageCircuitOpBlockedNotice(perTurnWrites, session, {
     op,
     reasonField: err.field === 'phase' ? 'phase' : 'designation',
@@ -517,8 +518,8 @@ export async function dispatchRecordReading(call, ctx) {
   // pre-Phase-B clients.
   const hasLowConfReadbackV1 = ctx.hasLowConfReadbackV1 === true;
 
-  // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en /
-  // rcd_bs_en, via parseBsCode + Levenshtein-1 fallback) AND the Y/N
+  // 2026-05-24 value canonicalisation — routes both BS-EN (ocpd_bs_en via
+  // parseOcpdStandard, rcd_bs_en via parseRcdBsCode — PLAN-CS) AND the Y/N
   // boolean-enum field set (polarity_confirmed, supply_polarity_confirmed,
   // rcd_button_confirmed, afdd_button_confirmed) through a single helper.
   // Same helper used by the Loaded Barrel speculator's streamed-tool
@@ -3574,6 +3575,15 @@ function validateSetFieldForAllCircuits(input) {
         valid_options: fieldDef.options,
       };
     }
+  }
+  // PLAN-CS — `ocpd_bs_en` is free text, so the select check above no longer
+  // covers it. The same shape rule as `record_reading`, BEFORE iteration: an
+  // unreadable standard mutates no circuit, and the rejection stages
+  // PLAN-C3's bulk notice (the code is in ENUM_REJECTION_CODES) with the
+  // resolved scope. The readable value is canonicalised by the coercion pass
+  // below, exactly as on the direct path.
+  if (input.field === 'ocpd_bs_en' && !ocpdStandardShapeAccepts(input.value)) {
+    return ocpdStandardShapeRejection();
   }
   if (
     typeof input.confidence !== 'number' ||

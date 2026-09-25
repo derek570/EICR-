@@ -1,202 +1,271 @@
 /**
- * BS/EN standard code parser. Recognises spoken forms an inspector
- * uses for the BS number printed on the device — both with and
- * without the "BS EN" prefix, and tolerating a few common Deepgram
- * normalisations.
+ * BS/EN device-standard parsers — PLAN-CS (feedback-2026-09-17 wave).
  *
- * Canonical output forms match `config/field_schema.json`
- * `ocpd_bs_en` / `rcd_bs_en` options AND iOS `Constants.swift`
- * picker options after the 2026-05-06 BS-EN alignment sprint
- * (Option B — prefixed canonical, no "-1" sub-clause).
+ * WHY THIS CHANGED
+ * ----------------
+ * `ocpd_bs_en` was a closed enum of eight options, and this module's old
+ * `parseBsCode` returned only those eight. Inspectors read whatever is printed
+ * on the device, and on September 17 (session CC9E0915) the printed standard
+ * was `BS 3871`: the model's write was rejected twice and it fell back to `""`.
+ * Decision 4 makes the field free text with suggestions. The clients were made
+ * free-text-tolerant first (PLAN-CC); this is the backend half.
  *
- * Recognised codes:
- *   60898            → "BS EN 60898"     (MCB)
- *   61008            → "BS EN 61008"     (RCD)
- *   61009            → "BS EN 61009"     (RCBO — pivots schema)
- *   60947-2 / 60947 2→ "BS EN 60947-2"   (MCCB)
- *   60947-3 / 60947 3→ "BS EN 60947-3"   (switch-disconnector)
- *   60269-2 / 60269 2→ "BS EN 60269-2"   (HRC fuse — harmonised)
- *   88-2 / 88 2      → "BS EN 60269-2"   (legacy UK ref. for HRC fuse)
- *   88-3 / 88 3      → "BS EN 60269-2"
- *   62423            → "BS EN 62423"     (Type B RCD)
- *   3036             → "BS 3036"         (rewireable fuse — non-EN)
- *   1361             → "BS 1361"         (cartridge fuse — non-EN)
+ * TWO PARSERS, EACH BOUND TO ITS OWN SLOTS
+ * ----------------------------------------
+ * - `parseOcpdStandard` — every `ocpd_bs_en` boundary. ANY grammar-valid
+ *   standard is accepted and canonicalised; anything else is a miss (`null`).
+ * - `parseRcdBsCode` — every `rcd_bs_en` boundary. `rcd_bs_en` stays a closed
+ *   `select`: the value is canonicalised with the same algorithm and must then
+ *   be one of the schema's options, the `""` sentinel excluded (accepting it
+ *   would be a silent clear — PLAN-C3).
  *
- * Out of scope: BS EN 62606 (AFDD) and BS 4293 (legacy non-EN RCD)
- * — neither is in the schema option list, and inspectors who
- * dictate them will be re-asked.
+ * Neither takes a field argument: `helpers/extraction.js` calls
+ * `slot.parser(captured)` with no context, so each parser is bound to its slot
+ * in the schema files instead.
  *
- * Order matters: longer / more specific codes are tested first so
- * shared digit prefixes (e.g. 60947-2 vs 60947-3) match the right
- * variant. iOS NumberNormaliser already converts spoken numerals
- * to digits before transcripts reach the backend, so the parser
- * only deals with digit forms.
+ * NO FUZZY MATCHING (HARD RULE)
+ * -----------------------------
+ * The Levenshtein-1 fallback that used to live here is gone. It turned a
+ * dropped digit into a DIFFERENT real standard with nobody told. Under
+ * Decision 7 a value the deterministic path cannot read is a miss, and a miss
+ * hands the turn to the model. Every step below is a fixed rewrite of a
+ * documented Flux form or a closed alias snap.
+ *
+ * ONE ALGORITHM, THREE IMPLEMENTATIONS
+ * ------------------------------------
+ * `parseOcpdStandard` is a line-for-line port of PLAN-CC's
+ * `canonicaliseOcpdStandard` (`packages/shared-utils/src/ocpd-standard.ts`;
+ * its Swift twin is `CertMateUnified/Sources/Utilities/OcpdStandard.swift`).
+ * The backend cannot import the TypeScript: `@certmate/shared-utils` publishes
+ * raw `.ts` and the backend runs plain Node ESM (see `impedance-clamp.js` for
+ * the same constraint). `config/ocpd-bs-suggestions.json` is the NORMATIVE
+ * contract: `dialogue-engine-bs-code-parser.test.js` drives every accepted and
+ * rejected vector in it through this function and compares the returned bytes,
+ * exactly as the web and iOS suites do. If this code and the manifest ever
+ * disagree, the manifest wins and this code is the defect.
  */
 
-const PATTERNS = [
-  // 5-digit codes prefixed by "BS EN" or bare. The trailing "-N"
-  // suffix on 60947-2 etc. has to be respected; the regex captures
-  // it explicitly so 60947 alone doesn't match.
-  { re: /\b60947[-\s]*([23])\b/i, build: (m) => `BS EN 60947-${m[1]}` },
-  { re: /\b60269[-\s]*2\b/i, canonical: 'BS EN 60269-2' },
-  { re: /\b60898\b/, canonical: 'BS EN 60898' },
-  { re: /\b61008\b/, canonical: 'BS EN 61008' },
-  { re: /\b61009\b/, canonical: 'BS EN 61009' },
-  { re: /\b62423\b/, canonical: 'BS EN 62423' },
-  // BS 88-2 / 88-3 — historical UK designation for HRC fuses.
-  // Both map to the harmonised European canonical "BS EN 60269-2"
-  // so the iOS picker, schema, and migration all agree.
-  { re: /\b88[-\s]*(?:dash[-\s]*)?([23])\b/i, canonical: 'BS EN 60269-2' },
-  { re: /\b3036\b/, canonical: 'BS 3036' },
-  { re: /\b1361\b/, canonical: 'BS 1361' },
-];
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const manifest = require('../../../../config/ocpd-bs-suggestions.json');
+const fieldSchema = require('../../../../config/field_schema.json');
 
 /**
- * Pre-normalises common Flux artefacts that survive the iOS
- * NumberNormaliser layer when input doesn't go through it (web
- * frontend, tests, future clients). Defensive — iOS NumberNormaliser
- * already collapses these for the iOS path.
- *
- *   1. Letter-splitting: "a b s 60898" / "a. b. s. 60898" → "BS 60898"
- *      and "a b s e n 61009" → "BS EN 61009". Production session
- *      9FC3A6F1 (2026-04-30) — speakers say "BS" but Flux sometimes
- *      emits the letters separately.
- *   2. Zero-word inside digit run: "6 zero 8 9 8" → "60898". Same
- *      session — speakers say "Six zero eight nine eight" naturally;
- *      the standalone-digit-word converter leaves "zero" intact (idiom
- *      guard), and the digit-collapse pass needs zero-word tolerance
- *      to cross it.
- *
- * Tightly scoped — only fires on well-formed digit runs and the
- * three-letter "a b s" pattern, so doesn't corrupt prose containing
- * "abs" / "absolute" / "zero" alone.
+ * The curated suggestion tiers, read from the shared manifest — never a second
+ * copy. Tier 1 is rendered into the agentic prompt's OCPD block; both tiers are
+ * asserted identical to `field_schema.json`'s `suggestions` /
+ * `suggestions_extended` by `ocpd-bs-suggestions.test.js`. They are OFFERED,
+ * never enforced: the field accepts any grammar-valid standard.
  */
-function normaliseBsInput(text) {
-  // 1. Letter-splitting → "BS" / "BS EN"
-  text = text.replace(/\ba\.?\s+b\.?\s+s\.?(?:\s+e\.?\s+n\.?)?(?![a-z])/gi, (m) =>
-    m.toLowerCase().includes('e') ? 'BS EN' : 'BS'
-  );
-  // 2. Zero-word inside digit run → "0", then collapse spaces.
-  // Multi-digit tokens are admitted on both ends so partial runs from
-  // any upstream collapse re-fold here.
-  text = text.replace(/\b\d+(?:\s+(?:\d+|zero|oh|nought|naught))+\b/gi, (m) =>
+export const OCPD_STANDARD_TIER1 = Object.freeze([...manifest.tier1]);
+export const OCPD_STANDARD_TIER2 = Object.freeze([...manifest.tier2]);
+
+/**
+ * Step 9 alias table, keyed by the ASSEMBLED step-8 output. Verbatim from the
+ * TypeScript twin. Only `-1` on 60898 / 61009 / 3871 is a version suffix; every
+ * other `-N` is a standard PART and stays distinct. `60909` is Deepgram's
+ * misheard-digit rendering of `61009` and is not a device standard of its own.
+ */
+const OCPD_STANDARD_ALIASES = Object.freeze({
+  'BS EN 60898-1': 'BS EN 60898',
+  'BS EN 61009-1': 'BS EN 61009',
+  'BS EN 60909': 'BS EN 61009',
+  'BS 3871-1': 'BS 3871',
+});
+
+/** Spoken "not applicable" forms; each canonicalises to `N/A` (step 10). */
+const NA_PHRASES = new Set(['n/a', 'na', 'n a', 'n.a', 'n.a.', 'not applicable']);
+
+/**
+ * Every whitespace character any twin will see, written out. NOT `\s`:
+ * JavaScript's `\s` and ICU's (Swift's `NSRegularExpression`) are different
+ * sets, and a non-breaking space pasted from a PDF would then trim on one
+ * platform and miss on another.
+ */
+const WHITESPACE_CLASS =
+  '\t\n\u000B\f\r \u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF';
+const ANY_WHITESPACE = new RegExp(`[${WHITESPACE_CLASS}]`, 'g');
+
+/** Edge punctuation and quotes only; internal `/`, `-` and `+` survive. */
+const EDGE_PUNCTUATION = /^[ "'“”‘’.,!?;:]+|[ "'“”‘’.,!?;:]+$/g;
+
+/**
+ * Step 7 whole-value capture grammar. Anchored, and `[0-9]` rather than `\d`
+ * so fullwidth digits miss on every platform (ICU's `\d` would accept them).
+ */
+const CAPTURE_GRAMMAR = /^(?:bs)? ?(en)? ?([0-9]{2,5})(?:-([0-9]{1,2}))?(?:-([0-9]))?$/;
+
+/**
+ * Canonicalise a dictated, typed or model-written OCPD standard.
+ *
+ * Returns the canonical string, or `null` for a MISS. The input must be the
+ * ISOLATED value — a slot answer, a named-extraction token or a tool argument —
+ * never a whole annotated transcript: the grammar is anchored.
+ *
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+export function parseOcpdStandard(raw) {
+  let source;
+  if (typeof raw === 'string') source = raw;
+  else if (typeof raw === 'number' && Number.isFinite(raw)) source = String(raw);
+  else return null;
+
+  // Step 0 — every whitespace character becomes a plain space.
+  const spaced = source.replace(ANY_WHITESPACE, ' ');
+
+  // Step 10 — `N/A` short-circuits before step 1.
+  const trimmed = spaced.replace(EDGE_PUNCTUATION, '');
+  if (trimmed === '') return null;
+  if (NA_PHRASES.has(trimmed.toLowerCase())) return 'N/A';
+
+  // Step 1 — lower-case for MATCHING only; output is assembled from captures.
+  let v = trimmed.toLowerCase();
+
+  // Step 2 — letter-split standard words (`a b s` drops Flux's leading `a`).
+  v = v.replace(/\ba\.? +b\.? *s\.?(?![a-z])/g, 'bs');
+  v = v.replace(/\bb\.? +s\.?(?![a-z])/g, 'bs');
+  v = v.replace(/\be\.? +n\.?(?![a-z])/g, 'en');
+
+  // Step 3 — spoken `dash` / `hyphen` between digit groups → `-`.
+  let previous;
+  do {
+    previous = v;
+    v = v.replace(/([0-9]) *(?:dash|hyphen) *([0-9])/g, '$1-$2');
+  } while (v !== previous);
+
+  // Step 4 — zero-words inside a digit run → digits (`6 zero 8 9 8` → `60898`).
+  v = v.replace(/\b[0-9]+(?: +(?:[0-9]+|zero|oh|nought|naught))+\b/g, (m) =>
     m
       .split(/\s+/)
-      .map((tok) => {
-        const lower = tok.toLowerCase();
-        if (lower === 'zero' || lower === 'oh' || lower === 'nought' || lower === 'naught') {
-          return '0';
-        }
-        return tok;
-      })
+      .map((tok) =>
+        tok === 'zero' || tok === 'oh' || tok === 'nought' || tok === 'naught' ? '0' : tok
+      )
       .join('')
   );
-  return text;
-}
 
-// Digit-form lookup for fuzzy fallback — derived from PATTERNS above.
-// Each entry maps a canonical BS-code string to the digit run an
-// inspector would actually dictate (with internal hyphen preserved
-// because "60947-2" and "60947-3" are distinct standards). Keep this
-// list in sync with PATTERNS.
-//
-// Post 2026-05-06 BS-EN alignment sprint: canonical strings match
-// `config/field_schema.json` (`ocpd_bs_en` / `rcd_bs_en` options)
-// and iOS `Constants.swift` picker options. Single source of truth.
-// Legacy "88-2" / "88-3" digit forms map to the harmonised
-// "BS EN 60269-2" canonical (the same target as the 60269 digit
-// form), matching the migration script and the iOS picker.
-const FUZZY_TARGETS = [
-  { digits: '60947-2', canonical: 'BS EN 60947-2' },
-  { digits: '60947-3', canonical: 'BS EN 60947-3' },
-  { digits: '60269-2', canonical: 'BS EN 60269-2' },
-  { digits: '60898', canonical: 'BS EN 60898' },
-  { digits: '61008', canonical: 'BS EN 61008' },
-  { digits: '61009', canonical: 'BS EN 61009' },
-  { digits: '62423', canonical: 'BS EN 62423' },
-  { digits: '88-2', canonical: 'BS EN 60269-2' },
-  { digits: '88-3', canonical: 'BS EN 60269-2' },
-  { digits: '3036', canonical: 'BS 3036' },
-  { digits: '1361', canonical: 'BS 1361' },
-];
+  // Step 5 — collapse whitespace runs to one space.
+  v = v.replace(/ +/g, ' ').trim();
 
-/**
- * Levenshtein distance — substitution, insertion, deletion all cost 1.
- * Standard O(m*n) DP with rolling two-row memory. Used by the fuzzy
- * fallback to recover from Deepgram digit drift on BS codes.
- *
- * Production failure that motivated this: session C4467E35 (2026-05-06)
- * inspector said "BS 6898" three times — Deepgram dropped the leading
- * "0" so the strict `\b60898\b` pattern never matched and the engine
- * looped re-asking forever. With Lev-1 fallback "6898" → "60898"
- * (insertion distance 1) → "BS EN 60898".
- */
-function levenshtein(a, b) {
-  if (a === b) return 0;
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  let prev = new Array(n + 1);
-  let curr = new Array(n + 1);
-  for (let j = 0; j <= n; j += 1) prev[j] = j;
-  for (let i = 1; i <= m; i += 1) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j += 1) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
-    }
-    [prev, curr] = [curr, prev];
-  }
-  return prev[n];
-}
+  // Step 6 — remove spaces around hyphens (`12345 - 12 - 3` → `12345-12-3`).
+  v = v.replace(/ *- */g, '-');
 
-function digitsOnly(s) {
-  return String(s ?? '').replace(/\D/g, '');
-}
-
-/**
- * Fuzzy fallback for BS-code recognition. Extracts the longest digit
- * run from the (already letter-split-normalised) text and compares to
- * every canonical's digit form via Levenshtein-1. Returns the
- * canonical string only if EXACTLY ONE target is at distance ≤ 1 —
- * ambiguity (e.g. "6100" → 61008/61009 tie) falls through so the
- * engine re-asks rather than guessing.
- *
- * Conservative on length: only attempts a match when the candidate
- * has 4-6 digits, ruling out fragments like "6" or single-digit
- * answers that aren't BS codes anyway.
- */
-function fuzzyMatchBsCode(text) {
-  const m = text.match(/\d[\d-]*\d|\d+/);
+  // Step 7 — capture grammar.
+  const m = CAPTURE_GRAMMAR.exec(v);
   if (!m) return null;
-  const candidate = digitsOnly(m[0]);
-  if (candidate.length < 4 || candidate.length > 6) return null;
-  const matches = FUZZY_TARGETS.filter((t) => levenshtein(candidate, digitsOnly(t.digits)) <= 1);
-  if (matches.length === 1) return matches[0].canonical;
-  return null;
-}
+  const hasEn = m[1] != null;
+  const digits = m[2];
+  const part1 = m[3];
+  const part2 = m[4];
 
-export function parseBsCode(text) {
-  if (typeof text !== 'string' || !text) return null;
-  const normalised = normaliseBsInput(text);
-  for (const p of PATTERNS) {
-    const m = normalised.match(p.re);
-    if (m) {
-      return p.build ? p.build(m) : p.canonical;
-    }
-  }
-  // Fuzzy fallback — single-best Lev-1 match against the canonical
-  // digit set. Catches Deepgram digit-drift that the strict patterns
-  // above miss (single insertion, deletion, or substitution).
-  return fuzzyMatchBsCode(normalised);
+  // Step 8a — a two-digit capture with no `-N` suffix is a MISS whatever the
+  // prefix (`88`, `bs 88`, `bs en 88`). `88` alone cannot say which of
+  // BS 88-1 / 88-2 / 88-3 / 88-6 is printed on the device, and those are
+  // distinct standards the certificate records as read. The ground is record
+  // accuracy, never a max-Zs computation: the max-Zs lookup treats the BS 88
+  // parts as one fuse family either way.
+  if (digits.length === 2 && part1 == null) return null;
+
+  // Step 8 — assemble from captures only. A bare number takes `BS EN ` when it
+  // is five digits starting `6` (IEC-derived) and `BS ` otherwise.
+  const en = hasEn || (digits.length === 5 && digits.startsWith('6'));
+  let assembled = `BS${en ? ' EN' : ''} ${digits}`;
+  if (part1 != null) assembled += `-${part1}`;
+  if (part2 != null) assembled += `-${part2}`;
+
+  // Step 9 — alias snap on the ASSEMBLED value.
+  return OCPD_STANDARD_ALIASES[assembled] ?? assembled;
 }
 
 /**
- * Numeric suffix only — used by the engine's pivot mechanism to
- * decide whether a fresh `ocpd_bs_en` value indicates an RCBO
- * (61009) or a legacy fuse (3036/1361). Returns the bare digit
- * string from the canonical form.
+ * The ONE shape predicate for `ocpd_bs_en` outside the dialogue engine — the
+ * dispatcher's `ocpd_standard_shape` gate, the bulk validator, the speculator's
+ * pre-synth gate and the parser-backed validation descriptor all call this, so
+ * none of them can drift from the others.
+ *
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function ocpdStandardShapeAccepts(value) {
+  return parseOcpdStandard(value) !== null;
+}
+
+/** What an `ocpd_standard_shape` rejection tells the model it may write. */
+export const OCPD_STANDARD_ACCEPTED_FORMS =
+  'a BS or BS EN standard number as printed on the device (for example BS EN 60898, BS 3871, BS 88-2, BS EN 60947-4-1), or N/A';
+
+/**
+ * The named extractor for the two BS slots that keep one — `ocpd.js`'s
+ * `ocpd_bs_en` and `rcd.js`'s `rcd_bs_en`. The RCBO schema declares NONE
+ * (PLAN-CS, CS-100): one generic pattern on both RCBO BS slots matched the
+ * same stretch of speech for both, so an answer to the RCD question also
+ * overwrote the OCPD standard.
+ *
+ * Group 1 is the WHOLE standard token — the `BS` / `BS EN` prefix (Flux's
+ * letter-split `a b s` / `b s e n` forms included) plus up to five digits and
+ * the full two-suffix grammar — so the anchored parser sees exactly what was
+ * said. The right boundary stops a longer number, a dangling hyphen, a trailing
+ * letter (`BS EN 60898A`), a slash continuation (`BS EN 60898/1`) or a
+ * digit-bearing dot or comma (`60947-4-1.2`) being cut into a shorter,
+ * different standard: the token is consumed whole or not at all. Sentence
+ * punctuation after it (`BS 3036.` / `BS EN 60898, 32 amps`) still matches. Not global: `extractNamedFieldValues`
+ * reads capture groups through `String.prototype.match`, which returns none
+ * for a `/g` regex.
+ */
+export const BS_STANDARD_NAMED_EXTRACTOR =
+  /\b((?:a\.?\s+)?b\.?\s*s\.?(?:\s+e\.?\s+n\.?|\s*EN)?\s*\d{2,5}(?:\s*-\s*\d{1,2})?(?:\s*-\s*\d)?)(?![A-Za-z0-9\-/]|[.,]\d)/i;
+
+/** One digit, or one spoken digit word, as a regex source fragment. */
+const DIGIT_TOKEN = String.raw`(?:\d|\b(?:zero|oh|nought|one|two|three|four|five|six|seven|eight|nine)\b)`;
+
+/**
+ * DETECTION ONLY — does the utterance mention a BS standard at all? Much
+ * broader than the extractor above: `BS` (or Flux's letter-split `b s`)
+ * followed, within the same sentence and 40 characters, by a digit or a
+ * spoken digit word — so "the RCD BS code is 61009", "the BS code for the RCD
+ * is 61009", "BS 6 1 zero zero 9" and "BS 6, 1, 0, 0, 9" all count.
+ * Deliberately permissive: a missed detection is a silent drop, which Decision
+ * 7 forbids; an extra one costs one model turn, which Decision 7 accepts
+ * ("Cost accepted. One extra model turn…"). The engine blanks known circuit
+ * designations before testing, so a circuit NAMED "BS 3" is not a standard
+ * (EP cycles 3–4; an interim two-adjacent-digit rule traded recall for
+ * precision and dropped "BS 6, 1, 0, 0, 9", so it was withdrawn).
+ */
+export const BS_STANDARD_MENTION_PATTERN = new RegExp(
+  String.raw`\b(?:a\.?\s+)?b\.?\s*s\.?\b(?=[^.?!]{0,40}?${DIGIT_TOKEN})`,
+  'i'
+);
+
+/**
+ * `rcd_bs_en`'s closed option list, the `""` sentinel EXCLUDED. `rcd_bs_en`
+ * stays a `select` field, so the dispatcher's enum gate still covers the model
+ * path; this set is what every dialogue boundary checks against.
+ */
+const RCD_BS_OPTIONS = new Set(
+  (fieldSchema.circuit_fields?.rcd_bs_en?.options ?? []).filter(
+    (o) => typeof o === 'string' && o !== ''
+  )
+);
+
+/**
+ * Strict RCD standard parser: canonicalise with the OCPD algorithm, then accept
+ * only a member of `rcd_bs_en`'s option list. Legacy stored forms canonicalise
+ * into the list (`61009-1`, `BS EN 61009-1`, `61009` → `BS EN 61009`), so a
+ * healthy legacy value is never re-asked; an OCPD-only standard such as
+ * `BS 3036` or `BS EN 60898` is refused, which the old shared parser did not.
+ *
+ * @param {unknown} raw
+ * @returns {string|null}
+ */
+export function parseRcdBsCode(raw) {
+  const canonical = parseOcpdStandard(raw);
+  return canonical !== null && RCD_BS_OPTIONS.has(canonical) ? canonical : null;
+}
+
+/**
+ * Numeric suffix only — used by the derivation matcher to decide whether a
+ * written BS value indicates an RCBO (61009) or a legacy fuse (3036 / 1361).
  *
  *   "BS EN 61009"  → "61009"
  *   "BS 3036"      → "3036"

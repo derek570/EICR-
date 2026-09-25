@@ -103,6 +103,7 @@ import {
   pruneForSession,
 } from './loaded-barrel-cache.js';
 import { mintCorrelationId, recordOutcome } from './voice-latency-telemetry.js';
+import { ocpdStandardShapeAccepts } from './dialogue-engine/parsers/bs-code.js';
 import { getLoadedBarrelMaxPerTurn, isLimRangedWriteKilled } from './voice-latency-config.js';
 import {
   decodeReadingKey,
@@ -1685,6 +1686,27 @@ export function createSpeculator({
         coerced_value_preview: String(value).slice(0, 40),
       });
       return; // skip synth; bundler emits post-validation
+    }
+
+    // PLAN-CS (feedback-2026-09-17) — `ocpd_bs_en` left the enum map with its
+    // `select` → `text` flip, so the enum skip above no longer covers it. ONE
+    // field, ONE predicate — the same `parseOcpdStandard` shape rule the
+    // dispatcher's `ocpd_standard_shape` gate uses — so a write the dispatcher
+    // will reject ("There is no RCBO") is never pre-synthesised and never
+    // spoken. The "do NOT widen to all enum fields" rule above stands: this is
+    // not a widening, it is the free-text field's own validator.
+    if (
+      record.name === 'record_reading' &&
+      field === 'ocpd_bs_en' &&
+      !ocpdStandardShapeAccepts(value)
+    ) {
+      logger?.info?.('voice_latency.speculator_skipped_ocpd_shape', {
+        sessionId,
+        turnId: ctx.turnId,
+        field,
+        coerced_value_preview: String(value).slice(0, 40),
+      });
+      return; // skip synth; the dispatcher's rejection is the only outcome heard
     }
 
     // P3 Fix 8 — skip synth when the dispatcher will DENY this LIM write for a

@@ -88,10 +88,17 @@ function forbiddenDestinations(closure) {
 }
 
 describe('the descriptor leaf is a leaf', () => {
-  test('its static imports are exactly the three allowed modules', () => {
+  test('its static imports are exactly the four allowed modules', () => {
+    // PLAN-CS added `bs-code.js`, the module of its registered
+    // `ocpd_standard_shape` predicate — a `parsers/` module, the carve-out.
     const specs = staticImportSpecifiers(resolve(REPO_ROOT, LEAF));
     expect(new Set(specs)).toEqual(
-      new Set(['node:module', './value-enum-validator.js', './value-normalise.js'])
+      new Set([
+        'node:module',
+        './value-enum-validator.js',
+        './value-normalise.js',
+        './dialogue-engine/parsers/bs-code.js',
+      ])
     );
   });
 
@@ -104,26 +111,24 @@ describe('the descriptor leaf is a leaf', () => {
     // stage6-tool-schemas.js is the order that would expose an uninitialised
     // ALL_DIALOGUE_SCHEMA_NAMES binding if the leaf ever imported the
     // validation layer.
-    return import('../extraction/dialogue-engine/index.js')
-      .then(async (engineIndex) => {
-        // The binding lives on dialogue-engine/index.js; stage6-tool-schemas.js
-        // imports it and uses it at module top level, which is the evaluation
-        // that would throw if the leaf ever pulled the validation layer in.
-        expect(Array.isArray(engineIndex.ALL_DIALOGUE_SCHEMA_NAMES)).toBe(true);
-        expect(engineIndex.ALL_DIALOGUE_SCHEMA_NAMES.length).toBeGreaterThan(0);
-        const schemas = await import('../extraction/stage6-tool-schemas.js');
-        expect(Array.isArray(schemas.TOOL_SCHEMAS)).toBe(true);
-        const leaf = await import('../extraction/circuit-value-descriptors.js');
-        expect(leaf.describeSlotValidation('ocpd_rating_a').kind).toBe('ranged_numeric');
-      });
+    return import('../extraction/dialogue-engine/index.js').then(async (engineIndex) => {
+      // The binding lives on dialogue-engine/index.js; stage6-tool-schemas.js
+      // imports it and uses it at module top level, which is the evaluation
+      // that would throw if the leaf ever pulled the validation layer in.
+      expect(Array.isArray(engineIndex.ALL_DIALOGUE_SCHEMA_NAMES)).toBe(true);
+      expect(engineIndex.ALL_DIALOGUE_SCHEMA_NAMES.length).toBeGreaterThan(0);
+      const schemas = await import('../extraction/stage6-tool-schemas.js');
+      expect(Array.isArray(schemas.TOOL_SCHEMAS)).toBe(true);
+      const leaf = await import('../extraction/circuit-value-descriptors.js');
+      expect(leaf.describeSlotValidation('ocpd_rating_a').kind).toBe('ranged_numeric');
+    });
   });
 });
 
 describe('registered parser_backed predicates', () => {
   test('every registered row names a module, and that module reaches nothing forbidden', async () => {
-    const { PARSER_BACKED_FIELD_GATES } = await import(
-      '../extraction/circuit-value-descriptors.js'
-    );
+    const { PARSER_BACKED_FIELD_GATES } =
+      await import('../extraction/circuit-value-descriptors.js');
     for (const [field, gate] of PARSER_BACKED_FIELD_GATES) {
       expect(typeof gate.module).toBe('string');
       expect(existsSync(resolve(REPO_ROOT, gate.module))).toBe(true);
