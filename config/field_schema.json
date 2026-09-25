@@ -126,10 +126,10 @@
     },
     "ocpd_type": {
       "label": "OCPD Type",
-      "type": "select",
-      "options": ["B", "C", "D", "gG", "gM", "aM", "HRC", "Rew", "N/A"],
+      "type": "text",
+      "suggestions": ["B", "C", "D", "K", "Z", "1", "2", "3", "4", "I", "II", "gG", "gM", "aM", "HRC", "Rew", "N/A"],
       "description": "Overcurrent protective device type",
-      "ai_guidance": "MCB curve: 'B' (domestic, general loads), 'C' (inductive loads, motors), 'D' (high inrush). Cartridge fuses: 'gG'/'gM'/'aM' (industrial), 'HRC' (domestic HBC cartridge — BS 1361). Rewireable: 'Rew' (semi-enclosed fuse wire — BS 3036, colour-coded carriers).",
+      "ai_guidance": "Free text (Decision 6, PLAN-C2): write the type the inspector says, exactly, even if it is not listed or does not match the standard — the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. 'suggestions' (from config/ocpd-type-suggestions.json) is the known list, offered and never enforced: MCB curves 'B'/'C'/'D', BS EN 60947-2 'K'/'Z', BS 3871 types '1'-'4', BS 1361 Type 'I'/'II', cartridge 'gG'/'gM'/'aM'/'HRC', rewireable 'Rew', 'N/A'. A bare number stays a number ('type two' is '2'); only an explicitly Roman reply ('type i i') is 'II'.",
       "pdf_column": "Type",
       "group": "OCPD",
       "default": "B"

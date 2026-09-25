@@ -31,7 +31,7 @@ import {
   parseOcpdStandard,
   parseRcdBsCode,
 } from '../parsers/bs-code.js';
-import { parseMcbType } from '../parsers/mcb-type.js';
+import { OCPD_TYPE_NAMED_EXTRACTOR, parseMcbType } from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
 import { parseRcdType } from '../parsers/rcd-type.js';
@@ -53,8 +53,12 @@ const slots = [
     field: 'ocpd_type',
     label: 'curve',
     question: 'What MCB curve? B, C, or D?',
+    // PLAN-C2 — same free-text type grammar and extractor as the OCPD slot
+    // (`ocpd.js`); the extractor refuses RCD waveform codes and anything
+    // after an RCD anchor, so "RCD type A" never lands in this column.
     parser: parseMcbType,
-    namedExtractor: /\b(?:type|curve)\s*([BCD])\b|\b([BCD])\s*[-]?\s*curve\b/i,
+    namedExtractor: OCPD_TYPE_NAMED_EXTRACTOR,
+    parsesRawReply: true,
     acceptsBareValue: true,
   },
   {

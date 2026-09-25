@@ -101,6 +101,24 @@ export {
   OCPD_STANDARD_MAX_GRAMMAR_OUTPUT,
 } from './ocpd-standard';
 export {
+  OCPD_TYPE_SUGGESTIONS,
+  OCPD_TYPE_INPUT_CAP,
+  canonicaliseOcpdType,
+  admitOcpdTypeForScript,
+  ocpdTypeAdvisory,
+  ocpdTypeAdvisoryText,
+  ocpdTypeWarningText,
+  ocpdTypeDisplay,
+  ocpdTypesCanonicallyEqual,
+  ocpdTypeCompatibilityTable,
+  renderOcpdTypeRefList,
+  buildOcpdTypeAdvisoryClause,
+  buildOcpdTypeSingleResponse,
+  buildOcpdTypeDuplicateResponse,
+  buildOcpdTypeBulkResponse,
+} from './ocpd-type';
+export type { OcpdTypeAdvisory, OcpdTypeAdvisoryArgs, OcpdTypeWrittenTarget } from './ocpd-type';
+export {
   recompute,
   recomputeAll,
   resolveZe,

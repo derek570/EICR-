@@ -40,6 +40,7 @@ import {
 } from './stage6-snapshot-user-text.js';
 import { OBSERVATION_PATTERN } from './pre-llm-gate.js';
 import { OCPD_STANDARD_TIER1 } from './dialogue-engine/parsers/bs-code.js';
+import { OCPD_TYPE_SUGGESTIONS } from './dialogue-engine/parsers/mcb-type.js';
 import {
   applyPostcodeLookupToSnapshot,
   resolveEffectiveLocalityTail,
@@ -1184,6 +1185,15 @@ export function buildOcpdStandardTier1Block() {
   return `  - ${OCPD_STANDARD_TIER1.join(', ')}.`;
 }
 
+// PLAN-C2 (feedback-2026-09-17, Decision 6) — the same discipline for the OCPD
+// TYPE suggestion list: a full-line `{{OCPD_TYPE_TIER1}}` placeholder rendered
+// from `config/ocpd-type-suggestions.json` (via `mcb-type.js`, its one loader)
+// in both variants, pinned by an exact-equality test.
+export const OCPD_TYPE_TIER1_PLACEHOLDER = '{{OCPD_TYPE_TIER1}}';
+export function buildOcpdTypeTier1Block() {
+  return `  - ${OCPD_TYPE_SUGGESTIONS.join(', ')}.`;
+}
+
 // A1 agentic-voice (2026-07-23) — deterministic conditional-prompt render.
 // The base .md carries marker-delimited blocks (`<!--A1:ON-->` /
 // `<!--A1:OFF-->`, full-line markers): OFF blocks hold the ORIGINAL pre-A1
@@ -1211,6 +1221,12 @@ export function renderAgenticSystemPrompt(agenticAnswersEnabled) {
       if (block === 'on' && !enabled) continue;
       if (block === 'off' && enabled) continue;
       out.push(buildOcpdStandardTier1Block());
+      continue;
+    }
+    if (t === OCPD_TYPE_TIER1_PLACEHOLDER) {
+      if (block === 'on' && !enabled) continue;
+      if (block === 'off' && enabled) continue;
+      out.push(buildOcpdTypeTier1Block());
       continue;
     }
     if (t === '<!--A1:ON-->') {

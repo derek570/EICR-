@@ -134,14 +134,20 @@ describe('validateRecordReading — value_not_in_options gate (circuit fields)',
     ).toBeNull();
   });
 
-  test('off-enum "C curve" on ocpd_type rejected', () => {
-    expect(
-      validateRecordReading(
-        { field: 'ocpd_type', circuit: 3, value: 'C curve', confidence: 1 },
-        snapshotOneCircuit
-      )
-    ).toMatchObject({ code: 'value_not_in_options' });
-  });
+  // PLAN-C2 (Decision 6) — THE guard for the flip: `ocpd_type` is free text,
+  // so a formerly off-list value is accepted and NO `value_not_in_options` is
+  // produced for it. This fails if `ocpd_type.options` survives the flip.
+  test.each(['C curve', 'K', '2', 'II', 'superfast', 'extraordinarily long', 'MCB'])(
+    'formerly off-list %p on ocpd_type is accepted (free text)',
+    (value) => {
+      expect(
+        validateRecordReading(
+          { field: 'ocpd_type', circuit: 3, value, confidence: 1 },
+          snapshotOneCircuit
+        )
+      ).toBeNull();
+    }
+  );
 
   test('canonical "C" on ocpd_type accepted', () => {
     expect(

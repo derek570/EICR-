@@ -59,6 +59,7 @@ import {
 } from '../plan00-audibility-ledgers.js';
 import {
   circuitExistsInSnapshot,
+  getCircuitBucket,
   listCircuitRefsInBoard,
   resolveEffectiveBoardId,
 } from '../stage6-multi-board-shape.js';
@@ -1247,7 +1248,7 @@ export function valuesCanonicallyEqual(slot, existingValue, candidateValue) {
  * Marks `covered_by` as a side effect so a later call in the same turn can
  * never re-speak the same operation.
  */
-function computeUncoveredReadback(state, schema, siteLabel) {
+function computeUncoveredReadback(state, schema, siteLabel, session = null) {
   const ops = Array.isArray(state?.operations) ? state.operations : [];
   // Codex diff-review r1 (round 1) tried excluding a superseded same-
   // (field,circuit) APPLIED operation from ever being spoken. Codex
@@ -1304,7 +1305,7 @@ function computeUncoveredReadback(state, schema, siteLabel) {
   // script's TERMINAL read-back (the handoff and cancel paths). Composed over
   // exactly the operations THIS frame covers, so the three producers' sets are
   // disjoint and no value is advised twice.
-  const text = appendAdvisories(base, uncovered);
+  const text = appendAdvisories(base, uncovered, state, session);
   for (const op of uncovered) op.covered_by = siteLabel;
   return { text, uncovered };
 }
@@ -1319,10 +1320,32 @@ function computeUncoveredReadback(state, schema, siteLabel) {
  * a `schema.finishMessage` — which receives only `values` and would have to be
  * edited per schema — so no schema file gains an advisory hook.
  */
-function appendAdvisories(text, ops) {
+function appendAdvisories(text, ops, state = null, session = null) {
   const advisories = [];
+  // PLAN-C2 (Decision 6) — the OCPD type advisory judges a PAIR, so it needs
+  // the circuit's post-dispatch values: the episode's own `state.values` for
+  // its circuit, over the snapshot bucket (a stored type or standard the walk
+  // never touched). A standard in the same frame as its circuit's type stays
+  // silent about the type — the type's own advisory is the one spoken.
+  const opCircuit = (op) => op.effective_circuit_ref ?? state?.circuit_ref ?? null;
+  const circuitValuesOf = (circuit) => {
+    const bucket =
+      session?.stateSnapshot && Number.isInteger(circuit)
+        ? (getCircuitBucket(session.stateSnapshot, circuit, state?.effectiveBoardId ?? undefined) ??
+          null)
+        : null;
+    const own = circuit === (state?.circuit_ref ?? null) ? (state?.values ?? null) : null;
+    return bucket || own ? { ...(bucket ?? {}), ...(own ?? {}) } : null;
+  };
+  const typeCircuits = new Set(
+    (ops ?? []).filter((op) => op.field === 'ocpd_type').map((op) => opCircuit(op))
+  );
   for (const op of ops ?? []) {
-    const a = advisoryForFieldValue(op.field, op.written_value ?? op.dictated_value);
+    const circuit = opCircuit(op);
+    const a = advisoryForFieldValue(op.field, op.written_value ?? op.dictated_value, {
+      circuitValues: circuitValuesOf(circuit),
+      typeWrittenWithStandard: op.field === 'ocpd_bs_en' && typeCircuits.has(circuit),
+    });
     if (a) advisories.push(a);
   }
   if (advisories.length === 0) return text;
@@ -1373,7 +1396,7 @@ function renderTerminalReadback({
 }) {
   const state = session?.dialogueScriptState;
   if (!state) return { built: false, emitted: false };
-  const readback = computeUncoveredReadback(state, schema, siteLabel);
+  const readback = computeUncoveredReadback(state, schema, siteLabel, session);
   // No applied, unspoken operation: a first-slot miss with nothing captured, or
   // every capture already spoken. Nothing is emitted, and `emitted` is FALSE —
   // never vacuously true.
@@ -3060,7 +3083,7 @@ function runActivePath({
     // cancel frame (one combined message — the schema's own "N of M saved"
     // count is not a value read-back, so anything genuinely uncovered still
     // needs to be named).
-    const cancelReadback = computeUncoveredReadback(state, schema, 'cancel');
+    const cancelReadback = computeUncoveredReadback(state, schema, 'cancel', session);
     const cancelBaseText =
       filled > 0 ? schema.cancelMessage({ filled, total }) : schema.cancelMessageEmpty;
     safeSend(
@@ -3391,7 +3414,12 @@ function runActivePath({
       // cap-exit wording (one combined message). In practice this is
       // normally a no-op here: transitionToConfirmation already covered
       // every confirmable field on the way into awaiting_confirmation.
-      const capExitReadback = computeUncoveredReadback(state, schema, 'confirmation_cap_exit');
+      const capExitReadback = computeUncoveredReadback(
+        state,
+        schema,
+        'confirmation_cap_exit',
+        session
+      );
       const capExitBaseText = confirmCfg.negationCapExit({ circuit_ref: state.circuit_ref });
       safeSend(
         ws,
@@ -4563,7 +4591,7 @@ function runActivePath({
     });
     // PLAN A2 §A2.5 site table (L3022-class) — TERMINAL, appended to the
     // defer ack (one combined message).
-    const deferReadback = computeUncoveredReadback(state, schema, 'defer');
+    const deferReadback = computeUncoveredReadback(state, schema, 'defer', session);
     const deferBaseText = schema.deferMessage ?? "Okay, I'll come back to that later.";
     safeSend(
       ws,
@@ -4995,7 +5023,10 @@ function runActivePath({
   // answer. Extraction runs slot by slot so the declared order of `named` is
   // unchanged for every other slot.
   const named = schema.slots.flatMap((slot) =>
-    extractNamedFieldValues(maskCircuitSpans(slot.kind === 'bs_code' ? reply : text), [slot])
+    extractNamedFieldValues(
+      maskCircuitSpans(slot.kind === 'bs_code' || slot.parsesRawReply ? reply : text),
+      [slot]
+    )
   );
   for (const w of named) {
     // PLAN A2 §A2.2 — direct parse→apply (step-7 named). Mark at parse,
@@ -5066,7 +5097,7 @@ function runActivePath({
     // the RCBO BS pair this is now the ONLY ingress (neither slot is
     // named-extracted), so the clause is load-bearing.
     const bareValue = currentSlot.parser(
-      maskCircuitSpans(currentSlot.kind === 'bs_code' ? reply : text)
+      maskCircuitSpans(currentSlot.kind === 'bs_code' || currentSlot.parsesRawReply ? reply : text)
     );
     // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
     // gate. The OCPD breaking-capacity slot now declares the realistic kA
@@ -5643,7 +5674,7 @@ function handleBulkApplyReply({
       // deliberately skipped below). Every genuinely dictated field —
       // including the propagated device fields and anything else like RCD
       // trip time — is named via the normal uncovered-operations computation.
-      const bulkReadback = computeUncoveredReadback(state, schema, 'bulk_apply_done');
+      const bulkReadback = computeUncoveredReadback(state, schema, 'bulk_apply_done', session);
       const bulkDonePayload = buildScriptInfo({
         toolCallIdPrefix: schema.toolCallIdPrefix,
         sessionId,
@@ -5876,7 +5907,7 @@ function finishScript({
   // dictated this run — the legacy "Got it, …" line is suppressed entirely
   // (id 117's exact scenario). Any INDIVIDUALLY script-owned field among a
   // mixed set still surfaces below via the generic uncovered-operations text.
-  const finishReadback = computeUncoveredReadback(state, schema, 'finish');
+  const finishReadback = computeUncoveredReadback(state, schema, 'finish', session);
   // PLAN-A / Decision 17, consequential edit (1 of 3): the emit guard was
   // `allCoveredScriptOwned || finishReadback`, which was safe only because
   // `baseText` was non-null WHENEVER `allCoveredScriptOwned` was true — making
@@ -5918,7 +5949,8 @@ function finishScript({
   const finishAdvisoryOps = allCoveredScriptOwned
     ? coveredOps.filter((op) => op.spoken_owner !== 'bundler')
     : [];
-  const baseText = summaryText == null ? null : appendAdvisories(summaryText, finishAdvisoryOps);
+  const baseText =
+    summaryText == null ? null : appendAdvisories(summaryText, finishAdvisoryOps, state, session);
   if (baseText || finishReadback) {
     // PLAN A2 §A2.5 point 3 — ONE combined frame: the legacy verbatim text
     // (when spoken) with the uncovered read-back appended, or — when the

@@ -64,6 +64,15 @@ import { FIELD_CORRECTIONS } from './field-name-corrections.js';
 // static imports are node:module, value-enum-validator.js and
 // value-normalise.js, so this adds no cycle.
 import { advisoryForFieldValue } from './circuit-value-descriptors.js';
+// PLAN-C2 (Decision 6) — the grouped OCPD type / standard advisory clauses and
+// the post-dispatch circuit lookup the pair-dependent advisory needs.
+// `mcb-type.js` imports only `bs-code.js`, which imports nothing statically.
+import {
+  OCPD_TYPE_UNCHANGED,
+  buildOcpdStandardTypeClause,
+  buildOcpdTypeAdvisoryClause,
+} from './dialogue-engine/parsers/mcb-type.js';
+import { getCircuitBucket } from './stage6-multi-board-shape.js';
 // Single-round latency sprint Phase 1 (PLAN_v8 §A Pivot 3 — friendly-name
 // canonical). The bundler pre-computes the TTS-expanded form ("0 point 1 3
 // ohms" out of "0.13 ohms") and emits it alongside the plain text so iOS
@@ -716,6 +725,42 @@ function synthesiseConfirmations(
     const resolver = boardScope?.effectiveBoardOf;
     return typeof resolver === 'function' ? (resolver(r) ?? null) : null;
   };
+  // PLAN-C2 (feedback-2026-09-17, Decision 6) — the circuit's POST-DISPATCH
+  // values, for the pair-dependent OCPD type advisory ("may not be right for
+  // BS EN 60898" depends on the circuit's standard). The snapshot is the
+  // session's own, already carrying every write of this turn (see the harness
+  // note beside `stateSnapshot`). No snapshot → no pair judgement, never a
+  // guess; an unknown type is still advised because it needs no standard.
+  const advisorySnapshot = boardScope?.stateSnapshot ?? null;
+  const circuitValuesOf = (circuit, boardId) =>
+    advisorySnapshot && Number.isInteger(circuit) && circuit > 0
+      ? (getCircuitBucket(advisorySnapshot, circuit, boardId ?? undefined) ?? null)
+      : null;
+  const pairKeyOf = (r) => `${r?.circuit}::${effectiveBoardOf(r) ?? ''}`;
+  // A standard written in the same turn as its circuit's type stays silent
+  // about the type: the type's own read-back carries the advisory, once.
+  const typeWrittenPairs = new Set(
+    readings.filter((r) => r?.field === 'ocpd_type').map((r) => pairKeyOf(r))
+  );
+  const standardWrittenPairs = new Set(
+    readings.filter((r) => r?.field === 'ocpd_bs_en').map((r) => pairKeyOf(r))
+  );
+  // Decision 6 — the advisory "is not repeated on later turns for the same
+  // value". A type write that re-states the stored type, on a turn that did
+  // not also change the standard, is the same (standard, type) pair: its
+  // read-back is spoken plainly. A standard change on the same turn makes it
+  // a new pair, which is advised.
+  const typeUnchangedOf =
+    typeof boardScope?.ocpdTypeUnchangedOf === 'function'
+      ? boardScope.ocpdTypeUnchangedOf
+      : () => false;
+  const pairUnchanged = (r) =>
+    r?.field === 'ocpd_type' && typeUnchangedOf(r) && !standardWrittenPairs.has(pairKeyOf(r));
+  const advisoryContextOf = (r) => ({
+    circuitValues: circuitValuesOf(r?.circuit, effectiveBoardOf(r)),
+    typeWrittenWithStandard: r?.field === 'ocpd_bs_en' && typeWrittenPairs.has(pairKeyOf(r)),
+    valueUnchanged: pairUnchanged(r),
+  });
   const resolveTotalForBoard = (boardId) => {
     if (boardCounts == null) return totalCircuitsInJob;
     if (boardId != null) return boardCounts.get(boardId) ?? null;
@@ -971,9 +1016,37 @@ function synthesiseConfirmations(
       { calculated: bucket.calculated, correction: bucket.correction }
     );
     if (!grouped) continue;
+    // PLAN-C2 — a grouped OCPD type write gains ONE trailing advisory clause
+    // naming only the circuits it applies to (the same bytes the clients'
+    // local bulk Apply speaks); a grouped standard write names the circuits
+    // whose stored type becomes incompatible with it.
+    let groupedText = grouped;
+    if (bucket.field === 'ocpd_type') {
+      const clause = buildOcpdTypeAdvisoryClause(
+        String(bucket.value ?? '').trim(),
+        bucket.items
+          .filter((r) => !pairUnchanged(r))
+          .map((r) => ({
+            circuit: r.circuit,
+            ocpdBsEn: circuitValuesOf(r.circuit, effectiveBoardOf(r))?.ocpd_bs_en ?? null,
+          }))
+      );
+      if (clause) groupedText = `${grouped}, recorded${clause}`;
+    } else if (bucket.field === 'ocpd_bs_en') {
+      const clause = buildOcpdStandardTypeClause(
+        String(bucket.value ?? '').trim(),
+        bucket.items
+          .filter((r) => !typeWrittenPairs.has(pairKeyOf(r)))
+          .map((r) => ({
+            circuit: r.circuit,
+            ocpdType: circuitValuesOf(r.circuit, effectiveBoardOf(r))?.ocpd_type ?? null,
+          }))
+      );
+      if (clause) groupedText = `${grouped}${clause}`;
+    }
     const entry = {
-      text: grouped,
-      expanded_text: expandForTTS(grouped),
+      text: groupedText,
+      expanded_text: expandForTTS(groupedText),
       field: bucket.field,
       // Grouped confirmations are circuit-bag, not single-circuit;
       // null tells iOS this isn't tied to a specific row for the
@@ -1056,7 +1129,7 @@ function synthesiseConfirmations(
     // Deliberately NOT stamped onto the two designation-free transients below:
     // those are VALUE-matching shapes for the triple-shape merge, not spoken
     // lines, and an advisory on them would change what they match.
-    const advisory = advisoryForFieldValue(r.field, r.value);
+    const advisory = advisoryForFieldValue(r.field, r.value, advisoryContextOf(r));
     const text = advisory ? `${baseText}, ${advisory}` : baseText;
     const entry = {
       text,
@@ -1286,6 +1359,10 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
   // reach the wire because the projected `reading` objects are serialised by
   // key enumeration and the correction never becomes one of their keys.
   const clampCorrectionByReading = new WeakMap();
+  // PLAN-C2 — projected readings whose `ocpd_type` was already stored (the
+  // dispatcher's OCPD_TYPE_UNCHANGED stamp), carried across the projection
+  // boundary the same way as the clamp correction.
+  const ocpdTypeUnchangedReadings = new WeakSet();
   // PLAN-F2 finding 1 (2026-08-14) — same hand-off pattern as
   // clampCorrectionByReading above, for BULK_OUTCOME_CALL_ID. Only circuit
   // readings (never board readings — dispatchSetFieldForAllCircuits writes
@@ -1431,6 +1508,7 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
     if (clampCorrection) {
       clampCorrectionByReading.set(reading, clampCorrection);
     }
+    if (entry?.[OCPD_TYPE_UNCHANGED]) ocpdTypeUnchangedReadings.add(reading);
     // PLAN-F2 finding 1 (2026-08-14) — carry the bulk-call identity across
     // the projection boundary, same pattern as the clamp correction above.
     const bulkOutcomeCallId = entry?.[BULK_OUTCOME_CALL_ID];
@@ -1993,6 +2071,8 @@ export function bundleToolCallsIntoResult(perTurnWrites, legacyResultShape, opti
         // missing snapshot, so the postcode confirmation just carries no
         // locality clause rather than throwing.
         stateSnapshot: options.stateSnapshot ?? null,
+        // PLAN-C2 — "was this ocpd_type already the stored value?"
+        ocpdTypeUnchangedOf: (r) => ocpdTypeUnchangedReadings.has(r),
         // Plan B B1.3 — Map<slotKey, accepted identity>, resolved by the
         // caller (stage6-shadow-harness.js) immediately before this call.
         // Omitted (undefined) on any caller that doesn't pass it (test

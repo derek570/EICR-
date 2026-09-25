@@ -47,6 +47,9 @@ import { STAGE6_VALUE_RULES } from './value-normalise.js';
 // import-closure carve-out: `bs-code.js` statically imports nothing (its two
 // JSON reads go through `createRequire`), so the leaf stays a leaf.
 import { ocpdStandardShapeAccepts } from './dialogue-engine/parsers/bs-code.js';
+// PLAN-C2 — the OCPD type advisory's derivation. Same carve-out: `mcb-type.js`
+// statically imports only `bs-code.js`, and reads its manifest via require.
+import { ocpdTypeAdvisory, ocpdTypeAdvisoryText } from './dialogue-engine/parsers/mcb-type.js';
 
 const require = createRequire(import.meta.url);
 const fieldSchema = require('../../config/field_schema.json');
@@ -334,30 +337,26 @@ export function describeSlotValidation(field) {
 // id-84 correction-swallow bug fixed on 2026-07-24. The advisory needs no entry
 // there because it rides the read-back text and the key is already value-aware.
 //
-// The DERIVATION is per field and lives with the field. This plan supplies
-// breaking capacity's only.
-const ADVISORY_RENDERERS = new Map([
-  [
-    'ocpd_breaking_capacity_ka',
-    (value) => `recorded — ${value} kA isn't a standard breaking capacity`,
-  ],
-]);
-
-/**
- * The advisory for one written value, or null.
- *
- * Null whenever: the field has no renderer, the field carries no `suggestions`,
- * the value IS on the list, or the value is a recorded non-value. `LIM` never
- * earns the advisory — it is a recorded limitation that the ranged validator
- * already accepts, not an off-list measurement.
- *
- * @param {string} field
- * @param {string|number|null|undefined} value — the WRITTEN value, post-coercion
- * @returns {string|null}
- */
-export function advisoryForFieldValue(field, value) {
-  const render = ADVISORY_RENDERERS.get(field);
-  if (!render) return null;
+// The DERIVATION is per field and lives with the field. PLAN-A supplied
+// breaking capacity's; PLAN-C2 (Decision 6) supplies `ocpd_type`'s and the
+// standard's.
+//
+// PLAN-C2 — the seam takes an optional CONTEXT, because the type advisory is a
+// judgement about a PAIR: whether `gG` "may not be right" depends on the
+// circuit's standard. `context.circuitValues` is the circuit's POST-DISPATCH
+// state ({ ocpd_bs_en, ocpd_type, … }), resolved by each producer from the
+// session snapshot. A producer that has no circuit state passes nothing, and
+// the pair-dependent half then says nothing rather than guess (an unknown
+// type is still advised: that half needs no standard).
+//
+// `context.typeWrittenWithStandard` tells the STANDARD's renderer that the
+// same frame also reads back this circuit's `ocpd_type`, whose own read-back
+// carries the advisory — so the standard stays silent and the advisory is
+// heard exactly once.
+//
+// `context.valueUnchanged` marks a type write that re-states the stored value
+// (same pair): Decision 6 — the advisory is not repeated for the same value.
+function offListAdvisory(field, value, render) {
   const spec = circuitFieldSpec(field);
   const suggestions = Array.isArray(spec?.suggestions) ? spec.suggestions : null;
   if (!suggestions || suggestions.length === 0) return null;
@@ -366,6 +365,66 @@ export function advisoryForFieldValue(field, value) {
   if (v.toLowerCase() === 'lim') return null;
   if (suggestions.includes(v)) return null;
   return render(v);
+}
+
+const ADVISORY_RENDERERS = new Map([
+  [
+    'ocpd_breaking_capacity_ka',
+    (value) =>
+      offListAdvisory(
+        'ocpd_breaking_capacity_ka',
+        value,
+        (v) => `recorded — ${v} kA isn't a standard breaking capacity`
+      ),
+  ],
+  [
+    // PLAN-C2 — "Circuit 4, OCPD type gG, recorded — may not be right for
+    // BS EN 60898" / "…, recorded — not a type I know". N/A never advises.
+    'ocpd_type',
+    (value, context) => {
+      // Decision 6 — never repeated for the same (standard, type) pair.
+      if (context?.valueUnchanged) return null;
+      const text = ocpdTypeAdvisoryText({
+        ocpdBsEn: context?.circuitValues?.ocpd_bs_en ?? null,
+        ocpdType: value,
+      });
+      return text ? `recorded — ${text}` : null;
+    },
+  ],
+  [
+    // PLAN-C2 — a later STANDARD change that makes the stored type off for the
+    // new standard speaks its clause on the standard's own read-back. Only
+    // `incompatible` changes with the standard; an `unknown` type was already
+    // advised on its own read-back and is not repeated.
+    'ocpd_bs_en',
+    (value, context) => {
+      if (context?.typeWrittenWithStandard) return null;
+      const type = context?.circuitValues?.ocpd_type;
+      if (ocpdTypeAdvisory({ ocpdBsEn: value, ocpdType: type }) !== 'incompatible') return null;
+      return `type ${String(type).trim()} ${ocpdTypeAdvisoryText({ ocpdBsEn: value, ocpdType: type })}`;
+    },
+  ],
+]);
+
+/**
+ * The advisory for one written value, or null.
+ *
+ * Breaking capacity: null whenever the field carries no `suggestions`, the
+ * value IS on the list, or the value is a recorded non-value. `LIM` never
+ * earns the advisory — it is a recorded limitation that the ranged validator
+ * already accepts, not an off-list measurement.
+ *
+ * OCPD type / standard: see the renderers above.
+ *
+ * @param {string} field
+ * @param {string|number|null|undefined} value — the WRITTEN value, post-coercion
+ * @param {{ circuitValues?: object|null, typeWrittenWithStandard?: boolean }|null} [context]
+ * @returns {string|null}
+ */
+export function advisoryForFieldValue(field, value, context = null) {
+  const render = ADVISORY_RENDERERS.get(field);
+  if (!render) return null;
+  return render(value, context);
 }
 
 function isFiniteNumericString(v) {

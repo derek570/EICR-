@@ -92,7 +92,7 @@ afdd_button_confirmed
 === CABLE & PROTECTION ===
 - live_csa_mm2 = LIVE conductor CSA (mm²). "lives 2.5, earths 1.5" -> live_csa_mm2="2.5".
 - cpc_csa_mm2 = EARTH/CPC conductor CSA. "earths 1.5mm" -> cpc_csa_mm2="1.5".
-- "type B 32" = ocpd_type:"B" AND ocpd_rating_a:"32". ocpd_type is the MCB trip curve (B/C/D).
+- "type B 32" = ocpd_type:"B" AND ocpd_rating_a:"32". ocpd_type is FREE TEXT — write the type the inspector says, exactly, even if it is not listed or does not match the standard; the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. Known types: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A.
 - "wiring type A" / "cable type A" = wiring_type (A-G). NOT ocpd_type.
 - "ref method C" / "wiring method C" = ref_method (A-G). NOT ocpd_type.
 - "number of points" / "X points" = number_of_points (integer).

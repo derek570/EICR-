@@ -1,11 +1,10 @@
 {
-  "$comment": "PLAN-C (feedback id 129, 2026-08-23) — closed-enum guard golden vectors. CROSS-PLATFORM CONTRACT: this file is the single source of truth for the FIVE guarded closed-list circuit fields on BOTH clients. PLAN-CC (2026-09-23) removed `ocpd_bs_en` from `guarded_fields` and `options` — the field is free text now, canonicalised by config/ocpd-bs-suggestions.json — but KEPT its `labels` / `nouns` / `example_phrases` / `reask_render_vectors` rows, because a canonicalisation miss still speaks the same re-ask through the same renderer and that copy must stay pinned across the two clients. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/closed-enum-vectors.json pinned by paired SHA-256 digest constants (each repo test asserts the SAME hex constant) and scripts/check-closed-enum-fixture-sync.sh byte-compares them as a named pre-TestFlight step. `options` is generated FROM config/field_schema.json (the guard vocabulary is the SCHEMA, not either client UI picker list — see PLAN-C C2b) with the empty-string sentinel stripped; a CI drift test re-derives it. Do NOT hand-edit `options`.",
+  "$comment": "PLAN-C (feedback id 129, 2026-08-23) — closed-enum guard golden vectors. CROSS-PLATFORM CONTRACT: this file is the single source of truth for the FOUR guarded closed-list circuit fields on BOTH clients. PLAN-C2 (2026-09-25, Decision 6) removed `ocpd_type` ENTIRELY — guarded_fields, options, labels, nouns, example_phrases and every value and re-ask vector — because the field is free text with an advisory and nothing re-asks for it any more (its contract is config/ocpd-type-suggestions.json). PLAN-CC (2026-09-23) removed `ocpd_bs_en` from `guarded_fields` and `options` — the field is free text now, canonicalised by config/ocpd-bs-suggestions.json — but KEPT its `labels` / `nouns` / `example_phrases` / `reask_render_vectors` rows, because a canonicalisation miss still speaks the same re-ask through the same renderer and that copy must stay pinned across the two clients. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/closed-enum-vectors.json pinned by paired SHA-256 digest constants (each repo test asserts the SAME hex constant) and scripts/check-closed-enum-fixture-sync.sh byte-compares them as a named pre-TestFlight step. `options` is generated FROM config/field_schema.json (the guard vocabulary is the SCHEMA, not either client UI picker list — see PLAN-C C2b) with the empty-string sentinel stripped; a CI drift test re-derives it. Do NOT hand-edit `options`.",
   "plan": "PLAN-C-final.md (feedback-2026-08-23 wave)",
   "schema_source": "config/field_schema.json",
   "guarded_fields": [
     "wiring_type",
     "ref_method",
-    "ocpd_type",
     "rcd_bs_en",
     "rcd_type"
   ],
@@ -34,17 +33,6 @@
       "102",
       "103"
     ],
-    "ocpd_type": [
-      "B",
-      "C",
-      "D",
-      "gG",
-      "gM",
-      "aM",
-      "HRC",
-      "Rew",
-      "N/A"
-    ],
     "rcd_bs_en": [
       "BS EN 61008",
       "BS EN 61009",
@@ -67,7 +55,6 @@
     "wiring_type": "wiring type",
     "ref_method": "reference method",
     "ocpd_bs_en": "OCPD BS EN",
-    "ocpd_type": "OCPD type",
     "rcd_bs_en": "RCD BS EN",
     "rcd_type": "RCD type"
   },
@@ -75,7 +62,6 @@
     "wiring_type": "code",
     "ref_method": "reference method",
     "ocpd_bs_en": "standard",
-    "ocpd_type": "option",
     "rcd_bs_en": "standard",
     "rcd_type": "option"
   },
@@ -83,7 +69,6 @@
     "wiring_type": "wiring type A",
     "ref_method": "reference method C",
     "ocpd_bs_en": "OCPD standard BS EN 60898",
-    "ocpd_type": "OCPD type B",
     "rcd_bs_en": "RCD standard BS EN 61008",
     "rcd_type": "RCD type AC"
   },
@@ -289,46 +274,6 @@
       "expected": "A"
     },
     {
-      "field": "ocpd_type",
-      "input": "b",
-      "expected": "B"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "B",
-      "expected": "B"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "gg",
-      "expected": "gG"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "gM",
-      "expected": "gM"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "am",
-      "expected": "aM"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "hrc",
-      "expected": "HRC"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "rew",
-      "expected": "Rew"
-    },
-    {
-      "field": "ocpd_type",
-      "input": "n/a",
-      "expected": "N/A"
-    },
-    {
       "field": "rcd_bs_en",
       "input": "61008",
       "expected": "BS EN 61008"
@@ -459,24 +404,6 @@
       "input": "A1",
       "reason": "invalid_value",
       "why": "iOS picker carries A1/A2/B1/B2/D1/D2; the SCHEMA (guard vocabulary, C2b) does not."
-    },
-    {
-      "field": "ocpd_type",
-      "input": "MCB",
-      "reason": "invalid_value",
-      "why": "Device class, not a curve/fuse class."
-    },
-    {
-      "field": "ocpd_type",
-      "input": "RCBO",
-      "reason": "invalid_value",
-      "why": "Device class."
-    },
-    {
-      "field": "ocpd_type",
-      "input": "1",
-      "reason": "invalid_value",
-      "why": "iOS picker carries MCCB curves 1/2/3/K/Z; the schema does not (C2b documented divergence)."
     },
     {
       "field": "rcd_bs_en",
@@ -641,35 +568,6 @@
         "kind": "unknown"
       },
       "expected": "I heard OCPD BS EN 'BS EN 60898' but not which circuit — say, for example, 'OCPD standard BS EN 60898 for circuit 3'."
-    },
-    {
-      "field": "ocpd_type",
-      "reason": "invalid_value",
-      "heard": "MCB",
-      "target": {
-        "kind": "single",
-        "circuit": 3
-      },
-      "expected": "I heard OCPD type 'MCB', which isn't a valid option — say, for example, 'OCPD type B for circuit 3'."
-    },
-    {
-      "field": "ocpd_type",
-      "reason": "missing_value",
-      "heard": "",
-      "target": {
-        "kind": "all",
-        "sparePolicy": "include"
-      },
-      "expected": "I didn't get a value for OCPD type — say, for example, 'OCPD type B for all circuits, including spares'."
-    },
-    {
-      "field": "ocpd_type",
-      "reason": "missing_target",
-      "heard": "B",
-      "target": {
-        "kind": "unknown"
-      },
-      "expected": "I heard OCPD type 'B' but not which circuit — say, for example, 'OCPD type B for circuit 3'."
     },
     {
       "field": "rcd_bs_en",

@@ -101,8 +101,8 @@ describe('the derivation itself', () => {
     );
   });
 
-  test('no other field carries an advisory today', () => {
-    for (const f of ['ocpd_rating_a', 'ocpd_type', 'r1_r2_ohm', 'measured_zs_ohm']) {
+  test('no other field carries an advisory today (PLAN-C2 owns ocpd_type / ocpd_bs_en)', () => {
+    for (const f of ['ocpd_rating_a', 'r1_r2_ohm', 'measured_zs_ohm']) {
       expect(advisoryForFieldValue(f, '999')).toBeNull();
     }
   });

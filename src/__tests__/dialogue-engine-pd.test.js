@@ -64,7 +64,9 @@ describe('OCPD walk-through', () => {
       now: 2000,
     });
     expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
-    expect(ws.sent.at(-1).question).toBe('What MCB curve? B, C, or D?');
+    expect(ws.sent.at(-1).question).toBe(
+      'What type? B, C or D for a breaker; say the type printed on a fuse.'
+    );
 
     processProtectiveDeviceTurn({
       ws,
@@ -807,7 +809,9 @@ describe('Flux artefact tolerance — session 9FC3A6F1 (2026-04-30)', () => {
     expect(out.handled).toBe(true);
     // BS code volunteered — engine moves directly to the curve question.
     expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
-    expect(ws.sent.at(-1).question).toBe('What MCB curve? B, C, or D?');
+    expect(ws.sent.at(-1).question).toBe(
+      'What type? B, C or D for a breaker; say the type printed on a fuse.'
+    );
     expect(session.stateSnapshot.circuits[1].ocpd_bs_en).toBe('BS EN 60898');
   });
 

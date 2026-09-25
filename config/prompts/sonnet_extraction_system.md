@@ -53,7 +53,7 @@ CIRCUIT ROUTING RULES:
 - "earths" in ring context = ring_continuity_r2, NOT insulation_resistance_l_e.
 - "live to live"/"light to live" = insulation_resistance_l_l, NOT insulation_resistance_l_e.
 - cable_size = LIVE conductor mm2 (not earth). "lives 2.5, earths 1.5" -> cable_size=2.5.
-- "type B 32" = ocpd_type B + ocpd_rating 32. ocpd_type = B/C/D (MCB/RCBO type).
+- "type B 32" = ocpd_type B + ocpd_rating 32. ocpd_type is FREE TEXT — write the type the inspector says, exactly, even if it is not listed or does not match the standard; the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. Known types: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A.
 - "wiring type A"/"cable type A" = wiring_type (A-H + O, IET model EICR key). NOT ocpd_type.
 - "ref method C"/"wiring method C" = ref_method (A-G, or 100-103 for buried). NOT ocpd_type.
 - PFC (prospective fault current): normalise to kA (e.g., "1.2 kA" or "1200 amps" -> 1.2). "nought 88" = 0.88 kA (NOT 88). Range 0.1-20 kA.
@@ -88,7 +88,7 @@ COMMON SPEECH PATTERNS:
 - rcd_type vs ocpd_type DISAMBIGUATION:
   "type B 32" / "type B thirty-two" = ocpd_type "B" + ocpd_rating 32 (has amp rating → OCPD)
   "type B RCD" / "RCD type B" = rcd_type "B" (explicit RCD context → RCD type)
-  "type A" alone — check context: near "RCD"/"residual"/"30mA" → rcd_type "A"; near "MCB"/"breaker"/rating → unlikely (A is not a valid ocpd_type)
+  "type A" alone — check context: near "RCD"/"residual"/"30mA" → rcd_type "A"; near "MCB"/"breaker"/rating → unlikely (A is not a known OCPD type)
   "type AC" = ALWAYS rcd_type "AC" (AC is not a valid MCB trip curve)
   "type F" = ALWAYS rcd_type "F" (F is not a valid MCB trip curve)
   "type B+" = ALWAYS rcd_type "B+" (B+ is not a valid MCB trip curve)
@@ -162,7 +162,7 @@ BULK OPERATIONS:
 - "Same as circuit 3" / "copy from circuit 3": Copy ALL filled fields from circuit 3 to the target circuit. Return individual readings for each copied field.
 
 CIRCUIT FIELDS (per circuit):
-- ocpd_type: MCB type letter (B, C, D)
+- ocpd_type: OCPD type, free text as dictated (known: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A); never refused, never re-asked
 - ocpd_rating: rating in amps (e.g., 6, 16, 20, 32, 40, 50)
 - ocpd_bs_en: BS EN standard for the overcurrent device. Schema-canonical values only — "BS EN 60898" (MCB), "BS EN 61009" (RCBO), "BS EN 60947-2" (MCCB), "BS EN 60947-3" (isolator/switch), "BS EN 60269-2" (HRC fuse), "BS 3036" (rewireable), "BS 1361" (cartridge), "N/A". Extract when the inspector states the standard number. NEVER emit the bare digit form ("60898") or the legacy "-1" suffix.
 - rcd_bs_en: BS EN standard for the RCD. Schema-canonical values only — "BS EN 61008" (RCCB), "BS EN 61009" (RCBO), "BS EN 62423" (Type F), "N/A". Extract when stated. NEVER emit bare digits.
@@ -195,7 +195,7 @@ CIRCUIT FIELDS (per circuit):
 - rcd_rating_a: RCD rating in mA (typically 30)
 - polarity_confirmed: polarity check result. Schema-canonical enum: "Y" (confirmed correct, the default for "polarity confirmed" / "polarity OK" / "all good on polarity"), "OK" (synonym for Y, used by some inspectors), "N" (reversed polarity / fault), or "" (not tested). NEVER emit a boolean (true / false), the string "true" / "false", "correct", "reversed", "good", "pass" — only the four enum values above. The field name is `polarity_confirmed`, NOT `polarity`.
 - number_of_points: count of outlets/points on circuit
-- rcd_type: RCD type — the residual current device sensitivity category. Valid values: "AC", "A", "B", "F", "S", "A-S", "B-S", "B+". This describes WHAT FAULT CURRENTS the RCD detects (AC=AC only, A=AC+pulsating DC, B=all including smooth DC, F=AC+pulsating DC with frequency immunity, B+=all waveforms enhanced, S=selective/time-delayed for discrimination, A-S=type A selective, B-S=type B selective). CRITICAL DISAMBIGUATION from ocpd_type: ocpd_type is the MCB/RCBO trip curve letter (B, C, D) — it describes overcurrent tripping speed. rcd_type is the RCD sensitivity category (AC, A, B, F, S, A-S, B-S, B+) — it describes which fault current waveforms the RCD detects. These are completely different fields on the EICR. Key rule: if "type" is followed by a RATING in amps (e.g., "type B 32"), it is ocpd_type + ocpd_rating. If "type" is followed by "RCD" or appears in an RCD context with no amp rating, it is rcd_type.
+- rcd_type: RCD type — the residual current device sensitivity category. Valid values: "AC", "A", "B", "F", "S", "A-S", "B-S", "B+". This describes WHAT FAULT CURRENTS the RCD detects (AC=AC only, A=AC+pulsating DC, B=all including smooth DC, F=AC+pulsating DC with frequency immunity, B+=all waveforms enhanced, S=selective/time-delayed for discrimination, A-S=type A selective, B-S=type B selective). CRITICAL DISAMBIGUATION from ocpd_type: ocpd_type is the OCPD type (an MCB curve letter B, C or D, or a fuse type; free text as dictated) — it describes overcurrent tripping. rcd_type is the RCD sensitivity category (AC, A, B, F, S, A-S, B-S, B+) — it describes which fault current waveforms the RCD detects. These are completely different fields on the EICR. Key rule: if "type" is followed by a RATING in amps (e.g., "type B 32"), it is ocpd_type + ocpd_rating. If "type" is followed by "RCD" or appears in an RCD context with no amp rating, it is rcd_type.
 - rcd_operating_current_ma: per-circuit RCD operating current in mA (typically "30")
 - max_disconnect_time: maximum disconnection time in seconds (e.g., "0.4", "5")
 - ocpd_breaking_capacity: OCPD breaking capacity in kA (e.g., "6", "10")

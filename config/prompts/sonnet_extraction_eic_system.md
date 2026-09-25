@@ -45,7 +45,7 @@ CIRCUIT ROUTING RULES:
 - "earths" in ring context = ring_continuity_r2, NOT insulation_resistance_l_e.
 - "live to live"/"light to live" = insulation_resistance_l_l, NOT insulation_resistance_l_e.
 - cable_size = LIVE conductor mm2 (not earth). "lives 2.5, earths 1.5" -> cable_size=2.5.
-- "type B 32" = ocpd_type B + ocpd_rating 32. ocpd_type = B/C/D (MCB/RCBO type).
+- "type B 32" = ocpd_type B + ocpd_rating 32. ocpd_type is FREE TEXT — write the type the inspector says, exactly, even if it is not listed or does not match the standard; the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. Known types: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A.
 - "wiring type A"/"cable type A" = wiring_type (A-H + O, IET model EICR key). NOT ocpd_type.
 - "ref method C"/"wiring method C" = ref_method (A-G, or 100-103 for buried). NOT ocpd_type.
 - PFC (prospective fault current): normalise to kA (e.g., "1.2 kA" or "1200 amps" -> 1.2). "nought 88" = 0.88 kA (NOT 88). Range 0.1-20 kA.
@@ -120,7 +120,7 @@ BULK OPERATIONS:
 - "Same as circuit 3" / "copy from circuit 3": Copy ALL filled fields from circuit 3 to the target circuit. Return individual readings for each copied field.
 
 CIRCUIT FIELDS (per circuit):
-- ocpd_type: MCB type letter (B, C, D)
+- ocpd_type: OCPD type, free text as dictated (known: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A); never refused, never re-asked
 - ocpd_rating: rating in amps (e.g., 6, 16, 20, 32, 40, 50)
 - ocpd_bs_en: BS EN standard number for the overcurrent device (e.g., "60898-1" for MCB, "61009" for RCBO, "60947-2" for MCCB, "3036" for rewireable fuse). Extract when the inspector states the standard number.
 - ocpd_breaking_capacity: OCPD breaking capacity in kA (e.g., "6", "10")

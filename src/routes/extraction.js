@@ -31,6 +31,7 @@ import { extractSlotLabels } from '../extraction/ccu-label-pass.js';
 import { resolveMainSwitchSide } from '../extraction/main-switch-resolver.js';
 import { applyRcdTypeLookup, lookupRcdType } from '../extraction/rcd-type-lookup.js';
 import { writeRcdPendingEntry } from '../extraction/rcd-pending-writer.js';
+import { canonicaliseOcpdType } from '../extraction/dialogue-engine/parsers/mcb-type.js';
 import { evaluateQualityGate } from '../extraction/ccu-quality-gate.js';
 import { withIdempotency } from '../middleware/idempotency.js';
 
@@ -1760,16 +1761,25 @@ export function buildCircuitFromSlot(slot, circuit_number, upstreamRcd) {
   let ocpd_bs_en = slot.bsEn || null;
   let ocpd_breaking_capacity_ka = null;
 
+  // PLAN-C2 (Decision 6) — a type is written only when the VLM read an
+  // explicit type marking off the device (`slot.tripCurve`), canonicalised by
+  // the shared grammar. The classifier seeing a cartridge carrier is NOT a
+  // printed type: the cartridge branch used to manufacture `HRC` here, which
+  // put a type on the certificate that nobody read (a BS 1361 cartridge is
+  // Type I or Type II; a BS 88 fuse is gG, gM or aM). Blank beats guessed.
+  const observedType = canonicaliseOcpdType(slot.tripCurve ?? null) || null;
   if (cls === 'mcb' || cls === 'rcbo') {
-    ocpd_type = slot.tripCurve || null;
+    ocpd_type = observedType;
     if (!ocpd_bs_en) ocpd_bs_en = cls === 'rcbo' ? 'BS EN 61009' : 'BS EN 60898';
     ocpd_breaking_capacity_ka = '6';
   } else if (cls === 'rewireable') {
+    // A rewireable fuse has exactly one type, so this is a fact, not a guess
+    // (the same rule as the dialogue script's BS 3036 → Rew derivation).
     ocpd_type = 'Rew';
     if (!ocpd_bs_en) ocpd_bs_en = 'BS 3036';
     // rewireable fuses have no kA rating — leave null
   } else if (cls === 'cartridge') {
-    ocpd_type = 'HRC';
+    ocpd_type = observedType;
     if (!ocpd_bs_en) ocpd_bs_en = 'BS 1361';
   }
 
@@ -3289,7 +3299,7 @@ If the cert has a single combined address block like "Mr J Smith, 12 Acacia Aven
 ## ENUM REFERENCE (use these exact strings)
 - earthing_arrangement: "TN-C-S" | "TN-S" | "TT" | "TN-C" | "IT"
 - live_conductors: "AC - 1-phase (2 wire)" | "AC - 1-phase (3 wire)" | "AC - 3-phase (3 wire)" | "AC - 3-phase (4 wire)" | "DC - 2 pole" | "DC - 3 pole"
-- ocpd_type: "B" | "C" | "D" | "gG" | "gM" | "aM" | "HRC" | "Rew" | "N/A" (Rew = BS 3036 rewireable, HRC = BS 1361 cartridge)
+- ocpd_type: FREE TEXT — copy the type exactly as printed on the certificate, even if it is not listed or does not match the standard (e.g. "Type II", "K", "Q"); never omit it for being unfamiliar and never guess a type from a standard. Known: "B" | "C" | "D" | "K" | "Z" | "1" | "2" | "3" | "4" | "I" | "II" | "gG" | "gM" | "aM" | "HRC" | "Rew" | "N/A" (Rew = BS 3036 rewireable)
 - ocpd_bs_en: "BS EN 60898" | "BS EN 61009" | "BS EN 60947-2" | "BS EN 60947-3" | "BS EN 60269-2" | "BS 3036" | "BS 1361" | "N/A"
 - rcd_type: "AC" | "A" | "F" | "B" | "S" | "N/A"
 - rcd_bs_en: "BS EN 61008" | "BS EN 61009" | "BS EN 62423" | "N/A"
