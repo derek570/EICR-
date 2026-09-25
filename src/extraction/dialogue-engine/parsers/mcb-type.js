@@ -234,14 +234,17 @@ export function ocpdTypeAdvisoryText(args) {
  * only. So "type B 32 amps" gives `B`, "type X Y Z" gives `XYZ`, and
  * "type extraordinarily long" gives nothing (the script steps aside).
  *
- * Two guards keep it off the RCD's column, which the pre-plan `[BCD]` class
- * could never reach: no capture after an RCD anchor ("RCD type A",
- * "residual current device type AC", "waveform type B"), and none of the RCD
- * waveform codes that are not OCPD types (`AC`, `A`, `F`, `S`, `A-S`, `B-S`).
+ * Three guards keep it off other columns, which the pre-plan `[BCD]` class
+ * could never reach: no capture after an RCD, wiring or reference-method
+ * anchor, optionally followed by "is"/"was" ("RCD type A", "RCD is type B",
+ * "residual current device type AC", "wiring type K"); no capture that an RCD
+ * anchor FOLLOWS ("type B RCD" — the run extends to "B RCD", which the
+ * single-token admission refuses); and none of the RCD waveform codes that are
+ * not OCPD types (`AC`, `A`, `F`, `S`, `A-S`, `B-S`).
  * The `<letter> curve` form is kept as its own arm.
  */
 export const OCPD_TYPE_NAMED_EXTRACTOR =
-  /(?<!\b(?:rcd|residual|current|device|waveform)\s+)\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s*[,.;?!]|\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?=\s*[,.;?!]|\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcd|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
+  /(?<!\b(?:rcd|residual|current|device|waveform|wiring|cable|ref|reference|method|installation)(?:\s+(?:is|was))?\s+)\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s*[,.;?!]|\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?!\s+(?:rcd|residual|rccb)\b)(?=\s*[,.;?!]|\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Grouped advisory clause — the backend twin of the TS
@@ -330,13 +333,14 @@ export function buildOcpdStandardTypeClause(standard, targets) {
 
 /**
  * Non-enumerable marker the record_reading / set_field_for_all_circuits
- * dispatchers stamp on a per-turn write entry whose `ocpd_type` was ALREADY the
- * stored value (compared through the canonicaliser on both sides). The bundler
- * reads it and leaves the advisory off that read-back: Decision 6 says the
- * advisory "is not repeated on later turns for the same value". A Symbol so it
- * can never reach the wire or a JSON snapshot.
+ * dispatchers stamp on a per-turn write entry whose `ocpd_type` OR `ocpd_bs_en`
+ * was ALREADY the stored value (compared canonically on both sides). The
+ * bundler reads it: Decision 6 says the advisory "is not repeated on later
+ * turns for the same value", and the advisory judges the (standard, type)
+ * PAIR, so a re-statement of either member leaves the pair unchanged. A Symbol
+ * so it can never reach the wire or a JSON snapshot.
  */
-export const OCPD_TYPE_UNCHANGED = Symbol('ocpd_type_unchanged');
+export const OCPD_VALUE_UNCHANGED = Symbol('ocpd_value_unchanged');
 
 /** True when the stored type already equals the candidate canonically. */
 export function ocpdTypeUnchanged(stored, candidate) {
@@ -344,4 +348,18 @@ export function ocpdTypeUnchanged(stored, candidate) {
   if (s === '') return false;
   const a = canonicaliseOcpdType(candidate);
   return a != null && a !== '' && a === canonicaliseOcpdType(s);
+}
+
+/**
+ * The same test for either member of the pair: `ocpd_type` through the type
+ * canonicaliser, `ocpd_bs_en` through the standard parser (an unreadable value
+ * compares raw). Any other field → false.
+ */
+export function ocpdPairMemberUnchanged(field, stored, candidate) {
+  if (field === 'ocpd_type') return ocpdTypeUnchanged(stored, candidate);
+  if (field !== 'ocpd_bs_en') return false;
+  const s = str(stored).trim();
+  const c = str(candidate).trim();
+  if (s === '' || c === '') return false;
+  return (parseOcpdStandard(s) ?? s) === (parseOcpdStandard(c) ?? c);
 }

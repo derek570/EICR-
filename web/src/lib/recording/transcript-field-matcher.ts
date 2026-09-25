@@ -519,7 +519,9 @@ const OCPD_RATING_BEFORE =
   /\b(\d+)\s*(?:amp|amber|a)\s+(?:mcb|rcbo|rccb|breaker|circuit\s+breaker|miniature\s+circuit\s+breaker)/gi;
 const OCPD_RATING_AFTER =
   /\b(?:mcb|rcbo|rccb|breaker|circuit\s+breaker|miniature\s+circuit\s+breaker)\s+(?:is\s+|rated?\s+(?:at\s+)?)?(\d+)\s*(?:amp|a)?/gi;
-const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d])\b/gi;
+// PLAN-C2 — an explicitly spoken type: a curve letter or a BS 3871 / 60947-2
+// digit (`type 2`). Hint-level only; the server write owns the read-back.
+const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d]|[1-4])\b/gi;
 const WIRING_OR_REF_BEFORE_TYPE =
   /\b(?:wir\w+|worrying|cable|ref\w*|reference|installation)\s+type\s+(?:is\s+)?[a-g]\b/gi;
 const BS_EN_STANDARD_PATTERN = /\b(60898|61009|60909)\b/gi;

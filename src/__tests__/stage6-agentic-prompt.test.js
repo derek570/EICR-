@@ -2716,6 +2716,19 @@ describe('PLAN-C2 — OCPD type Tier-1 block rendered from the shared manifest',
       expect(composed).toContain('you never refuse or re-ask for the type');
       expect(composed).not.toMatch(/ocpd_type enum: B, C, D/);
     }
+    // Codex EP cycle 1 (c1-3) — two more ACTIVE prompts: the uploaded-photo
+    // prompt (analyze_photos.js, reached via process_job.js) and the legacy
+    // recording prompt's closed-enum list. Neither may restrict the type.
+    const photoPrompt = fssync.readFileSync(
+      path.join(__dirname, '..', 'analyze_photos.js'),
+      'utf8'
+    );
+    expect(photoPrompt).not.toMatch(/Type \(B\/C\/D\)/);
+    const legacy = fssync.readFileSync(
+      path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_extraction_system.md'),
+      'utf8'
+    );
+    expect(legacy).not.toMatch(/ref_method, ocpd_type, rcd_type[^.\n]*every closed-enum field/);
     // Every prompt file that still names ocpd_type carries no B/C/D-only rule.
     const promptsDir = path.join(__dirname, '..', '..', 'config', 'prompts');
     for (const f of fssync.readdirSync(promptsDir).filter((n) => n.endsWith('.md'))) {

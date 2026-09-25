@@ -103,7 +103,10 @@ import {
 import { logToolCall, logReadingFieldGuessedFromValue } from './stage6-dispatcher-logger.js';
 import { checkForPromptLeak, hashPayload } from './stage6-prompt-leak-filter.js';
 import { coerceRecordReadingValue } from './record-reading-coercion.js';
-import { OCPD_TYPE_UNCHANGED, ocpdTypeUnchanged } from './dialogue-engine/parsers/mcb-type.js';
+import {
+  OCPD_VALUE_UNCHANGED,
+  ocpdPairMemberUnchanged,
+} from './dialogue-engine/parsers/mcb-type.js';
 import {
   canonicaliseCircuitDesignation,
   designationCanonicalisesToEmpty,
@@ -831,18 +834,18 @@ export async function dispatchRecordReading(call, ctx) {
     );
   }
 
-  // PLAN-C2 (Decision 6) — read the stored type BEFORE the write overwrites it,
-  // so the bundler can tell a repeat of the same value from a new one.
-  const ocpdTypeWasAlreadyStored =
-    input.field === 'ocpd_type' &&
-    ocpdTypeUnchanged(
-      getCircuitBucket(
-        session.stateSnapshot,
-        input.circuit,
-        resolveEffectiveBoardId(session, input.board_id)
-      )?.ocpd_type,
-      input.value
-    );
+  // PLAN-C2 (Decision 6) — read the stored OCPD type / standard BEFORE the
+  // write overwrites it, so the bundler can tell a re-statement of the same
+  // (standard, type) pair from a change.
+  const ocpdTypeWasAlreadyStored = ocpdPairMemberUnchanged(
+    input.field,
+    getCircuitBucket(
+      session.stateSnapshot,
+      input.circuit,
+      resolveEffectiveBoardId(session, input.board_id)
+    )?.[input.field],
+    input.value
+  );
   applyReadingFlagAware(session.stateSnapshot, {
     circuit: input.circuit,
     field: input.field,
@@ -916,7 +919,7 @@ export async function dispatchRecordReading(call, ctx) {
   // carries no board_id in the common case), so a plain Map.set would let a
   // board-B write DESTROY the board-A write from earlier in the same turn.
   if (ocpdTypeWasAlreadyStored) {
-    Object.defineProperty(recordValue, OCPD_TYPE_UNCHANGED, {
+    Object.defineProperty(recordValue, OCPD_VALUE_UNCHANGED, {
       value: true,
       enumerable: false,
       configurable: true,
@@ -3348,12 +3351,11 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     // correct composite-key bucket (under flag-on) or the legacy numeric
     // bucket (under flag-off, where boardId is ignored by the mutator).
     // PLAN-C2 — same pre-write read as record_reading (see there).
-    const bulkTypeWasAlreadyStored =
-      input.field === 'ocpd_type' &&
-      ocpdTypeUnchanged(
-        getCircuitBucket(snapshot, ref, resolveEffectiveBoardId(session, boardId))?.ocpd_type,
-        input.value
-      );
+    const bulkTypeWasAlreadyStored = ocpdPairMemberUnchanged(
+      input.field,
+      getCircuitBucket(snapshot, ref, resolveEffectiveBoardId(session, boardId))?.[input.field],
+      input.value
+    );
     applyReadingFlagAware(snapshot, {
       circuit: ref,
       field: input.field,
@@ -3407,7 +3409,7 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     // call produced (see attachBulkOutcomeCallId's doc comment).
     attachBulkOutcomeCallId(bulkMirror, call.tool_call_id);
     if (bulkTypeWasAlreadyStored) {
-      Object.defineProperty(bulkMirror, OCPD_TYPE_UNCHANGED, {
+      Object.defineProperty(bulkMirror, OCPD_VALUE_UNCHANGED, {
         value: true,
         enumerable: false,
         configurable: true,

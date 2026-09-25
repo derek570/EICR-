@@ -1337,14 +1337,32 @@ function appendAdvisories(text, ops, state = null, session = null) {
     const own = circuit === (state?.circuit_ref ?? null) ? (state?.values ?? null) : null;
     return bucket || own ? { ...(bucket ?? {}), ...(own ?? {}) } : null;
   };
+  // Decision 6 — never re-advise an unchanged (standard, type) pair. An
+  // operation the walk marked `satisfied_existing` re-stated the stored value;
+  // the pair is unchanged unless the other member was genuinely applied in
+  // this frame.
+  const restated = (op) => op.disposition === 'satisfied_existing';
+  const standardChanged = new Set(
+    (ops ?? [])
+      .filter((op) => op.field === 'ocpd_bs_en' && !restated(op))
+      .map((op) => opCircuit(op))
+  );
+  const pairUnchanged = (op) => {
+    if (op.field === 'ocpd_type') return restated(op) && !standardChanged.has(opCircuit(op));
+    if (op.field === 'ocpd_bs_en') return restated(op);
+    return false;
+  };
   const typeCircuits = new Set(
-    (ops ?? []).filter((op) => op.field === 'ocpd_type').map((op) => opCircuit(op))
+    (ops ?? [])
+      .filter((op) => op.field === 'ocpd_type' && !pairUnchanged(op))
+      .map((op) => opCircuit(op))
   );
   for (const op of ops ?? []) {
     const circuit = opCircuit(op);
     const a = advisoryForFieldValue(op.field, op.written_value ?? op.dictated_value, {
       circuitValues: circuitValuesOf(circuit),
       typeWrittenWithStandard: op.field === 'ocpd_bs_en' && typeCircuits.has(circuit),
+      valueUnchanged: pairUnchanged(op),
     });
     if (a) advisories.push(a);
   }

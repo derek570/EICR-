@@ -354,8 +354,9 @@ export function describeSlotValidation(field) {
 // carries the advisory — so the standard stays silent and the advisory is
 // heard exactly once.
 //
-// `context.valueUnchanged` marks a type write that re-states the stored value
-// (same pair): Decision 6 — the advisory is not repeated for the same value.
+// `context.valueUnchanged` marks a write that re-states the stored value of
+// its pair member while the pair as a whole did not change: Decision 6 — the
+// advisory is not repeated for the same value.
 function offListAdvisory(field, value, render) {
   const spec = circuitFieldSpec(field);
   const suggestions = Array.isArray(spec?.suggestions) ? spec.suggestions : null;
@@ -399,6 +400,8 @@ const ADVISORY_RENDERERS = new Map([
     'ocpd_bs_en',
     (value, context) => {
       if (context?.typeWrittenWithStandard) return null;
+      // Decision 6 — a re-stated, unchanged standard is not a change.
+      if (context?.valueUnchanged) return null;
       const type = context?.circuitValues?.ocpd_type;
       if (ocpdTypeAdvisory({ ocpdBsEn: value, ocpdType: type }) !== 'incompatible') return null;
       return `type ${String(type).trim()} ${ocpdTypeAdvisoryText({ ocpdBsEn: value, ocpdType: type })}`;

@@ -429,3 +429,83 @@ describe('acceptance 3 — cross-turn: the value and the advisory each heard onc
     expect(count(heard, 'type superfast')).toBe(1);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// EP review cycle 1 (Codex c1-1, c1-2) regressions
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('cycle 1 c1-2 — an unchanged (standard, type) pair is never re-advised', () => {
+  const recordStd = (circuit, value) => ({
+    name: 'record_reading',
+    input: { field: 'ocpd_bs_en', circuit, value, confidence: 1, source_turn_id: 't' },
+  });
+
+  test('re-stating BOTH the standard and the type is read back plainly', async () => {
+    const session = makeSession({ 4: { ocpd_bs_en: 'BS EN 60898', ocpd_type: 'gG' } });
+    const { confirmations } = await modelTurn(session, [
+      recordStd(4, 'BS EN 60898'),
+      recordType(4, 'gG'),
+    ]);
+    expect(count(allText(confirmations), 'may not be right')).toBe(0);
+    expect(confirmations.map((c) => c.field).sort()).toEqual(['ocpd_bs_en', 'ocpd_type']);
+  });
+
+  test('re-stating the unchanged standard alone is read back plainly', async () => {
+    const session = makeSession({ 4: { ocpd_bs_en: 'BS EN 60898', ocpd_type: 'gG' } });
+    const { confirmations } = await modelTurn(session, [recordStd(4, '60898')]);
+    expect(confirmations).toHaveLength(1);
+    expect(confirmations[0].text).not.toContain('may not be right');
+  });
+
+  test('a CHANGED standard with the type re-stated is a new pair: advised once, on the type', async () => {
+    const session = makeSession({ 4: { ocpd_bs_en: 'BS 88-2', ocpd_type: 'gG' } });
+    const { confirmations } = await modelTurn(session, [
+      recordStd(4, 'BS EN 60898'),
+      recordType(4, 'gG'),
+    ]);
+    expect(count(allText(confirmations), 'may not be right for BS EN 60898')).toBe(1);
+    expect(confirmations.find((c) => c.field === 'ocpd_type').text).toContain('may not be right');
+  });
+
+  test('a dialogue re-statement of the stored type (satisfied_existing) is not re-advised at completion', () => {
+    const ws = new FakeWS();
+    const session = {
+      sessionId: SESSION_ID,
+      stateSnapshot: { circuits: { 4: { ocpd_bs_en: 'BS EN 60898', ocpd_type: 'gG' } } },
+    };
+    turn(session, ws, 'MCB on circuit 4.', 1000);
+    turn(session, ws, 'type gG 32 amps', 2000);
+    turn(session, ws, '6 kA', 3000);
+    expect(session.dialogueScriptState).toBeNull();
+    expect(count(spoken(ws), 'may not be right')).toBe(0);
+  });
+});
+
+describe("cycle 1 c1-1 — the named extractor never writes another column's type", () => {
+  test.each([
+    'RCD is type B',
+    'type B RCD',
+    'Wiring type K',
+    'wiring is type C',
+    'reference method type C',
+  ])('%s captures no OCPD type', async (phrase) => {
+    const { OCPD_TYPE_NAMED_EXTRACTOR } =
+      await import('../extraction/dialogue-engine/parsers/mcb-type.js');
+    const { parseMcbType } = await import('../extraction/dialogue-engine/parsers/mcb-type.js');
+    const m = phrase.match(OCPD_TYPE_NAMED_EXTRACTOR);
+    const captured = m ? (m[1] ?? m[2]) : undefined;
+    expect(captured === undefined ? null : parseMcbType(captured)).toBeNull();
+  });
+
+  test.each(['RCD is type B', 'type B RCD', 'Wiring type K'])(
+    'inside an RCBO walk, %p leaves ocpd_type unwritten',
+    (reply) => {
+      const ws = new FakeWS();
+      const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { 6: {} } } };
+      turn(session, ws, 'RCBO on circuit 6.', 1000);
+      turn(session, ws, 'BS EN 61009', 2000);
+      turn(session, ws, reply, 3000);
+      expect(session.stateSnapshot.circuits[6].ocpd_type).toBeUndefined();
+    }
+  );
+});
