@@ -21,6 +21,7 @@ import { getToken } from '../auth';
 import { clientDiagnostic } from './client-diagnostic';
 import { pipelineLog } from '@/lib/diagnostics/pipeline-log';
 import type { RegexResultsWire } from './regex-match-result';
+import { UnresolvedAskAuthority } from './unresolved-ask-authority';
 
 export type SonnetConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -774,6 +775,12 @@ export class SonnetSession {
   // mid-reconnect. Cleared on `disconnect()` (the user explicitly
   // ending the session) but never on a dirty close.
   private firedToolCallIds = new Set<string>();
+  // PLAN-CD (CD2, Decision 18) — every INTERACTIVE ask the backend has
+  // started and the client has not seen resolved, keyed by tool_call_id with
+  // its fixture-classified lifetime. Distinct from `inFlightToolCallId`,
+  // which is last-ask-wins ATTRIBUTION state and stays exactly as it was.
+  // Read only through `hasUnresolvedBackendAsk()`; nothing consumes it.
+  private readonly unresolvedAsks = new UnresolvedAskAuthority();
   // Server-minted session identifier from the most recent `session_ack`.
   // Unused on the first open (the server allocates it); on reconnect the
   // state machine echoes it back inside a `session_resume` frame so the
@@ -1293,6 +1300,8 @@ export class SonnetSession {
       });
       return;
     }
+    // PLAN-CD (CD2) — clear condition 1: this ask has been answered.
+    this.unresolvedAsks.resolve(toolCallId);
     const msg: Record<string, unknown> = {
       type: 'ask_user_answered',
       tool_call_id: toolCallId,
@@ -1433,8 +1442,21 @@ export class SonnetSession {
     // boundary (a synchronous second final from the same audio chunk)
     // dedupes via the Set on its second pass.
     this.firedToolCallIds.add(id);
+    this.unresolvedAsks.resolve(id);
     if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
+  }
+
+  /**
+   * PLAN-CD (CD2) — is an unresolved INTERACTIVE backend ask live? The one
+   * non-consuming read the client-local reject branch takes before it hands
+   * a canonicalisation miss to the model. Latched at `ask_user_started`,
+   * cleared only on an answer, a cancellation, the ask's class lifetime
+   * (`config/ask-class-lifetimes-v1.json`) or session reset — never by an
+   * attribution timer.
+   */
+  hasUnresolvedBackendAsk(): boolean {
+    return this.unresolvedAsks.hasLive((id) => this.firedToolCallIds.has(id));
   }
 
   /**
@@ -1450,6 +1472,8 @@ export class SonnetSession {
     if (this.inFlightToolCallId && this.inFlightToolCallId.startsWith(prefix)) {
       this.inFlightToolCallId = null;
     }
+    // PLAN-CD (CD2) — clear condition 2: the backend abandoned these asks.
+    this.unresolvedAsks.cancelByPrefix(prefix);
   }
 
   /** Push the latest JobDetail snapshot to Sonnet mid-session. Used when
@@ -1560,6 +1584,8 @@ export class SonnetSession {
     // can't double-fire on flush.
     this.inFlightToolCallId = null;
     this.firedToolCallIds.clear();
+    // PLAN-CD (CD2) — clear condition 4: session reset.
+    this.unresolvedAsks.reset();
     const ws = this.ws;
     if (!ws) {
       this.setState('disconnected');
@@ -1999,6 +2025,29 @@ export class SonnetSession {
           hasToolCallId: typeof json.tool_call_id === 'string' && json.tool_call_id.length > 0,
           reason: typeof json.reason === 'string' ? json.reason : null,
         });
+        // PLAN-CD (CD2, Decision 18) — latch the unresolved-ask authority
+        // BEFORE any early break: the backend registered this ask whether or
+        // not the client can speak it, so an empty question still holds the
+        // latch (over-holding costs one re-ask; under-holding loses a
+        // reading). Interactive asks only — an `expected_answer_shape:
+        // 'none'` frame is a spoken acknowledgement, never a question, and
+        // an id the client already answered never re-arms.
+        {
+          const cd2Id =
+            typeof json.tool_call_id === 'string' && json.tool_call_id.length > 0
+              ? (json.tool_call_id as string)
+              : null;
+          const cd2Latched =
+            cd2Id !== null && !this.firedToolCallIds.has(cd2Id)
+              ? this.unresolvedAsks.latch(cd2Id, json.expected_answer_shape)
+              : false;
+          clientDiagnostic('cd2_ask_authority_latch', {
+            toolCallIdShort: cd2Id?.slice(0, 16) ?? null,
+            expectedAnswerShape:
+              typeof json.expected_answer_shape === 'string' ? json.expected_answer_shape : null,
+            latched: cd2Latched,
+          });
+        }
         if (!question) {
           clientDiagnostic('ask_user_started_dropped_empty_question', {});
           break;

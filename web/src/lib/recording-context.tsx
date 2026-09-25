@@ -2551,6 +2551,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // grammar ("calculate impedance for all", the spoken "z s") is never
         // gate-blocked here or at the backend gate. Never a regex hint.
         let forwardedCalculate: ClientCommandMarker | null = null;
+        // PLAN-CD (CD1) — LOCAL-ONLY forward authority for a handed-off
+        // canonicalisation miss. It feeds this client's own gate input and
+        // NOTHING else: never `client_command` (Decision 13 forbids a
+        // marker), never `regexResults` (a hinted field name becomes the
+        // model's "DO NOT extract" instruction for the very field the
+        // inspector dictated), never the guard's write decision.
+        let cd1LocalForwardAuthority = false;
         if (command && command.type === 'calculate_impedance') {
           const remainder = command.remainder ?? '';
           const boardCount = jobBoardCount(jobRef.current as unknown as JobZeLike);
@@ -2587,6 +2594,40 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // open draft on the circuits it WROTE. After the command, from the
           // writer's own record; see `noteOcpdWritesFromVoiceOutcome`.
           noteOcpdWritesFromVoiceOutcome(outcome, jobRef.current);
+          // PLAN-CD (CD2, Decisions 7/15/18) — the guard refused an
+          // `ocpd_bs_en` value its canonicaliser could not read. The refusal
+          // to WRITE stands either way. With NO backend ask live the
+          // utterance is handed to the model: no local speech, no early
+          // return, CD1 opens this client's gate, and it forwards as an
+          // ordinary transcript. With an ask live (or no session to forward
+          // to) today's single spoken re-ask stands and nothing is forwarded,
+          // because a forwarded utterance can be consumed as the answer to
+          // the unrelated open question. The authority read is
+          // non-consuming: the ask is exactly as live afterwards.
+          // A voice-feedback capture in progress also keeps the re-ask: the
+          // fall-through would hand the utterance to the capture (which
+          // consumes it silently as feedback text), not to the model.
+          const cd2Capturing = feedbackCaptureRef.current?.isCapturing === true;
+          const cd2Handoff =
+            outcome.ocpdStandardMiss === true &&
+            sonnetRef.current != null &&
+            !cd2Capturing &&
+            !sonnetRef.current.hasUnresolvedBackendAsk();
+          if (outcome.ocpdStandardMiss === true) {
+            clientDiagnostic('cd2_ocpd_miss_routed', {
+              route: cd2Handoff ? 'handoff' : 'reask',
+              reason: cd2Handoff
+                ? 'no_ask_live'
+                : sonnetRef.current == null
+                  ? 'no_session'
+                  : cd2Capturing
+                    ? 'feedback_capture'
+                    : 'ask_live',
+              commandType: command.type,
+              textPreview: text.slice(0, 80),
+            });
+          }
+          if (cd2Handoff) cd1LocalForwardAuthority = true;
           if (outcome.patch) {
             updateJobRef.current(outcome.patch);
             jobRef.current = {
@@ -2604,7 +2645,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               liveFill.markUpdated(outcome.changedKeys);
             }
           }
-          if (outcome.response) {
+          if (outcome.response && !cd2Handoff) {
             if (outcome.patch) playConfirmationChime();
             if (command.type === 'calculate_impedance') {
               // A01P — local Calculate outcomes (the success read-back and the
@@ -2658,8 +2699,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               speak(outcome.response);
             }
           }
-          sleepManagerRef.current?.onSpeechActivity();
-          return;
+          if (!cd2Handoff) {
+            sleepManagerRef.current?.onSpeechActivity();
+            return;
+          }
         }
         // A4 (Wave 6) — voice feedback marker capture. Placement rule
         // (plan §4, load-bearing): AFTER the local voice-command
@@ -2736,7 +2779,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // transcript gate's hasPendingAsk input. Consumption of the
         // tool_call_id happens only on the gate-PASS path immediately
         // before the send — a gate REJECT must not burn ask state.
-        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
+        // PLAN-CD — a handed-off miss forwards as an ORDINARY transcript. CD2
+        // established that no interactive backend ask is live, so whatever
+        // the attribution tracker still holds (an expired ask, or an
+        // expected_answer_shape "none" acknowledgement web still enqueues)
+        // is not a question this utterance answers: no ask_user_answered,
+        // no in_response_to, and the tracker is left untouched.
+        const peekedPayload = cd1LocalForwardAuthority
+          ? null
+          : inFlightQuestionRef.current.peekPayloadForTranscript();
         const peekedToolCallId =
           peekedPayload?.type !== 'address_mirror_direct' && peekedPayload?.tool_call_id
             ? peekedPayload.tool_call_id
@@ -2925,9 +2976,13 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // A01P — a discarded (forwarded) Calculate carries the same forward
           // authority a regex hit does; its grammar has no digit and no
           // trigger word, so without this it would be rejected and lost.
+          // PLAN-CD (CD1) — a handed-off canonicalisation miss carries the
+          // same LOCAL forward authority; it carries no digit and no trigger
+          // word, so without this the `for all` scope form is gate-blocked
+          // after the local re-ask was already withdrawn — a silent drop.
           hasRegexHit: admission.bypassMutation
             ? false
-            : gateRegexHit || forwardedCalculate !== null,
+            : gateRegexHit || forwardedCalculate !== null || cd1LocalForwardAuthority,
           hasPendingAsk: isAnswerToAsk,
           inResponseTo: peekedPayload != null,
         });
@@ -2973,6 +3028,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           admission: admission.classification,
           admissionDirect: admission.admits,
           clientCommand: forwardedCalculate,
+          cd1LocalForwardAuthority,
         });
         // iOS canon DeepgramRecordingViewModel.swift:2122 — attach
         // `in_response_to` when a TTS question is alive within the 10 s
@@ -2986,7 +3042,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // (DeepgramRecordingViewModel.swift:1955-1964). We still call
         // takePayload to drain the slot so it can't mis-attach to the
         // NEXT unrelated transcript.
-        const drainedPayload = inFlightQuestionRef.current.takePayload(text);
+        const drainedPayload = cd1LocalForwardAuthority
+          ? null
+          : inFlightQuestionRef.current.takePayload(text);
         const inResponseTo = inFlightToolCallId ? undefined : (drainedPayload ?? undefined);
         // Gate-pass chime — iOS chimes on BOTH branches (stage6_ask_answer
         // and legacy_free_text) before the send; TranscriptGate.playChime
@@ -5604,6 +5662,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (matched) {
           clientDiagnostic('inflight_question_anchored', {
             questionPreview: spokenText.slice(0, 80),
+            // What the stale-entry purge left behind (PLAN-CD's pending-FIFO
+            // purge window is observed through this).
+            pendingAfterPurge: inFlightQuestionRef.current.pendingCount,
           });
         }
       } else if (event === 'end' && spokenText) {
