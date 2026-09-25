@@ -118,8 +118,9 @@ CLIENT-LOCAL apply paths never validated against the closed option list — only
 server-extraction lane did — and iOS's transport had already truncated the residue to
 a plausible-looking first word, destroying the evidence a guard would need.
 
-- **Guarded fields (5):** `wiring_type`, `ref_method`, `ocpd_type`,
-  `rcd_bs_en`, `rcd_type`. Derived from `config/field_schema.json` `circuit_fields`
+- **Guarded fields (4):** `wiring_type`, `ref_method`, `rcd_bs_en`, `rcd_type`.
+  `ocpd_type` left the set on 2026-09-25 (PLAN-C2, Decision 6); see the free-text OCPD
+  type section below. Derived from `config/field_schema.json` `circuit_fields`
   where `type === 'select'`, MINUS the four boolean/confirmable selects
   (`polarity_confirmed`, `rcd_button_confirmed`, `afdd_button_confirmed`,
   `is_distribution_circuit` — spoken yes/no vocabulary, not closed code lists) and
@@ -252,6 +253,45 @@ PLAN-CC made both clients tolerate any string; PLAN-CS flips the backend to matc
   `config/prompts/sonnet_agentic_system.md` is replaced from the manifest in both prompt
   variants by `renderAgenticSystemPrompt`.
 
+## Free-text OCPD type with an advisory (PLAN-C2, 2026-09-25)
+
+Feedback id 140, WAVE-CONTEXT Decision 6. Derek: *"it is not CertMate's job to make sure
+the inspector can't put a fuse type in that is incompatible … If they're not in our
+standard list, it should advise that this may not be correct but still record it."*
+
+`ocpd_type` was a nine-value select, so a BS 3871 Type 2, a BS 1361 Type II or a
+BS EN 60947-2 K curve could not be recorded. It is free text on the backend and both
+clients, and nothing refuses a non-blank type.
+
+- **Contract.** `config/ocpd-type-suggestions.json` holds the 17 suggestions, the
+  compatibility table, the BS 1361 display alias and pinned vectors. Three twins are
+  driven through every vector: `packages/shared-utils/src/ocpd-type.ts`,
+  `src/extraction/dialogue-engine/parsers/mcb-type.js` and iOS `OcpdType.swift`.
+  `scripts/check-ocpd-type-fixture-sync.sh` byte-compares the iOS copy before TestFlight.
+- **Schema.** `ocpd_type` is `type: "text"` with `suggestions`; its `options` were
+  DELETED (PLAN-A's schema-lock test requires it). `default` stays `B`.
+- **Canonicalisation.** `canonicaliseOcpdType` trims, strips trailing punctuation and a
+  leading `type`/`curve`, applies the fixed aliases (`B curve` → `B`, `g g` → `gG`,
+  `rewireable` → `Rew`, `type i i` → `II`, `type two` → `2`), joins a spelled code
+  (`x y z` → `XYZ`), and otherwise keeps the value as said. It never refuses a non-blank
+  value and has no length rule. The model write, the bulk write, the speculator, the
+  imports and the pickers all use it.
+- **The dialogue script** admits one remaining token only. A miss (`type two two`,
+  `there's no fuse`, a bare `type.`) is PLAN-A's first-miss handoff, never a re-ask. The
+  slot reads the raw reply, and its named extractor never captures after an RCD anchor.
+  A standard no longer derives a type, except BS 3036 → `Rew`.
+- **The advisory is derived, never stored.** `unknown` means the type is not a
+  suggestion; `incompatible` means it is not in the compatibility row of the circuit's
+  standard. `N/A` never advises. It is spoken once, appended to the write's own read-back
+  through PLAN-A's advisory seam ("recorded — may not be right for BS EN 60898" /
+  "recorded — not a type I know"). A later standard change that makes the stored type
+  off speaks the clause on the standard's read-back. Re-stating the same type does not
+  repeat it. A bulk write names only the circuits it applies to.
+- **Surfaces.** Every picker is a free-text combo (24-character cap in the control
+  only) with an advisory marker beside the cell. The PDF preflight lists each advisory.
+  The PDF prints the stored value; under BS 1361 a stored `1`/`2` prints `I`/`II`.
+- **ZERO wire change and no new persisted key.**
+
 ## Installation Details Tab (`/job/[id]/installation`)
 
 | Field | Type | Options | AI Extraction Guidance |
@@ -323,7 +363,7 @@ PLAN-CC made both clients tolerate any string; PLAN-CS flips the backend to matc
 | Field | AI Extraction Guidance |
 |-------|----------------------|
 | `ocpd_bs_en` | Free text, canonicalised: "60898" → "BS EN 60898" (MCB), "61009" → "BS EN 61009" (RCBO), "3871" → "BS 3871". Any standard-shaped value; see the PLAN-CS section above. |
-| `ocpd_type` | "B" domestic, "C" motors |
+| `ocpd_type` | Free text as dictated (PLAN-C2): "B" domestic, "C" motors, "K", "2", "II", "gG", "Rew". Off-list values are recorded with an advisory, never refused. |
 | `ocpd_rating_a` | 6A lights, 16/20A radial, 32A ring/cooker, 40A shower |
 | `ocpd_breaking_capacity_ka` | Usually "6" domestic |
 | `ocpd_max_zs_ohm` | Max Zs from BS7671 tables |

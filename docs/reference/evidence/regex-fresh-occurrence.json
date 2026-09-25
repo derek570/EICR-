@@ -22,7 +22,7 @@
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "22f51b6061beb7d3d75edc41d1798c304f514d572cb16d29cf449b2d5a6ebe6e",
       "src/extraction/sonnet-stream.js": "4d40f649aa130869d1d2086e7fd2cfb105dd660569d1ef498167bbc7c87a87e8",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "c2be4c5551841db4e31e8f3ef8ba58445d27f35a95c421a02342ec3c561031be",
+      "web/src/lib/recording-context.tsx": "107e2729ae632d92e22d2a1b5dfb37e244ddd0f2038f8a96fed13f771a92fd72",
       "web/src/lib/recording/apply-extraction.ts": "61b017779e2956a4f95d287e35654933aa3ab7ee7b6dc6d00dedcce4dab9af44",
       "web/src/lib/recording/apply-regex-match.ts": "de20c80b2d332b502f97ea92b3b36a8d7429874809fafc0c5e729d09bc83e4b4",
       "web/src/lib/recording/deepgram-service.ts": "1bc6a0d1a0bf7cb97a4e066f3a51adccd6f21b545ea156fa6ccae74c20b1bbe8",
@@ -35,20 +35,20 @@
       "web/src/lib/recording/regex-match-result.ts": "132f52a97a38a78fb5686ecb10eeea4fa9c23ef8c92ef9e4c34c2ba7a2dd72ce",
       "web/src/lib/recording/sonnet-session.ts": "cc957f73851120fcb154479b9bb881ff29408857646d2d403c8bd26645ceb5c4",
       "web/src/lib/recording/test-services.ts": "d2ecc96ca6cb900e537ce181d00cf1fcc068bfaec5a205da45f4c2bacd04e08e",
-      "web/src/lib/recording/transcript-field-matcher.ts": "d347031736db487cff2df473d4cea4e04d3cca061fae109b6117e5bf3beb78f6",
+      "web/src/lib/recording/transcript-field-matcher.ts": "52d55a497c8a1c52502768d7ac4496f869b74add3044a02c0d3c6670f03645c9",
       "web/src/lib/recording/tts.ts": "16e3b6f7f5f83c67cdf29009d44fd96440ab2d7dd356f4768a9a7651f3bdb1b4",
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
     },
     "fixtures": {
-      "config/closed-enum-vectors.json": "49999c52c994071e02a0db752a2bbe1322ed14e04fb2461b4c29d67526395f42",
+      "config/closed-enum-vectors.json": "3bc41e47b8eb1f9993974b41c9b0d67a9ee81e1ee3d4492257bdc16560d9d0f6",
       "config/regex-freshness-vectors.json": "d0f71c86b9f0b1838ac5be387ca3fce96e64f5783052224bc06ed0b6d8c2661b"
     },
     "tests": {
       "src/__tests__/stage6-a02d-field-corrected-utterance-id.test.js": "2229976fc08b295ee29a49e2daffb0539528fc0df8caa06c8676f58c8c9c6227",
       "src/__tests__/stage6-clear-board-reading-session-seam.test.js": "41c30587894d38ac008c34e9d25d097643e87e29adb451a4496d05502305fd17",
       "src/__tests__/stage6-honest-refusal.test.js": "60bfb58b06fbffaf33f7ec6586ae57b72e2a7210ee994c55031fbed6565e73ef",
-      "web/tests/apply-regex-match.test.ts": "0eceb9fbc27d3f15b39fad394a5900a71ce2fffe48045fe59b5a12c22e630bd6",
-      "web/tests/closed-enum-guard.test.ts": "1988e6213644c03819f6e1578ca6dbec34a405c616bf4cd3cac2c8aaff26b8e9",
+      "web/tests/apply-regex-match.test.ts": "c33521b6427ee45b7142b378bc2871c70fdeb976deb33fc53f4fa1e946d771be",
+      "web/tests/closed-enum-guard.test.ts": "b44bfe218c6a096330f50dd6c598de41af47ea3d52a461e7800e48dd76016013",
       "web/tests/deepgram-service-final-window.test.ts": "6f957d15010b7b2f787623f6f883e6928eabe38969fa812fd8189177ea7a11e6",
       "web/tests/deepgram-service-frozen-surface.test.ts": "fb00ff995821251287bea7760391768b5b2cd4b5fb65303103b1b8fe20eec1b2",
       "web/tests/harness/a02d-regex-freshness-fixture-mounted.test.tsx": "1e0c2c4f8925528aa1e47459c9271138e822a0af54f2713150fc0ab4d46fdb61",
@@ -4046,6 +4046,18 @@
       "date": "2026-09-24",
       "files": [
         "sources: web/src/lib/recording-context.tsx"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-C2",
+      "date": "2026-09-25",
+      "files": [
+        "fixtures: config/closed-enum-vectors.json",
+        "sources: web/src/lib/recording-context.tsx",
+        "sources: web/src/lib/recording/transcript-field-matcher.ts",
+        "tests: web/tests/apply-regex-match.test.ts",
+        "tests: web/tests/closed-enum-guard.test.ts"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }
