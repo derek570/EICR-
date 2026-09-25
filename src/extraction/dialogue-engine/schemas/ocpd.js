@@ -19,7 +19,11 @@
  */
 
 import { BS_STANDARD_NAMED_EXTRACTOR, parseOcpdStandard } from '../parsers/bs-code.js';
-import { OCPD_TYPE_NAMED_EXTRACTOR, parseMcbType } from '../parsers/mcb-type.js';
+import {
+  OCPD_TYPE_CLAUSE_VETO,
+  OCPD_TYPE_NAMED_EXTRACTOR,
+  parseMcbType,
+} from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
 
@@ -68,6 +72,9 @@ const slots = [
     // clarifying question.
     parser: parseMcbType,
     namedExtractor: OCPD_TYPE_NAMED_EXTRACTOR,
+    // A clause naming another column (RCD, wiring, reference method) never
+    // yields an OCPD type; see OCPD_TYPE_CLAUSE_VETO.
+    namedExtractorClauseVeto: OCPD_TYPE_CLAUSE_VETO,
     // Read the raw reply, never the annotated text: the anchored grammar
     // cannot consume the `[In response to TTS question …]` bracket, and the
     // widened extractor would capture a word of the question itself.

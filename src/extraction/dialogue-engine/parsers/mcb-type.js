@@ -230,26 +230,30 @@ export function ocpdTypeAdvisoryText(args) {
  * The capture widened from `[BCD]` to the C2.2 token grammar. It takes a lazy
  * run after `type` / `curve` that ends at punctuation, a rating ("32 amps",
  * "6 kA"), a linking word ("on", "for", "circuit", "rated", "BS", …) or the end
- * of the reply, and hands it to `parseMcbType`, which admits a single token
+ * of the clause, and hands it to `parseMcbType`, which admits a single token
  * only. So "type B 32 amps" gives `B`, "type X Y Z" gives `XYZ`, and
  * "type extraordinarily long" gives nothing (the script steps aside).
  *
- * Three guards keep it off other columns, which the pre-plan `[BCD]` class
- * could never reach. Each is a PROXIMITY window of up to two words inside the
- * same clause — whitespace only, so it never reaches across a comma:
- *   - no capture within two words AFTER an RCD, wiring, cable or
- *     reference-method anchor ("RCD type A", "RCD is type B", "RCD has type B",
- *     "the RCD's type B", "wiring type K");
- *   - no capture within two words BEFORE an RCD anchor ("type B RCD",
- *     "type B for RCD", "type B on the RCD"). The lazy run then extends, and
- *     the single-token admission refuses it, so the script steps aside;
- *   - none of the RCD waveform codes that are not OCPD types (`AC`, `A`, `F`,
- *     `S`, `A-S`, `B-S`).
- * A comma still separates clauses, so "type B, RCD type A" captures `B`.
- * The `<letter> curve` form is kept as its own arm.
+ * WHICH FIELD A TYPE BELONGS TO is decided by the CLAUSE, not by the words next
+ * to it (`OCPD_TYPE_CLAUSE_VETO` below; `namedExtractorClauseVeto` in
+ * helpers/extraction.js). Three review rounds each found another phrasing that
+ * a word-distance window let through ("RCD is type B", "type B on the RCD",
+ * "the RCD fitted here is type B"). The inspector's own words mark the scope:
+ * a clause that names another column never yields an OCPD type, and a comma
+ * still separates clauses, so "type B, RCD type A" writes `B`. The RCD waveform
+ * codes that are not OCPD types (`AC`, `A`, `F`, `S`, `A-S`, `B-S`) are never
+ * captured. The `<letter> curve` form keeps its own arm.
  */
 export const OCPD_TYPE_NAMED_EXTRACTOR =
-  /(?<!\b(?:rcd|rccb|residual|current|device|waveform|wiring|cable|ref|reference|method|installation)(?:'s)?(?:\s+[a-z']+){0,2}\s+)\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s*[,.;?!]|\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?!(?:\s+[a-z']+){0,2}\s+(?:rcd|rccb|residual)\b)(?=\s*[,.;?!]|\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
+  /\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?=\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
+
+/**
+ * A clause that names another column's type. When it matches, the clause
+ * yields no OCPD type (Decision 7: the fast path does not decide scope it
+ * cannot see; the model has the whole utterance).
+ */
+export const OCPD_TYPE_CLAUSE_VETO =
+  /\b(?:rcd|rccb|residual|waveform|wiring|cable|ref(?:erence)?\s+method|installation\s+method)\b/i;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Grouped advisory clause — the backend twin of the TS

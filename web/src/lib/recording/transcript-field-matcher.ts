@@ -801,6 +801,35 @@ function lastCapture(re: RegExp, text: string, group: number = 1): string | unde
   return lastMatch[group < lastMatch.length ? group : 0];
 }
 
+/** Every match's [start, end) range. */
+function allMatchRanges(re: RegExp, text: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  freshScan(re);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.push([m.index, m.index + m[0].length]);
+    if (re.lastIndex === m.index) re.lastIndex += 1;
+  }
+  return out;
+}
+
+/** The last match that `keep` accepts. */
+function lastMatchWhere(
+  re: RegExp,
+  text: string,
+  keep: (m: RegExpExecArray) => boolean
+): RegExpExecArray | undefined {
+  let last: RegExpExecArray | undefined;
+  freshScan(re);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (keep(m)) last = m;
+    if (re.lastIndex === m.index) re.lastIndex += 1;
+  }
+  if (last) activeTrace?.recordMatches([last]);
+  return last;
+}
+
 function lastMatch(re: RegExp, text: string): RegExpExecArray | undefined {
   let last: RegExpExecArray | null = null;
   freshScan(re);
@@ -1909,12 +1938,18 @@ export class TranscriptFieldMatcher {
 
     // Bare "type X" — only when not preceded by wiring/ref/cable. PLAN-C2:
     // the bare device-class fallback ("MCB" / "RCBO" → type) is gone; a device
-    // class is not a type the inspector dictated.
+    // class is not a type the inspector dictated. The wiring/ref exclusion is
+    // judged PER MATCH (Codex EP cycle 3): only an OCPD match that overlaps an
+    // exclusion match is discarded, so "wiring type 2, OCPD type B" still
+    // yields B. Previously a wiring phrase anywhere vetoed the whole segment.
     {
-      const v = lastCapture(OCPD_TYPE_PATTERN, text);
-      if (v !== undefined && !hasMatch(WIRING_OR_REF_BEFORE_TYPE, text)) {
-        updates.ocpd_type = v.toUpperCase();
-      }
+      const excluded = allMatchRanges(WIRING_OR_REF_BEFORE_TYPE, text);
+      const m = lastMatchWhere(
+        OCPD_TYPE_PATTERN,
+        text,
+        (hit) => !excluded.some(([from, to]) => hit.index < to && hit.index + hit[0].length > from)
+      );
+      if (m) updates.ocpd_type = m[1].toUpperCase();
     }
 
     if (hasMatch(POLARITY_PATTERN, text)) updates.polarity_confirmed = '✓';

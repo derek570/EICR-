@@ -482,19 +482,41 @@ describe('cycle 1 c1-2 — an unchanged (standard, type) pair is never re-advise
 });
 
 describe("cycle 1 c1-1 — the named extractor never writes another column's type", () => {
+  // Through the REAL clause-scoped extraction path (cycle 3 replaced the
+  // word-distance windows with a clause veto; the regex alone is not the rule).
   test.each([
     'RCD is type B',
     'type B RCD',
     'Wiring type K',
     'wiring is type C',
     'reference method type C',
+    'the RCD fitted here is type B',
+    'wiring on this circuit has type 2',
+    'reference method for this circuit is type C',
   ])('%s captures no OCPD type', async (phrase) => {
-    const { OCPD_TYPE_NAMED_EXTRACTOR } =
-      await import('../extraction/dialogue-engine/parsers/mcb-type.js');
-    const { parseMcbType } = await import('../extraction/dialogue-engine/parsers/mcb-type.js');
-    const m = phrase.match(OCPD_TYPE_NAMED_EXTRACTOR);
-    const captured = m ? (m[1] ?? m[2]) : undefined;
-    expect(captured === undefined ? null : parseMcbType(captured)).toBeNull();
+    const { extractNamedFieldValues } =
+      await import('../extraction/dialogue-engine/helpers/extraction.js');
+    const { rcboSchema } = await import('../extraction/dialogue-engine/schemas/rcbo.js');
+    const { ocpdSchema } = await import('../extraction/dialogue-engine/schemas/ocpd.js');
+    for (const schema of [rcboSchema, ocpdSchema]) {
+      const slot = schema.slots.find((s) => s.field === 'ocpd_type');
+      expect(extractNamedFieldValues(phrase, [slot])).toEqual([]);
+    }
+  });
+
+  test.each([
+    ['type B 32 amps 6 kA', 'B'],
+    ['BS 88 type gG 32 amps', 'gG'],
+    ['RCBO type B', 'B'],
+    ['type B, RCD type A', 'B'],
+    ['type X Y Z', 'XYZ'],
+    ['the type is C', 'C'],
+  ])('a legitimate compound reply %p still extracts %p', async (phrase, want) => {
+    const { extractNamedFieldValues } =
+      await import('../extraction/dialogue-engine/helpers/extraction.js');
+    const { rcboSchema } = await import('../extraction/dialogue-engine/schemas/rcbo.js');
+    const slot = rcboSchema.slots.find((s) => s.field === 'ocpd_type');
+    expect(extractNamedFieldValues(phrase, [slot])).toEqual([{ field: 'ocpd_type', value: want }]);
   });
 
   test.each(['RCD is type B', 'type B RCD', 'Wiring type K'])(
