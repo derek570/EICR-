@@ -47,7 +47,7 @@ CABLE & PROTECTION:
 - cable_size = LIVE conductor CSA (mm²). If "lives 2.5mm, earths 1.5mm", cable_size is 2.5.
 - cable_size_earth = EARTH/CPC conductor CSA (mm²). If "earths 1.5mm", cable_size_earth is 1.5.
   Also matches "CPC 2.5", "earth size 1.5", "earth wiring 1.5".
-- "32 amp MCB" or "type B 32" = ocpd_rating + ocpd_type. ocpd_type is the MCB/RCBO type (B, C, D).
+- "32 amp MCB" or "type B 32" = ocpd_rating + ocpd_type. ocpd_type is FREE TEXT — write the type the inspector says, exactly, even if it is not listed or does not match the standard; the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. Known types: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A.
 - "wiring type A" or "cable type A" = wiring_type (A-G). NOT ocpd_type.
 - "reference method C" or "wiring method C" or "ref method C" = ref_method (A-G). NOT ocpd_type.
 - "number of points" or "X points" = number_of_points (integer).

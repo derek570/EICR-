@@ -88,9 +88,11 @@ function forbiddenDestinations(closure) {
 }
 
 describe('the descriptor leaf is a leaf', () => {
-  test('its static imports are exactly the four allowed modules', () => {
+  test('its static imports are exactly the five allowed modules', () => {
     // PLAN-CS added `bs-code.js`, the module of its registered
     // `ocpd_standard_shape` predicate — a `parsers/` module, the carve-out.
+    // PLAN-C2 added `mcb-type.js`, the OCPD type advisory's derivation —
+    // another `parsers/` module, whose only static import is `bs-code.js`.
     const specs = staticImportSpecifiers(resolve(REPO_ROOT, LEAF));
     expect(new Set(specs)).toEqual(
       new Set([
@@ -98,6 +100,7 @@ describe('the descriptor leaf is a leaf', () => {
         './value-enum-validator.js',
         './value-normalise.js',
         './dialogue-engine/parsers/bs-code.js',
+        './dialogue-engine/parsers/mcb-type.js',
       ])
     );
   });

@@ -875,7 +875,11 @@ describe('slotsToCircuits', () => {
     expect(circuits[0].ocpd_rating_a).toBe('30');
   });
 
-  test('8. cartridge slot → ocpd_type="HRC", ocpd_bs_en="BS 1361"', () => {
+  // PLAN-C2 (Decision 6) — INVERTED. The classifier saw a cartridge CARRIER,
+  // not a printed type, so the route no longer manufactures `HRC`: the type is
+  // blank unless the VLM read an explicit marking, and the standard fallback is
+  // unchanged. Blank beats guessed.
+  test('8. cartridge slot with no observed type → ocpd_type null, ocpd_bs_en="BS 1361"', () => {
     const slots = [
       makeSlot({
         classification: 'cartridge',
@@ -889,8 +893,29 @@ describe('slotsToCircuits', () => {
     const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
 
     expect(circuits).toHaveLength(1);
-    expect(circuits[0].ocpd_type).toBe('HRC');
+    expect(circuits[0].ocpd_type).toBeNull();
     expect(circuits[0].ocpd_bs_en).toBe('BS 1361');
+  });
+
+  test('8b. an observed type marking is written, canonicalised (cartridge gG, MCB curve C)', () => {
+    const slots = [
+      makeSlot({
+        classification: 'cartridge',
+        tripCurve: 'g G',
+        ratingAmps: 30,
+        bsEn: null,
+        confidence: 0.9,
+      }),
+      makeSlot({
+        classification: 'mcb',
+        tripCurve: 'C',
+        ratingAmps: 32,
+        bsEn: null,
+        confidence: 0.9,
+      }),
+    ];
+    const circuits = slotsToCircuits({ slots, mainSwitchSide: 'left', singleShotCircuits: [] });
+    expect(circuits.map((c) => c.ocpd_type)).toEqual(['gG', 'C']);
   });
 
   test('9. low-confidence slot emits slot-derived fields + low_confidence=true (no single-shot fallback)', () => {

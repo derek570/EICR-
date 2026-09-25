@@ -38,6 +38,7 @@ import { findCanonicalMainBoard } from '../boards/canonical-main';
 import { hasValue } from './apply-extraction';
 import {
   canonicaliseOcpdStandardForImport,
+  canonicaliseOcpdType,
   recomputeMaxZsForOcpdTuple,
   repairCircuitDesignation,
   type CircuitMatch,
@@ -610,9 +611,13 @@ function mergeMatchedCircuit(
       ? canonicaliseOcpdStandardForImport(String(analysed.ocpd_bs_en))
       : analysed.ocpd_bs_en
   );
+  // PLAN-C2 — the observed type marking, through the shared canonicaliser;
+  // free text, so any value the photo pipeline read is kept.
   next.ocpd_type = mergeField(
     next.ocpd_type as string | undefined,
-    analysed.ocpd_type ?? undefined
+    hasValue(analysed.ocpd_type)
+      ? canonicaliseOcpdType(analysed.ocpd_type) || analysed.ocpd_type
+      : (analysed.ocpd_type ?? undefined)
   );
   next.ocpd_rating_a = mergeField(next.ocpd_rating_a as string | undefined, analysed.ocpd_rating_a);
   next.ocpd_breaking_capacity_ka = mergeField(
@@ -658,7 +663,9 @@ function buildNewCircuit(analysed: CCUAnalysisCircuit, boardId: string): Circuit
     noteExternalOcpdWrite(row.id == null ? null : String(row.id));
     row.ocpd_bs_en = canonicaliseOcpdStandardForImport(String(analysed.ocpd_bs_en));
   }
-  if (hasValue(analysed.ocpd_type)) row.ocpd_type = analysed.ocpd_type;
+  if (hasValue(analysed.ocpd_type)) {
+    row.ocpd_type = canonicaliseOcpdType(analysed.ocpd_type) || analysed.ocpd_type;
+  }
   if (hasValue(analysed.ocpd_rating_a)) row.ocpd_rating_a = analysed.ocpd_rating_a;
   if (hasValue(analysed.ocpd_breaking_capacity_ka)) {
     row.ocpd_breaking_capacity_ka = analysed.ocpd_breaking_capacity_ka;

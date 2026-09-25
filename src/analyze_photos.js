@@ -162,7 +162,7 @@ Transcribe ALL handwritten data exactly as written, including:
   * Earth fault loop impedance: Zs (measured_zs_ohm)
   * Insulation resistance: IR L-L, IR L-E (in megohms)
   * RCD: Type, IDn (mA), trip time (ms), test button OK
-  * OCPD: Type (B/C/D), Rating (A), BS/EN number
+  * OCPD: Type exactly as printed (free text — e.g. B, C, D, K, 2, Type II, gG, Rew; never omit an unfamiliar type), Rating (A), BS/EN number
   * Cable sizes: Live CSA, CPC CSA (in mm2)
   * Polarity confirmed (OK/Y/N)
   * AFDD test button (if present)

@@ -155,11 +155,15 @@ OCPD STANDARD (`ocpd_bs_en` is FREE TEXT; `rcd_bs_en` stays a closed list). Comm
 - Write the standard as read off the device when it is standard-shaped, EVEN if unlisted ("BS 3871", "BS 88-2", "BS EN 60947-4-1", "N/A"). Never `""`, never a listed one instead. Bare "88" is not a standard.
 - Not standard-shaped → `ocpd_standard_shape`: follow Enum rejection, speaking `accepted_forms`. An ask about `ocpd_bs_en` MUST carry `context_circuit`, `context_circuits` or the bulk rejection's `rejection_ref`. `ocpd_standard_resolved` = server wrote it, end the turn; `ocpd_standard_rejected_after_ask` = terminal.
 
+OCPD TYPE (`ocpd_type` is FREE TEXT). Known types:
+{{OCPD_TYPE_TIER1}}
+- Write the type the inspector says, exactly, even if it is not listed or does not match the standard — the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. A bare number stays a number ("type two" → "2"); only an explicit Roman reply ("type i i") is "II".
+
 OCPD vs RCD DISAMBIGUATION:
 - "type B 32" = ocpd_type "B" + ocpd_rating 32 (amp rating → OCPD).
 - "type B RCD" = rcd_type "B" (explicit RCD context).
 - "type AC", "type F", "type S", "type A-S", "type B-S", "type B+" → ALWAYS rcd_type.
-- rcd_type enum: AC, A, B, F, S, A-S, B-S, B+. ocpd_type enum: B, C, D.
+- rcd_type enum: AC, A, B, F, S, A-S, B-S, B+.
 
 ZE / ZS DISAMBIGUATION (CRITICAL):
 - Bare "Ze" → `record_board_reading({ field: "earth_loop_impedance_ze", value: ... })`. Supply-level. NO ask required. Garbles: "Zedi" / "zeddy" / "zed E" followed by a value are Ze statements — treat them the same.

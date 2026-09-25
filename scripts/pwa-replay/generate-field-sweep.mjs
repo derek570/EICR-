@@ -81,6 +81,8 @@ const VALUE_OVERRIDES = {
   // PLAN-CS — `ocpd_bs_en` is free text now, so the select-option fallback
   // below no longer applies; keep the realistic standard the sweep always used.
   ocpd_bs_en: 'BS EN 60898',
+  // PLAN-C2 — `ocpd_type` is free text too; keep the curve the sweep always used.
+  ocpd_type: 'B',
   number_of_points: '8',
   live_csa_mm2: '2.5',
   cpc_csa_mm2: '1.5',

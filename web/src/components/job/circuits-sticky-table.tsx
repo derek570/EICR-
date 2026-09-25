@@ -32,6 +32,7 @@
 import * as React from 'react';
 import { MaxZsMarker } from '@/components/job/max-zs-marker';
 import { OcpdStandardComboCell } from '@/components/job/ocpd-standard-field';
+import { OcpdTypeComboCell } from '@/components/job/ocpd-type-field';
 import { Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
 import { orderCircuitFocusFields } from './circuit-focus-fields';
@@ -76,7 +77,6 @@ interface ColumnSpec {
 // counterpart so the table uses iOS's "✓" sentinel directly
 // (DeepgramRecordingViewModel.swift sets rcdButtonConfirmed = "✓").
 const POLARITY_OPTS = ['', 'pass', 'fail', 'na'] as const;
-const OCPD_TYPE_OPTS = ['', 'B', 'C', 'D'] as const;
 const RCD_TYPE_OPTS = ['', 'AC', 'A', 'B', 'F'] as const;
 const BUTTON_CONFIRM_OPTS = ['', '✓'] as const;
 
@@ -94,7 +94,8 @@ const COLUMNS: ColumnSpec[] = [
     inputMode: 'decimal',
   },
   { key: 'ocpd_bs_en', label: 'OCPD BS/EN', width: 140, kind: 'text' },
-  { key: 'ocpd_type', label: 'Type', width: 70, kind: 'select', options: OCPD_TYPE_OPTS },
+  // PLAN-C2 — free text (`OcpdTypeComboCell`), so a keyboard cell, not a select.
+  { key: 'ocpd_type', label: 'Type', width: 84, kind: 'text' },
   { key: 'ocpd_rating_a', label: 'Rating A', width: 70, kind: 'numeric', inputMode: 'decimal' },
   {
     key: 'ocpd_breaking_capacity_ka',
@@ -352,6 +353,7 @@ function Row({
                 id={circuit.id}
                 column={col}
                 value={v(col.key)}
+                standard={v('ocpd_bs_en')}
                 onPatch={onPatch}
                 circuitRef={ref}
               />
@@ -361,6 +363,7 @@ function Row({
               id={circuit.id}
               column={col}
               value={v(col.key)}
+              standard={v('ocpd_bs_en')}
               onPatch={onPatch}
               circuitRef={ref}
             />
@@ -387,12 +390,15 @@ function CellField({
   id,
   column,
   value,
+  standard,
   onPatch,
   circuitRef,
 }: {
   id: string;
   column: ColumnSpec;
   value: Cell;
+  /** PLAN-C2 — the row's OCPD standard, for the type cell's alias and marker. */
+  standard?: Cell;
   onPatch: (id: string, patch: Record<string, string>) => void;
   circuitRef: string;
 }) {
@@ -403,6 +409,19 @@ function CellField({
   // is identical, which is the part that must not drift between surfaces.
   if (column.key === 'ocpd_bs_en') {
     return <OcpdStandardCell id={id} value={value} onPatch={onPatch} ariaLabel={ariaLabel} />;
+  }
+  // PLAN-C2 — the OCPD type is free text with suggestions, the same commit
+  // contract as the card and the desktop schedule.
+  if (column.key === 'ocpd_type') {
+    return (
+      <OcpdTypeCell
+        id={id}
+        value={value}
+        standard={String(standard ?? '')}
+        onPatch={onPatch}
+        ariaLabel={ariaLabel}
+      />
+    );
   }
   if (column.kind === 'select') {
     return (
@@ -428,6 +447,39 @@ function CellField({
       onPatch={onPatch}
       inputMode={column.inputMode}
       ariaLabel={ariaLabel}
+    />
+  );
+}
+
+function OcpdTypeCell({
+  id,
+  value,
+  standard,
+  onPatch,
+  ariaLabel,
+}: {
+  id: string;
+  value: Cell;
+  standard: string;
+  onPatch: (id: string, patch: Record<string, string>) => void;
+  ariaLabel: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const accessory = React.useContext(StickyAccessoryContext);
+  const handlers = accessory?.inputHandlers(id, 'ocpd_type');
+  return (
+    <OcpdTypeComboCell
+      value={String(value ?? '')}
+      standard={standard}
+      onCommit={(next) => onPatch(id, { ocpd_type: next })}
+      ariaLabel={ariaLabel}
+      isOpen={open}
+      onOpen={() => setOpen(true)}
+      onClose={() => setOpen(false)}
+      font="text-[12px]"
+      inputRef={(el) => accessory?.registerRef(id, 'ocpd_type', el)}
+      onFocus={handlers?.onFocus}
+      onAccessoryBlur={handlers?.onBlur}
     />
   );
 }

@@ -176,13 +176,15 @@ describe('closed-enum guard — single-circuit update_field', () => {
 describe('closed-enum guard — bulk apply_field', () => {
   it('rejects the WHOLE command: no row is written and exactly one re-ask is spoken', () => {
     const out = applyVoiceCommand(
-      { type: 'apply_field', field: 'ocpd_type', value: 'MCB', scope: { kind: 'all' } },
+      { type: 'apply_field', field: 'rcd_type', value: 'MCB', scope: { kind: 'all' } },
       JOB
     );
+    // PLAN-C2 — the example moved from `ocpd_type` (free text now) to
+    // `rcd_type`, which is still guarded.
     expect(out.patch).toBeUndefined();
     expect(out.invalidClosedEnum).toBe(true);
     expect(out.response).toBe(
-      "I heard OCPD type 'MCB', which isn't a valid option — say, for example, 'OCPD type B for all circuits'."
+      "I heard RCD type 'MCB', which isn't a valid option — say, for example, 'RCD type AC for all circuits'."
     );
   });
 
@@ -393,8 +395,8 @@ describe('Codex cycle 2 — an apply_field scope is only a target if it is a rea
     const out = applyVoiceCommand(
       {
         type: 'apply_field',
-        field: 'ocpd_type',
-        value: 'B',
+        field: 'rcd_type',
+        value: 'A',
         scope: { kind: 'single', circuit: 2.5 },
       },
       JOB

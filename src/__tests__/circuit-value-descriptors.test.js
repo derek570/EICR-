@@ -117,9 +117,14 @@ describe('describeSlotValidation — shape invariants (canonical row 5)', () => 
     expect(describeSlotValidation('ir_test_voltage_v').range).toEqual({ min: 100, max: 1000 });
     expect(describeSlotValidation('ir_test_voltage_v').unit).toBe('V');
 
+    // PLAN-C2 (Decision 6) — `ocpd_type` is free text. The descriptor reads
+    // the LIVE schema, so the flip changes the expectation, not the mechanism:
+    // no `allowed_values`, the suggestion list as `suggestions`.
     const type = describeSlotValidation('ocpd_type');
-    expect(type.kind).toBe('enum');
-    expect(type.allowed_values).toContain('N/A');
+    expect(type.kind).toBe('text');
+    expect(type.allowed_values).toBeUndefined();
+    expect(type.suggestions).toContain('N/A');
+    expect(type.suggestions).toContain('II');
     expect(type.accepts_na).toBe(true);
 
     // Decision 9 (A-201): breaking capacity is NOT an enum. Its researched

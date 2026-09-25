@@ -42,18 +42,19 @@
  * row here (`ClosedEnumReaskField`) so a canonicalisation miss still speaks the
  * same sentence it always did. `rcd_bs_en` is unchanged and still guarded.
  *
+ * PLAN-C2 (2026-09-25, Decision 6) REMOVED `ocpd_type` completely — from the
+ * guarded set AND from the re-ask tables. It is free text with an advisory
+ * (`ocpd-type.ts`): an unknown or standard-incompatible type is written and
+ * read back with one advisory clause, and nothing re-asks for it, so it has no
+ * re-ask sentence left to pin.
+ *
  * `CLOSED_ENUM_OPTIONS` and the mapping tables are pinned against
  * `config/closed-enum-vectors.json` (the cross-platform fixture) by a drift
  * test on each client, and the fixture's `options` are in turn re-derived
  * from `config/field_schema.json` in CI. Do not hand-edit either half alone.
  */
 
-export type GuardedClosedEnumField =
-  | 'wiring_type'
-  | 'ref_method'
-  | 'ocpd_type'
-  | 'rcd_bs_en'
-  | 'rcd_type';
+export type GuardedClosedEnumField = 'wiring_type' | 'ref_method' | 'rcd_bs_en' | 'rcd_type';
 
 /** Fields the RE-ASK renderer can speak for. A superset of the guarded set by
  *  exactly one member: PLAN-CC made `ocpd_bs_en` free text, so it is no longer
@@ -63,7 +64,7 @@ export type GuardedClosedEnumField =
  *  spoken copy cannot drift apart. */
 export type ClosedEnumReaskField = GuardedClosedEnumField | 'ocpd_bs_en';
 
-/** Guarded set — exactly the six STRING-enum circuit fields. The four
+/** Guarded set — the four remaining STRING-enum circuit fields. The four
  *  boolean/confirmable selects (`polarity_confirmed`, `rcd_button_confirmed`,
  *  `afdd_button_confirmed`, `is_distribution_circuit`) keep their existing
  *  PASS/FAIL → sigil normalisation and are NEVER string-membership-validated
@@ -71,7 +72,6 @@ export type ClosedEnumReaskField = GuardedClosedEnumField | 'ocpd_bs_en';
 export const GUARDED_CLOSED_ENUM_FIELDS: ReadonlySet<string> = new Set<string>([
   'wiring_type',
   'ref_method',
-  'ocpd_type',
   'rcd_bs_en',
   'rcd_type',
 ]);
@@ -82,7 +82,6 @@ export const CLOSED_ENUM_OPTIONS: Readonly<Record<GuardedClosedEnumField, readon
   Object.freeze({
     wiring_type: Object.freeze(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'O']),
     ref_method: Object.freeze(['A', 'B', 'C', 'D', 'E', 'F', 'G', '100', '101', '102', '103']),
-    ocpd_type: Object.freeze(['B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A']),
     rcd_bs_en: Object.freeze(['BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A']),
     rcd_type: Object.freeze(['AC', 'A', 'F', 'B', 'S', 'A-S', 'B-S', 'B+', 'N/A']),
   }) as Readonly<Record<GuardedClosedEnumField, readonly string[]>>;
@@ -94,7 +93,6 @@ export const CLOSED_ENUM_LABELS: Readonly<Record<ClosedEnumReaskField, string>> 
   wiring_type: 'wiring type',
   ref_method: 'reference method',
   ocpd_bs_en: 'OCPD BS EN',
-  ocpd_type: 'OCPD type',
   rcd_bs_en: 'RCD BS EN',
   rcd_type: 'RCD type',
 });
@@ -105,7 +103,6 @@ const CLOSED_ENUM_NOUNS: Readonly<Record<ClosedEnumReaskField, string>> = Object
   wiring_type: 'code',
   ref_method: 'reference method',
   ocpd_bs_en: 'standard',
-  ocpd_type: 'option',
   rcd_bs_en: 'standard',
   rcd_type: 'option',
 });
@@ -118,7 +115,6 @@ const CLOSED_ENUM_EXAMPLE_PHRASES: Readonly<Record<ClosedEnumReaskField, string>
   wiring_type: 'wiring type A',
   ref_method: 'reference method C',
   ocpd_bs_en: 'OCPD standard BS EN 60898',
-  ocpd_type: 'OCPD type B',
   rcd_bs_en: 'RCD standard BS EN 61008',
   rcd_type: 'RCD type AC',
 });
@@ -355,7 +351,7 @@ export function isGuardedClosedEnumField(field: string | null | undefined): bool
 
 /**
  * Circuit fields whose dictated VALUE is checked before it is written — the
- * five closed enums, PLUS `ocpd_bs_en`, which PLAN-CC made free text but which
+ * four closed enums, PLUS `ocpd_bs_en`, which PLAN-CC made free text but which
  * still goes through a canonicaliser that can MISS.
  *
  * This is the predicate every "is this field value-checked?" branch must use,
@@ -387,7 +383,7 @@ const NA_PHRASES = new Set(['n/a', 'na', 'n a', 'n.a', 'n.a.', 'not applicable']
 /**
  * Validate-or-ask on one guarded closed-list field.
  *
- * Non-string inputs: a finite NUMBER stringifies (so `ocpd_type: 1` becomes
+ * Non-string inputs: a finite NUMBER stringifies (so `ref_method: 1` becomes
  * an honest invalid-value re-ask naming "1" rather than a dropped command);
  * booleans, objects, null and undefined are structural non-values and route
  * to `missing_value`.

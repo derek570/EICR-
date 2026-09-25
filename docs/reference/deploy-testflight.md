@@ -110,6 +110,21 @@ compiles against: `docker/nextjs.Dockerfile`'s builder never copies root `config
 A missing file on either side, a differing byte, or a generator failure fails
 closed. `deploy-testflight.sh` runs this as a named preflight — the sixth.
 
+PLAN-C2 (2026-09-25) adds the OCPD type manifest check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-ocpd-type-fixture-sync.sh
+```
+
+It byte-compares `config/ocpd-type-suggestions.json` — the canonicalisation grammar,
+compatibility table, BS 1361 display alias and local-command sentences for the now
+free-text `ocpd_type` field, SHA-256-pinned in Vitest and XCTest — with the XCTest copy
+under `Tests/CertMateUnifiedTests/Fixtures/`. There is no generated web module: web
+compiles the list in through `packages/shared-utils/src/ocpd-type.ts`, whose test re-reads
+the JSON. A missing file or a differing byte fails closed. `deploy-testflight.sh` runs
+this as a named preflight.
+
 PLAN-D (2026-09-23) adds the voice-pause fixture check:
 
 ```bash

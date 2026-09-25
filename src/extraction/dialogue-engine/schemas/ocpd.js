@@ -19,7 +19,11 @@
  */
 
 import { BS_STANDARD_NAMED_EXTRACTOR, parseOcpdStandard } from '../parsers/bs-code.js';
-import { parseMcbType } from '../parsers/mcb-type.js';
+import {
+  OCPD_TYPE_CLAUSE_VETO,
+  OCPD_TYPE_NAMED_EXTRACTOR,
+  parseMcbType,
+} from '../parsers/mcb-type.js';
 import { parseAmps } from '../parsers/amps.js';
 import { parseKa } from '../parsers/ka.js';
 
@@ -49,19 +53,32 @@ const slots = [
       { value: '61009', pivot: 'rcbo' },
       // Rewireable BS code uniquely determines ocpd_type = "Rew".
       { value: '3036', sets: { ocpd_type: 'Rew' } },
-      // HRC fuses by BS 88 family.
-      { value: '88-2', sets: { ocpd_type: 'HRC' } },
-      { value: '88-3', sets: { ocpd_type: 'HRC' } },
-      // Cartridge fuse — iOS canonical type is "1" (BS 1361 class).
-      { value: '1361', sets: { ocpd_type: '1' } },
+      // PLAN-C2 (Decision 6) — `1361 → "1"` and `88-2` / `88-3 → HRC` are
+      // gone: a standard alone never certifies a type. BS 1361 has Type I and
+      // Type II, and a BS 88 fuse can be gG, gM or aM, so each of those rows
+      // wrote a type the inspector never read off the device. BS 3036 is the
+      // exception because a rewireable fuse has exactly one type.
     ],
   },
   {
     field: 'ocpd_type',
     label: 'curve',
-    question: 'What MCB curve? B, C, or D?',
+    // PLAN-C2 — the device may be a fuse (BS 88, BS 1361, BS 3036), and the
+    // type is free text (Decision 6), so the question no longer offers only
+    // the three MCB curves.
+    question: 'What type? B, C or D for a breaker; say the type printed on a fuse.',
+    // Canonicalise, then admit ONE token (`superfast` is a value, not prose).
+    // A miss is PLAN-A's first-miss handoff: this slot never asks a
+    // clarifying question.
     parser: parseMcbType,
-    namedExtractor: /\b(?:type|curve)\s*([BCD])\b|\b([BCD])\s*[-]?\s*curve\b/i,
+    namedExtractor: OCPD_TYPE_NAMED_EXTRACTOR,
+    // A clause naming another column (RCD, wiring, reference method) never
+    // yields an OCPD type; see OCPD_TYPE_CLAUSE_VETO.
+    namedExtractorClauseVeto: OCPD_TYPE_CLAUSE_VETO,
+    // Read the raw reply, never the annotated text: the anchored grammar
+    // cannot consume the `[In response to TTS question …]` bracket, and the
+    // widened extractor would capture a word of the question itself.
+    parsesRawReply: true,
     acceptsBareValue: true,
   },
   {

@@ -38,6 +38,7 @@ import type {
 import { hasValue, parseObservationCode } from './apply-extraction';
 import {
   canonicaliseOcpdStandardForImport,
+  canonicaliseOcpdType,
   recomputeMaxZsForOcpdTuple,
   repairCircuitDesignation,
   writeMaxZs,
@@ -386,6 +387,10 @@ function mergeCircuits(
         } else if (field === 'ocpd_bs_en') {
           noteExternalOcpdWrite(row.id == null ? null : String(row.id));
           row[field] = canonicaliseOcpdStandardForImport(String(value));
+        } else if (field === 'ocpd_type') {
+          // PLAN-C2 (Decision 6) — the type exactly as read off the
+          // certificate, through the shared alias canonicaliser; never refused.
+          row[field] = canonicaliseOcpdType(value) || value;
         } else {
           row[field] = value;
         }
@@ -419,6 +424,8 @@ function mergeCircuits(
         } else if (field === 'ocpd_bs_en') {
           noteExternalOcpdWrite(built.id == null ? null : String(built.id));
           built[field] = canonicaliseOcpdStandardForImport(String(value));
+        } else if (field === 'ocpd_type') {
+          built[field] = canonicaliseOcpdType(value) || value;
         } else {
           built[field] = value;
         }

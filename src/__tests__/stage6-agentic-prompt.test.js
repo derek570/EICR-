@@ -2680,6 +2680,72 @@ describe('sonnet_agentic_system.md — STQ-01/02/05 content invariants', () => {
   });
 });
 
+// PLAN-C2 (feedback-2026-09-17, acceptance 6) — the OCPD TYPE suggestion list is
+// RENDERED from config/ocpd-type-suggestions.json into both variants, exactly
+// like the standard list. Equality, not presence. And no composed prompt may
+// still describe ocpd_type as a B/C/D-only field.
+describe('PLAN-C2 — OCPD type Tier-1 block rendered from the shared manifest', () => {
+  test('both variants carry exactly the manifest-built block, the free-text rule and no B/C/D-only wording', async () => {
+    const session = await import('../extraction/eicr-extraction-session.js');
+    const manifest = JSON.parse(
+      fssync.readFileSync(
+        path.join(__dirname, '..', '..', 'config', 'ocpd-type-suggestions.json'),
+        'utf8'
+      )
+    );
+    const expected = `  - ${manifest.suggestions.join(', ')}.`;
+    expect(session.buildOcpdTypeTier1Block()).toBe(expected);
+    const rawMarkdown = fssync.readFileSync(PROMPT_PATH, 'utf8');
+    expect(rawMarkdown.split('\n').filter((l) => l.trim() === '{{OCPD_TYPE_TIER1}}')).toHaveLength(
+      1
+    );
+    for (const enabled of [false, true]) {
+      const rendered = session.renderAgenticSystemPrompt(enabled);
+      expect(rendered).not.toContain('{{OCPD_TYPE_TIER1}}');
+      const lines = rendered.split('\n');
+      const header = lines.findIndex((l) => l.startsWith('OCPD TYPE (`ocpd_type` is FREE TEXT)'));
+      expect(header).toBeGreaterThanOrEqual(0);
+      expect(lines[header + 1]).toBe(expected);
+    }
+    for (const composed of [
+      session.EICR_AGENTIC_SYSTEM_PROMPT,
+      session.EICR_AGENTIC_SYSTEM_PROMPT_ANSWERS,
+    ]) {
+      expect(composed).not.toContain('{{OCPD_TYPE_TIER1}}');
+      expect(composed.split('\n').filter((l) => l === expected)).toHaveLength(1);
+      expect(composed).toContain('you never refuse or re-ask for the type');
+      expect(composed).not.toMatch(/ocpd_type enum: B, C, D/);
+    }
+    // Codex EP cycle 1 (c1-3) — two more ACTIVE prompts: the uploaded-photo
+    // prompt (analyze_photos.js, reached via process_job.js) and the legacy
+    // recording prompt's closed-enum list. Neither may restrict the type.
+    const photoPrompt = fssync.readFileSync(
+      path.join(__dirname, '..', 'analyze_photos.js'),
+      'utf8'
+    );
+    expect(photoPrompt).not.toMatch(/Type \(B\/C\/D\)/);
+    const legacy = fssync.readFileSync(
+      path.join(__dirname, '..', '..', 'config', 'prompts', 'sonnet_extraction_system.md'),
+      'utf8'
+    );
+    expect(legacy).not.toMatch(/ref_method, ocpd_type, rcd_type[^.\n]*every closed-enum field/);
+    // Every prompt file that still names ocpd_type carries no B/C/D-only rule.
+    const promptsDir = path.join(__dirname, '..', '..', 'config', 'prompts');
+    for (const f of fssync.readdirSync(promptsDir).filter((n) => n.endsWith('.md'))) {
+      const text = fssync.readFileSync(path.join(promptsDir, f), 'utf8');
+      // Proven against the pre-plan prompts: this pattern matched all six files
+      // that described the field as B/C/D-only, and matches none now.
+      expect({
+        f,
+        bcdOnly: /ocpd_type[^.\n]{0,45}?\(?B[,/] ?C[,/] ?(?:or )?D\b(?!, K)/.test(text),
+      }).toEqual({
+        f,
+        bcdOnly: false,
+      });
+    }
+  });
+});
+
 // PLAN-CS (feedback-2026-09-17, acceptance 6) — the OCPD standard block's
 // Tier-1 list is RENDERED from config/ocpd-bs-suggestions.json into BOTH
 // prompt variants. Equality, not presence: a hand-edited list in the markdown

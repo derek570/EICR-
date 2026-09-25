@@ -92,7 +92,12 @@ export function mapServerActionToVoiceCommand(
       // On every other field keep the historical `!value → null`:
       // forwarding '' there would be a BLANKING write, which is a
       // behaviour change well outside this plan's scope.
-      if (isValueCheckedCircuitField(field)) {
+      // PLAN-C2 — `ocpd_type` left the guarded set but keeps the tolerant
+      // decode: a numeric type (`2`) is a real value, and a blank or
+      // wrong-typed one must reach the applier so the inspector hears its
+      // truthful missing-value line instead of the server's success text
+      // (iOS canon: its decoder forwards the same way).
+      if (isValueCheckedCircuitField(field) || field === 'ocpd_type') {
         return { type: 'update_field', field, value: asGuardedValue(params.value), circuit };
       }
       const value = asString(params.value);
@@ -127,7 +132,7 @@ export function mapServerActionToVoiceCommand(
       if (!field) return null;
       const scope = scopeFromParams();
       const sparePolicy = asSparePolicy(params.spare_policy);
-      if (isValueCheckedCircuitField(field)) {
+      if (isValueCheckedCircuitField(field) || field === 'ocpd_type') {
         const value = asGuardedValue(params.value);
         // PLAN-C — a guarded action is never dropped. With no resolvable
         // scope, route it through `update_field` with no circuit so the

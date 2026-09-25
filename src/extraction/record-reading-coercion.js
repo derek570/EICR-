@@ -56,6 +56,7 @@
  */
 
 import { parseOcpdStandard, parseRcdBsCode } from './dialogue-engine/parsers/bs-code.js';
+import { canonicaliseOcpdType } from './dialogue-engine/parsers/mcb-type.js';
 import { NUMERIC_READING_FIELDS, isLimForm } from './value-enum-validator.js';
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 
@@ -256,6 +257,17 @@ export function coerceRecordReadingValue(field, value) {
   // dispatcher's invalid_type path can flag them.
   if (typeof value === 'boolean' && YN_BOOLEAN_FIELDS.has(field)) {
     return value ? 'Y' : 'N';
+  }
+  // PLAN-C2 (feedback-2026-09-17, Decision 6) — `ocpd_type` is free text. The
+  // SAME canonicaliser the dialogue slot uses, so a model write, a bulk write
+  // and the speculator's pre-synth text all carry the same bytes. It never
+  // refuses a non-blank value ("superfast", "two two" are stored as said, with
+  // the advisory); a finite number stringifies (`2` is a real type). Blank
+  // passes through for PLAN-C3's blank rule.
+  if (field === 'ocpd_type') {
+    const canonical = canonicaliseOcpdType(value);
+    if (canonical == null || canonical === '') return value;
+    return canonical;
   }
   if (typeof value !== 'string') return value;
 

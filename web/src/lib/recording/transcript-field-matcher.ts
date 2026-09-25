@@ -252,12 +252,6 @@ const STOP_WORDS = new Set([
   'me',
 ]);
 
-const BS_EN_TO_OCPD_TYPE: Record<string, string> = {
-  '60898': 'MCB',
-  '61009': 'RCBO',
-  '60909': 'RCBO',
-};
-
 const BS_EN_MAP: Record<string, string> = {
   '1361': '1361 type 1',
   '3036': '3036 (S-E)',
@@ -525,10 +519,13 @@ const OCPD_RATING_BEFORE =
   /\b(\d+)\s*(?:amp|amber|a)\s+(?:mcb|rcbo|rccb|breaker|circuit\s+breaker|miniature\s+circuit\s+breaker)/gi;
 const OCPD_RATING_AFTER =
   /\b(?:mcb|rcbo|rccb|breaker|circuit\s+breaker|miniature\s+circuit\s+breaker)\s+(?:is\s+|rated?\s+(?:at\s+)?)?(\d+)\s*(?:amp|a)?/gi;
-const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d])\b/gi;
+// PLAN-C2 — an explicitly spoken type: a curve letter or a BS 3871 / 60947-2
+// digit (`type 2`). Hint-level only; the server write owns the read-back.
+const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d]|[1-4])\b/gi;
+// PLAN-C2 (Codex EP cycle 2) — the value class covers the numeric type tokens
+// the OCPD pattern now accepts, so "wiring type 2" is not an OCPD type.
 const WIRING_OR_REF_BEFORE_TYPE =
-  /\b(?:wir\w+|worrying|cable|ref\w*|reference|installation)\s+type\s+(?:is\s+)?[a-g]\b/gi;
-const OCPD_DEVICE_PATTERN = /\b(mcb|rcbo|rccb)\b/gi;
+  /\b(?:wir\w+|worrying|cable|ref\w*|reference|installation)\s+type\s+(?:is\s+)?(?:[a-g]|[1-4])\b/gi;
 const BS_EN_STANDARD_PATTERN = /\b(60898|61009|60909)\b/gi;
 const OCPD_COMPOSITE_PATTERN =
   /\b(?:bs\s*(?:en)?\s*)?(60898|61009|60909)\s+(?:(?:type|time(?:\s+for)?)\s+([a-d]))?\s*(\d+)?\s*(?:amp|amber|a)?/gi;
@@ -802,6 +799,35 @@ function lastCapture(re: RegExp, text: string, group: number = 1): string | unde
   if (!lastMatch) return undefined;
   activeTrace?.recordMatches([lastMatch]);
   return lastMatch[group < lastMatch.length ? group : 0];
+}
+
+/** Every match's [start, end) range. */
+function allMatchRanges(re: RegExp, text: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  freshScan(re);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.push([m.index, m.index + m[0].length]);
+    if (re.lastIndex === m.index) re.lastIndex += 1;
+  }
+  return out;
+}
+
+/** The last match that `keep` accepts. */
+function lastMatchWhere(
+  re: RegExp,
+  text: string,
+  keep: (m: RegExpExecArray) => boolean
+): RegExpExecArray | undefined {
+  let last: RegExpExecArray | undefined;
+  freshScan(re);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (keep(m)) last = m;
+    if (re.lastIndex === m.index) re.lastIndex += 1;
+  }
+  if (last) activeTrace?.recordMatches([last]);
+  return last;
 }
 
 function lastMatch(re: RegExp, text: string): RegExpExecArray | undefined {
@@ -1874,11 +1900,10 @@ export class TranscriptFieldMatcher {
         const bsEn = m[1];
         const typeLetter = m[2];
         const rating = m[3];
-        if (bsEn) {
-          updates.ocpd_bs_en = bsEn;
-          const mapped = BS_EN_TO_OCPD_TYPE[bsEn];
-          if (mapped) updates.ocpd_type = mapped;
-        }
+        // PLAN-C2 (Decision 6) — a standard is not a type. The BS-number →
+        // `MCB` / `RCBO` inference that stood here wrote a device CLASS into
+        // the type column; only an explicitly spoken type token may write it.
+        if (bsEn) updates.ocpd_bs_en = bsEn;
         if (typeLetter) updates.ocpd_type = typeLetter.toUpperCase();
         if (rating) {
           const n = parseInt(rating, 10);
@@ -1908,22 +1933,23 @@ export class TranscriptFieldMatcher {
     // BS EN standard (independent of composite).
     {
       const bsEn = lastCapture(BS_EN_STANDARD_PATTERN, text);
-      if (bsEn !== undefined) {
-        updates.ocpd_bs_en = bsEn;
-        const mapped = BS_EN_TO_OCPD_TYPE[bsEn];
-        if (mapped && updates.ocpd_type === undefined) updates.ocpd_type = mapped;
-      }
+      if (bsEn !== undefined) updates.ocpd_bs_en = bsEn;
     }
 
-    // Bare "type X" — only when not preceded by wiring/ref/cable.
+    // Bare "type X" — only when not preceded by wiring/ref/cable. PLAN-C2:
+    // the bare device-class fallback ("MCB" / "RCBO" → type) is gone; a device
+    // class is not a type the inspector dictated. The wiring/ref exclusion is
+    // judged PER MATCH (Codex EP cycle 3): only an OCPD match that overlaps an
+    // exclusion match is discarded, so "wiring type 2, OCPD type B" still
+    // yields B. Previously a wiring phrase anywhere vetoed the whole segment.
     {
-      const v = lastCapture(OCPD_TYPE_PATTERN, text);
-      if (v !== undefined) {
-        if (!hasMatch(WIRING_OR_REF_BEFORE_TYPE, text)) updates.ocpd_type = v.toUpperCase();
-      } else {
-        const dev = lastCapture(OCPD_DEVICE_PATTERN, text, 0);
-        if (dev !== undefined) updates.ocpd_type = dev.toUpperCase();
-      }
+      const excluded = allMatchRanges(WIRING_OR_REF_BEFORE_TYPE, text);
+      const m = lastMatchWhere(
+        OCPD_TYPE_PATTERN,
+        text,
+        (hit) => !excluded.some(([from, to]) => hit.index < to && hit.index + hit[0].length > from)
+      );
+      if (m) updates.ocpd_type = m[1].toUpperCase();
     }
 
     if (hasMatch(POLARITY_PATTERN, text)) updates.polarity_confirmed = '✓';

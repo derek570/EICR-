@@ -43,6 +43,13 @@ import {
 } from './closed-enum-guard';
 import { canonicaliseOcpdStandard, canonicaliseOcpdStandardForImport } from './ocpd-standard';
 import { applyOcpdAwarePatch } from './max-zs-lookup';
+import {
+  buildOcpdTypeBulkResponse,
+  buildOcpdTypeDuplicateResponse,
+  buildOcpdTypeSingleResponse,
+  canonicaliseOcpdType,
+  ocpdTypesCanonicallyEqual,
+} from './ocpd-type';
 import { repairCircuitDesignation } from './designation-canonicaliser';
 import { resolveJobZe, type JobZeLike } from './circuit-derivations';
 
@@ -212,6 +219,11 @@ export interface VoiceCommandOutcome {
    *  Deliberately distinct from `invalidClosedEnum` — the value was fine
    *  and the TARGET was not, and the telemetry must tell them apart. */
   guardedWriteFailed?: boolean;
+  /** PLAN-C2 — an `ocpd_type` outcome (a write with its advisory clause, or
+   *  the truthful identical-value duplicate line). Web routes it through the
+   *  protected local-command speech path (`speakLocalCommandOutcome`) with
+   *  one operation identity, like Calculate, so it is heard exactly once. */
+  protectedLocalReadback?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -386,6 +398,9 @@ const CANONICAL_CIRCUIT_FIELDS: ReadonlySet<string> = new Set<string>([
   // checked against an option list: dropping it here would make a
   // server-originated `ocpd_bs_en` action answer "I don't know the field".
   'ocpd_bs_en',
+  // PLAN-C2 — `ocpd_type` LEFT the guarded set (free text, Decision 6) and must
+  // stay resolvable by its canonical name for the same reason as `ocpd_bs_en`.
+  'ocpd_type',
   'number_of_points',
   'max_disconnect_time_s',
   'rcd_button_confirmed',
@@ -517,7 +532,13 @@ function cleanValue(raw: string, canonicalField?: string): string {
   // '')`, which turns a dictated `N/A` into `N/`: a value the certificate
   // would then print as a mangled fragment. The field's cleaning requirement
   // never depended on it being membership-validated.
-  if (canonicalField && isValueCheckedCircuitField(canonicalField)) {
+  // PLAN-C2 — `ocpd_type` keeps the edge-only cleaner for the same reason:
+  // a dictated `N/A` must stay `N/A`, and a dictated `2` must not reach the
+  // amps stripper.
+  if (
+    canonicalField &&
+    (isValueCheckedCircuitField(canonicalField) || canonicalField === 'ocpd_type')
+  ) {
     return cleanClosedEnumResidue(raw);
   }
   const noTrailingPunct = raw.replace(/[.,!?]+$/, '').trim();
@@ -1162,6 +1183,9 @@ function applyUpdateField(
   if (!resolved) {
     return respondUnknown(`I don't know the field "${command.field}".`);
   }
+  if (resolved.circuitField === 'ocpd_type') {
+    return applyOcpdTypeUpdate(command, job);
+  }
 
   // PLAN-C — validate the closed-enum value ONCE, before the circuit is
   // even looked up. A positive integer circuit reference is the only
@@ -1643,6 +1667,9 @@ function applyApplyField(
   if (!resolved || !resolved.circuitField) {
     return respondUnknown(`I don't know the field "${command.field}".`);
   }
+  if (resolved.circuitField === 'ocpd_type') {
+    return applyOcpdTypeApply(command, job);
+  }
   // PLAN-C — validate ONCE, BEFORE scope resolution. A bulk apply of a
   // garbled enum must mutate NOTHING and re-ask once, not write N bad
   // rows or speak N identical re-asks. The re-ask echoes the command's
@@ -1757,6 +1784,142 @@ function applyApplyField(
     appliedResults,
     changedKeys: [resolved.circuitField as string],
     ...(guardedCanonicalised ? { canonicalSuccess: true } : {}),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PLAN-C2 (feedback-2026-09-17, Decision 6) — `ocpd_type` local commands.
+//
+// The field is free text: there is no membership check and no re-ask for an
+// unknown or standard-incompatible type. The value is canonicalised
+// (`canonicaliseOcpdType`), written, and read back once with ONE advisory
+// clause when the (standard, type) pair is unknown or incompatible. An
+// IDENTICAL value (compared through the canonicaliser on both sides, never
+// rewriting storage) writes nothing and speaks one truthful duplicate line
+// without the advisory — Decision 6: the advisory is not repeated for the same
+// value. Mirrors iOS `VoiceCommandExecutor`; the sentences are pinned by
+// `config/ocpd-type-suggestions.json` on both clients.
+// ─────────────────────────────────────────────────────────────────────────
+
+const OCPD_TYPE_MISSING_VALUE =
+  "I didn't get a value for OCPD type — say, for example, 'OCPD type B for circuit 3'.";
+
+function ocpdTypeMissingTarget(value: string): string {
+  return `I heard OCPD type '${value}' but not which circuit — say, for example, 'OCPD type ${value} for circuit 3'.`;
+}
+
+function circuitRefOf(row: VoiceCommandCircuit, idx: number): string {
+  return String(row.circuit_ref ?? row.number ?? idx + 1);
+}
+
+function applyOcpdTypeUpdate(
+  command: Extract<VoiceCommand, { type: 'update_field' }>,
+  job: VoiceCommandJob
+): VoiceCommandOutcome {
+  const canonical = canonicaliseOcpdType(command.value);
+  // PLAN-C3's blank rule: a blank is never a clear.
+  if (canonical == null || canonical === '') {
+    return { response: OCPD_TYPE_MISSING_VALUE, invalidClosedEnum: true };
+  }
+  const circuitRef = command.circuit;
+  if (!(typeof circuitRef === 'number' && Number.isInteger(circuitRef) && circuitRef >= 1)) {
+    return { response: ocpdTypeMissingTarget(canonical), guardedWriteFailed: true };
+  }
+  const ref = String(circuitRef);
+  const circuits = job.circuits ?? [];
+  const idx = circuits.findIndex((c) => c.circuit_ref === ref || c.number === ref || c.id === ref);
+  if (idx === -1) {
+    return { ...respondUnknown(`Circuit ${circuitRef} doesn't exist.`), guardedWriteFailed: true };
+  }
+  const row = circuits[idx] as Record<string, unknown>;
+  if (ocpdTypesCanonicallyEqual(canonical, row.ocpd_type)) {
+    return {
+      response: buildOcpdTypeDuplicateResponse(canonical, circuitRef),
+      protectedLocalReadback: true,
+    };
+  }
+  const next: VoiceCommandCircuit[] = circuits.map((r, i) =>
+    i === idx
+      ? (applyOcpdAwarePatch(
+          r as Record<string, unknown>,
+          { ocpd_type: canonical },
+          canonicaliseOcpdStandardForImport
+        ) as VoiceCommandCircuit)
+      : r
+  );
+  return {
+    patch: { circuits: next },
+    response: buildOcpdTypeSingleResponse(canonical, circuitRef, row.ocpd_bs_en),
+    appliedResults: [{ circuit: circuitRef, field: 'ocpd_type', value: canonical }],
+    changedKeys: ['ocpd_type'],
+    canonicalSuccess: true,
+    protectedLocalReadback: true,
+  };
+}
+
+function applyOcpdTypeApply(
+  command: Extract<VoiceCommand, { type: 'apply_field' }>,
+  job: VoiceCommandJob
+): VoiceCommandOutcome {
+  const canonical = canonicaliseOcpdType(command.value);
+  if (canonical == null || canonical === '') {
+    return { response: OCPD_TYPE_MISSING_VALUE, invalidClosedEnum: true };
+  }
+  const target = guardedTargetForScope(command.scope, command.sparePolicy);
+  if (target.kind === 'unknown') {
+    return { response: ocpdTypeMissingTarget(canonical), guardedWriteFailed: true };
+  }
+  const circuits = [...(job.circuits ?? [])];
+  const { indices, spareSkippedCount } = indicesForScope(command.scope, circuits, {
+    fieldName: 'ocpd_type',
+    sparePolicy: command.sparePolicy,
+  });
+  if (indices.length === 0) {
+    if (spareSkippedCount > 0) {
+      return {
+        response: `No non-spare circuits were updated; ${skipClause(spareSkippedCount, 'standalone')}.`,
+        guardedWriteFailed: true,
+      };
+    }
+    return {
+      ...respondUnknown('No circuits found in the specified range.'),
+      guardedWriteFailed: true,
+    };
+  }
+  // Per target: identical rows (canonical on both sides) are neither
+  // rewritten nor re-advised; differing rows are written through the one
+  // manual-boundary commit route so the max Zs recomputes.
+  const written: Array<{ circuit: string; ocpdBsEn: unknown }> = [];
+  const unchanged: string[] = [];
+  const appliedResults: Array<{ circuit: number | string; field: string; value: string }> = [];
+  const next: VoiceCommandCircuit[] = circuits.map((row, idx) => {
+    if (!indices.includes(idx)) return row;
+    const ref = circuitRefOf(row, idx);
+    const record = row as Record<string, unknown>;
+    if (ocpdTypesCanonicallyEqual(canonical, record.ocpd_type)) {
+      unchanged.push(ref);
+      return row;
+    }
+    written.push({ circuit: ref, ocpdBsEn: record.ocpd_bs_en });
+    appliedResults.push({ circuit: ref, field: 'ocpd_type', value: canonical });
+    return applyOcpdAwarePatch(
+      record,
+      { ocpd_type: canonical },
+      canonicaliseOcpdStandardForImport
+    ) as VoiceCommandCircuit;
+  });
+  const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
+  const response = buildOcpdTypeBulkResponse({ type: canonical, written, unchanged, skipSuffix });
+  if (written.length === 0) {
+    return { response, protectedLocalReadback: true };
+  }
+  return {
+    patch: { circuits: next },
+    response,
+    appliedResults,
+    changedKeys: ['ocpd_type'],
+    canonicalSuccess: true,
+    protectedLocalReadback: true,
   };
 }
 

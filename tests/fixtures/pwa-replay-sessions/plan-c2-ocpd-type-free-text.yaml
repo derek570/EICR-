@@ -1,0 +1,70 @@
+# PLAN-C2 (feedback-2026-09-17 wave, WAVE-CONTEXT Decision 6) — an off-list
+# OCPD type at the SERVER-ORIGINATED apply boundary, replayed through the real
+# RecordingProvider.
+#
+# Decision 6: "If they're not in our standard list, it should advise that this
+# may not be correct but still record it. The point of an EICR is to record
+# what the inspector sees." Before this plan the same frame was REJECTED by the
+# client-local closed-enum guard (see plan-c-closed-enum-reask.yaml, now on
+# rcd_type). What this scenario pins, end to end:
+#   1. No re-ask: the client-local apply writes the value. (The harness trace
+#      does not observe a voice_command_response patch, so the write itself is
+#      pinned by web/tests/ocpd-type-voice-commands.test.ts; this scenario pins
+#      what the inspector HEARS.)
+#   2. The inspector hears the client-local outcome, carrying ONE advisory
+#      clause, exactly once — audible with the confirmation toggle OFF.
+#   3. The server's bare success line (no advisory) is never spoken instead.
+
+name: plan-c2-ocpd-type-free-text
+description: |
+  A server voice_command_response carries `update_field{ocpd_type: "MCB"}`.
+  The type is free text, so the client writes "MCB" and speaks its own
+  truthful outcome with the "not a type I know" advisory, once.
+suite: pwa-replay-sessions
+
+metadata:
+  source: PLAN-C2 acceptance 2 (web server-action path), authored 2026-09-25
+  platform: web
+  initial_state_fidelity: hand_authored
+  synthetic_interims: true
+
+confirmation_mode: false
+
+job_state:
+  boards:
+    - id: main
+      designation: DB-1
+      circuits:
+        - number: 3
+          designation: Upstairs lighting
+
+transcript:
+  - at_ms: 0
+    text: 'The breaker on circuit 3 is an MCB.'
+    isFinal: true
+
+mock_frames:
+  - on_transcript: 'The breaker on circuit 3 is an MCB.'
+    frames:
+      - type: extraction
+        readings: []
+        confirmations: []
+      - type: voice_command_response
+        understood: true
+        spoken_response: 'Set OCPD type to MCB on circuit 3.'
+        action:
+          type: update_field
+          params:
+            field: ocpd_type
+            value: MCB
+            circuit: 3
+
+expect:
+  web:
+    gate_passed:
+      - 'The breaker on circuit 3 is an MCB.'
+    confirmations_played:
+      - contains: 'Set OCPD type to MCB on circuit 3 — not a type I know.'
+    confirmations_not_played:
+      - contains: "which isn't a valid option"
+    confirmation_played_exactly_once: true

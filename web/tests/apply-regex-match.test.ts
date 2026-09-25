@@ -169,7 +169,7 @@ describe('applyRegexMatchToJob', () => {
       const tracker = new FieldSourceTracker();
       const out = applyRegexMatchToJob(
         jobWithRow(),
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'MCB' } } }),
         tracker
       );
       expect(out).toBeNull();
@@ -185,16 +185,16 @@ describe('applyRegexMatchToJob', () => {
       const job = jobWithRow();
       applyRegexMatchToJob(
         job,
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'MCB' } } }),
         tracker
       );
-      expect(tracker.getSource('circuit.row-A.ocpd_type')).toBeUndefined();
+      expect(tracker.getSource('circuit.row-A.rcd_type')).toBeUndefined();
       const out = applyRegexMatchToJob(
         job,
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'B' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'A' } } }),
         tracker
       );
-      expect(out!.patch.circuits?.[0]).toMatchObject({ ocpd_type: 'B' });
+      expect(out!.patch.circuits?.[0]).toMatchObject({ rcd_type: 'A' });
     });
 
     // Codex cycle 3 — suppression stops at the WRITE.
@@ -212,10 +212,10 @@ describe('applyRegexMatchToJob', () => {
       const tracker = new FieldSourceTracker();
       applyRegexMatchToJob(
         jobWithRow(),
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'MCB' } } }),
         tracker
       );
-      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.ocpd_type']);
+      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.rcd_type']);
     });
 
     it('the same suppressed value does not re-emit on the next cumulative pass', () => {
@@ -225,7 +225,7 @@ describe('applyRegexMatchToJob', () => {
       // would hold the gate open on every later utterance forever.
       const tracker = new FieldSourceTracker();
       const job = jobWithRow();
-      const result = makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } });
+      const result = makeResult({ circuit_updates: { '1': { rcd_type: 'MCB' } } });
       applyRegexMatchToJob(job, result, tracker);
       tracker.consumeTurnWrites();
       applyRegexMatchToJob(job, result, tracker);
@@ -237,16 +237,29 @@ describe('applyRegexMatchToJob', () => {
       const job = jobWithRow();
       applyRegexMatchToJob(
         job,
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'MCB' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'MCB' } } }),
         tracker
       );
       tracker.consumeTurnWrites();
       applyRegexMatchToJob(
         job,
-        makeResult({ circuit_updates: { '1': { ocpd_type: 'RCBO' } } }),
+        makeResult({ circuit_updates: { '1': { rcd_type: 'RCBO' } } }),
         tracker
       );
-      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.ocpd_type']);
+      expect(tracker.consumeTurnWrites()).toEqual(['circuit.row-A.rcd_type']);
+    });
+
+    // PLAN-C2 (Decision 6) — `ocpd_type` left the guard: an explicitly spoken
+    // type lands as said (the server read-back owns the advisory), and the
+    // examples above moved to `rcd_type`, which is still guarded.
+    it('ocpd_type is free text at the regex applier — a spoken type lands silently', () => {
+      const tracker = new FieldSourceTracker();
+      const out = applyRegexMatchToJob(
+        jobWithRow(),
+        makeResult({ circuit_updates: { '1': { ocpd_type: 'B' } } }),
+        tracker
+      );
+      expect(out!.patch.circuits?.[0]).toMatchObject({ ocpd_type: 'B' });
     });
 
     it('CANONICALISES a valid alias so regex and Sonnet agree on one string', () => {

@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { ocpdRowWarnings } from '@certmate/shared-utils';
+import { ocpdRowWarnings, ocpdTypeWarningText } from '@certmate/shared-utils';
 import { useParams } from 'next/navigation';
 import {
   AlertTriangle,
@@ -653,6 +653,11 @@ function computeWarnings(data: PdfJobShape, isEIC: boolean): string[] {
     for (const circuit of circuits as Array<Record<string, unknown>>) {
       const ref = typeof circuit.circuit_ref === 'string' ? circuit.circuit_ref : '';
       for (const line of ocpdRowWarnings(ref, circuit)) w.push(line);
+      // PLAN-C2 (Decision 6) — the OCPD TYPE's own advisory, evaluated by
+      // its own predicate beside PLAN-CC's: an unknown type, or one that may
+      // not be right for the circuit's standard. Both may fire on one row.
+      const typeLine = ocpdTypeWarningText(ref, circuit);
+      if (typeLine) w.push(typeLine);
     }
   }
 

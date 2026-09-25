@@ -151,7 +151,7 @@ Extract ALL circuits visible in the schedule. Each row in the test results sched
 - cpc_csa_mm2: Earth cable size
 - max_disconnect_time_s: Usually "0.4"
 - ocpd_bs_en: Standard number (60898 for MCB, 61009 for RCBO)
-- ocpd_type: "B", "C", "D", etc.
+- ocpd_type: FREE TEXT — the type exactly as printed (e.g. "B", "C", "D", "K", "2", "Type II", "gG", "Rew"); never omit an unfamiliar type and never guess one from the standard
 - ocpd_rating_a: Breaker rating in amps
 - ocpd_breaking_capacity_ka: Usually "6" for domestic
 - ocpd_max_zs_ohm: Maximum Zs from tables

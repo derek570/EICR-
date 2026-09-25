@@ -141,7 +141,7 @@ Set null if no section cleanly applies. Do not invent refs; do not pattern-match
 - cpc_csa_mm2: CPC conductor CSA - USE DEFAULTS ABOVE based on circuit type
 - max_disconnect_time_s: Usually "0.4" for 230V circuits
 - ocpd_bs_en: "60898" for MCBs, "61009" for RCBOs
-- ocpd_type: B, C, or D curve (usually "B" for domestic)
+- ocpd_type: ocpd_type is FREE TEXT — write the type the inspector says, exactly, even if it is not listed or does not match the standard; the server advises, you never refuse or re-ask for the type. Do not guess a type from a standard. Known types: B, C, D, K, Z, 1, 2, 3, 4, I, II, gG, gM, aM, HRC, Rew, N/A. (Usually "B" for a domestic MCB.)
 - ocpd_rating_a: MCB/RCBO rating in amps (6, 10, 16, 20, 32, 40...)
 - ocpd_breaking_capacity_ka: Usually "6"
 - ocpd_max_zs_ohm: Maximum permitted Zs for that device

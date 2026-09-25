@@ -181,7 +181,7 @@ field's `ai_guidance` in the schema.
 | Group | Columns | Meaning / typical values |
 |---|---|---|
 | Circuit Details | `circuit_ref`, `circuit_designation`, `wiring_type`, `ref_method`, `number_of_points`, `live_csa_mm2`, `cpc_csa_mm2`, `max_disconnect_time_s` | ref = "1","2"…; designation = "Sockets Ring"; CSA = conductor cross-section mm² (1.0 lights, 2.5 sockets, 6–10 cooker/shower); disconnect time usually 0.4 s |
-| OCPD | `ocpd_bs_en`, `ocpd_type`, `ocpd_rating_a`, `ocpd_breaking_capacity_ka`, `ocpd_max_zs_ohm` | type = curve B/C/D or fuse class gG/gM/aM/HRC/Rew; rating 6A lights → 32A ring; breaking capacity usually 6 kA domestic; max Zs auto-computed (H3) |
+| OCPD | `ocpd_bs_en`, `ocpd_type`, `ocpd_rating_a`, `ocpd_breaking_capacity_ka`, `ocpd_max_zs_ohm` | type = FREE TEXT since PLAN-C2 (2026-09-25): curve B/C/D, 60947-2 K/Z, BS 3871 1-4, BS 1361 I/II (stored 1/2 print I/II), fuse class gG/gM/aM/HRC, Rew; off-list or standard-incompatible types are recorded with one spoken advisory, never refused; rating 6A lights → 32A ring; breaking capacity usually 6 kA domestic; max Zs auto-computed (H3) |
 | RCD | `rcd_bs_en`, `rcd_type`, `rcd_operating_current_ma` | IΔn usually 30 mA for additional protection |
 | Ring Final | `ring_r1_ohm`, `ring_rn_ohm`, `ring_r2_ohm` | lowercase end-to-end legs, typical 0.2–0.8 Ω |
 | Continuity | `r1_r2_ohm`, `r2_ohm` | R1+R2 measured at furthest point, 0.1–2.0 Ω |

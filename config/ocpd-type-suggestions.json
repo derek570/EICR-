@@ -1,0 +1,1076 @@
+{
+  "$comment": "PLAN-C2 (feedback-2026-09-17 wave, Decision 6) — OCPD TYPE suggestion manifest. CROSS-PLATFORM CONTRACT and the NORMATIVE source for the ocpd_type canonicalisation grammar, the compatibility table that decides the advisory, the BS 1361 display alias and the local-command advisory sentences. ocpd_type is FREE TEXT: `suggestions` is a picker/prompt list, never a closed set, and nothing here ever blocks a write. The advisory is DERIVED at render time from (standard, type) and never persisted. Three twins are driven through these vectors and compare returned BYTES: packages/shared-utils/src/ocpd-type.ts (web), src/extraction/dialogue-engine/parsers/mcb-type.js (backend) and CertMateUnified Sources/Utilities/OcpdType.swift, which reads a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/ocpd-type-suggestions.json; scripts/check-ocpd-type-fixture-sync.sh byte-compares the two as a named hard-fail pre-TestFlight step. `canonical` is canonicaliseOcpdType (model, import, picker and speculator bytes); `script` is the dialogue script slot's admission (null = PLAN-A first-miss handoff). `compatibility` rows are keyed by the CANONICAL standard (PLAN-CC's canonicaliser); a standard absent from every row, empty or unreadable never yields 'incompatible'; N/A never yields an advisory. A type absent from `suggestions` (after canonicalisation) is 'unknown' under any standard. There is no edit-distance and no nearest match anywhere (HARD RULE).",
+  "plan": "PLAN-C2-v16.md (feedback-2026-09-17 wave)",
+  "schema_source": "config/field_schema.json",
+  "cap": 24,
+  "suggestions": [
+    "B",
+    "C",
+    "D",
+    "K",
+    "Z",
+    "1",
+    "2",
+    "3",
+    "4",
+    "I",
+    "II",
+    "gG",
+    "gM",
+    "aM",
+    "HRC",
+    "Rew",
+    "N/A"
+  ],
+  "compatibility": [
+    {
+      "standards": [
+        "BS EN 60898",
+        "BS EN 61009",
+        "BS EN 62423"
+      ],
+      "types": [
+        "B",
+        "C",
+        "D"
+      ]
+    },
+    {
+      "standards": [
+        "BS EN 60947-2"
+      ],
+      "types": [
+        "B",
+        "C",
+        "D",
+        "K",
+        "Z",
+        "1",
+        "2",
+        "3"
+      ]
+    },
+    {
+      "standards": [
+        "BS 3871"
+      ],
+      "types": [
+        "1",
+        "2",
+        "3",
+        "4"
+      ]
+    },
+    {
+      "standards": [
+        "BS 1361"
+      ],
+      "types": [
+        "I",
+        "II",
+        "1",
+        "2"
+      ]
+    },
+    {
+      "standards": [
+        "BS 88-2",
+        "BS EN 60269-2"
+      ],
+      "types": [
+        "gG",
+        "gM",
+        "aM",
+        "HRC"
+      ]
+    },
+    {
+      "standards": [
+        "BS 88-3",
+        "BS EN 60269-3"
+      ],
+      "types": [
+        "gG",
+        "HRC"
+      ]
+    },
+    {
+      "standards": [
+        "BS 3036"
+      ],
+      "types": [
+        "Rew"
+      ]
+    }
+  ],
+  "display_aliases": [
+    {
+      "standard": "BS 1361",
+      "stored": "1",
+      "display": "I"
+    },
+    {
+      "standard": "BS 1361",
+      "stored": "2",
+      "display": "II"
+    }
+  ],
+  "advisory_phrases": {
+    "unknown": "not a type I know",
+    "incompatible": "may not be right for {standard}"
+  },
+  "canonicalisation_vectors": [
+    {
+      "input": " type B. ",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "B curve",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "b-curve",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "high rupturing capacity",
+      "canonical": "HRC",
+      "script": "HRC"
+    },
+    {
+      "input": "high-rupturing-capacity",
+      "canonical": "HRC",
+      "script": "HRC"
+    },
+    {
+      "input": "re-wireable",
+      "canonical": "Rew",
+      "script": "Rew"
+    },
+    {
+      "input": "rewireable",
+      "canonical": "Rew",
+      "script": "Rew"
+    },
+    {
+      "input": "re wirable",
+      "canonical": "Rew",
+      "script": "Rew"
+    },
+    {
+      "input": "rew",
+      "canonical": "Rew",
+      "script": "Rew"
+    },
+    {
+      "input": "Rew",
+      "canonical": "Rew",
+      "script": "Rew"
+    },
+    {
+      "input": "type two",
+      "canonical": "2",
+      "script": "2"
+    },
+    {
+      "input": "curve b",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "curve c",
+      "canonical": "C",
+      "script": "C"
+    },
+    {
+      "input": "curve d",
+      "canonical": "D",
+      "script": "D"
+    },
+    {
+      "input": "type B.",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "type i i",
+      "canonical": "II",
+      "script": "II"
+    },
+    {
+      "input": "one one",
+      "canonical": "II",
+      "script": "II"
+    },
+    {
+      "input": "eye eye",
+      "canonical": "II",
+      "script": "II"
+    },
+    {
+      "input": "i",
+      "canonical": "I",
+      "script": "I"
+    },
+    {
+      "input": "type I",
+      "canonical": "I",
+      "script": "I"
+    },
+    {
+      "input": "ii",
+      "canonical": "II",
+      "script": "II"
+    },
+    {
+      "input": "Type II",
+      "canonical": "II",
+      "script": "II"
+    },
+    {
+      "input": "type two two",
+      "canonical": "two two",
+      "script": null
+    },
+    {
+      "input": "two two",
+      "canonical": "two two",
+      "script": null
+    },
+    {
+      "input": "g g",
+      "canonical": "gG",
+      "script": "gG"
+    },
+    {
+      "input": "g G",
+      "canonical": "gG",
+      "script": "gG"
+    },
+    {
+      "input": "GG",
+      "canonical": "gG",
+      "script": "gG"
+    },
+    {
+      "input": "g m",
+      "canonical": "gM",
+      "script": "gM"
+    },
+    {
+      "input": "a m",
+      "canonical": "aM",
+      "script": "aM"
+    },
+    {
+      "input": "h r c",
+      "canonical": "HRC",
+      "script": "HRC"
+    },
+    {
+      "input": "HRC",
+      "canonical": "HRC",
+      "script": "HRC"
+    },
+    {
+      "input": "hrc",
+      "canonical": "HRC",
+      "script": "HRC"
+    },
+    {
+      "input": "b plus",
+      "canonical": "B+",
+      "script": "B+"
+    },
+    {
+      "input": "b +",
+      "canonical": "B+",
+      "script": "B+"
+    },
+    {
+      "input": "B+",
+      "canonical": "B+",
+      "script": "B+"
+    },
+    {
+      "input": "k",
+      "canonical": "K",
+      "script": "K"
+    },
+    {
+      "input": "k curve",
+      "canonical": "K",
+      "script": "K"
+    },
+    {
+      "input": "Z",
+      "canonical": "Z",
+      "script": "Z"
+    },
+    {
+      "input": "type 4",
+      "canonical": "4",
+      "script": "4"
+    },
+    {
+      "input": "type 1",
+      "canonical": "1",
+      "script": "1"
+    },
+    {
+      "input": "2",
+      "canonical": "2",
+      "script": "2"
+    },
+    {
+      "input": "one",
+      "canonical": "1",
+      "script": "1"
+    },
+    {
+      "input": "three",
+      "canonical": "3",
+      "script": "3"
+    },
+    {
+      "input": "four",
+      "canonical": "4",
+      "script": "4"
+    },
+    {
+      "input": "m 1",
+      "canonical": "M1",
+      "script": "M1"
+    },
+    {
+      "input": "m one",
+      "canonical": "M1",
+      "script": "M1"
+    },
+    {
+      "input": "type x y z",
+      "canonical": "XYZ",
+      "script": "XYZ"
+    },
+    {
+      "input": "type q",
+      "canonical": "Q",
+      "script": "Q"
+    },
+    {
+      "input": "type superfast",
+      "canonical": "superfast",
+      "script": "superfast"
+    },
+    {
+      "input": "superfast",
+      "canonical": "superfast",
+      "script": "superfast"
+    },
+    {
+      "input": "type extraordinarily",
+      "canonical": "extraordinarily",
+      "script": "extraordinarily"
+    },
+    {
+      "input": "type extraordinarily long",
+      "canonical": "extraordinarily long",
+      "script": null
+    },
+    {
+      "input": "extraordinarily long",
+      "canonical": "extraordinarily long",
+      "script": null
+    },
+    {
+      "input": "there is no fuse",
+      "canonical": "there is no fuse",
+      "script": null
+    },
+    {
+      "input": "a b c d e",
+      "canonical": "a b c d e",
+      "script": null
+    },
+    {
+      "input": "type",
+      "canonical": "type",
+      "script": null
+    },
+    {
+      "input": "curve",
+      "canonical": "curve",
+      "script": null
+    },
+    {
+      "input": ".",
+      "canonical": ".",
+      "script": null
+    },
+    {
+      "input": "type.",
+      "canonical": "type",
+      "script": null
+    },
+    {
+      "input": "type .",
+      "canonical": "type",
+      "script": null
+    },
+    {
+      "input": "N/A",
+      "canonical": "N/A",
+      "script": "N/A"
+    },
+    {
+      "input": "n a",
+      "canonical": "N/A",
+      "script": "N/A"
+    },
+    {
+      "input": "n/a.",
+      "canonical": "N/A",
+      "script": "N/A"
+    },
+    {
+      "input": "not applicable",
+      "canonical": "N/A",
+      "script": "N/A"
+    },
+    {
+      "input": "B",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "b",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "c",
+      "canonical": "C",
+      "script": "C"
+    },
+    {
+      "input": "gG",
+      "canonical": "gG",
+      "script": "gG"
+    },
+    {
+      "input": "gM",
+      "canonical": "gM",
+      "script": "gM"
+    },
+    {
+      "input": "aM",
+      "canonical": "aM",
+      "script": "aM"
+    },
+    {
+      "input": "type is C",
+      "canonical": "is C",
+      "script": null
+    },
+    {
+      "input": "it is B",
+      "canonical": "it is B",
+      "script": null
+    },
+    {
+      "input": " B ",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "type   B",
+      "canonical": "B",
+      "script": "B"
+    },
+    {
+      "input": "   ",
+      "canonical": "",
+      "script": null
+    },
+    {
+      "input": "",
+      "canonical": "",
+      "script": null
+    }
+  ],
+  "advisory_vectors": [
+    {
+      "standard": "BS EN 60898",
+      "type": "B",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "2",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60898"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "gG",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60898"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "Q",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "N/A",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "type 2",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60898"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "b",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "60898",
+      "type": "gG",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60898"
+    },
+    {
+      "standard": "BS EN 61009",
+      "type": "C",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 62423",
+      "type": "D",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 3871",
+      "type": "2",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 3871",
+      "type": "type 2",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 3871",
+      "type": "B",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 3871"
+    },
+    {
+      "standard": "BS 3871",
+      "type": "Q",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "1",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 1361",
+      "type": "2",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 1361",
+      "type": "I",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 1361",
+      "type": "II",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 1361",
+      "type": "3",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 1361"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "HRC",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 1361"
+    },
+    {
+      "standard": "BS EN 60947-2",
+      "type": "K",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60947-2",
+      "type": "3",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60947-2",
+      "type": "4",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60947-2"
+    },
+    {
+      "standard": "BS 88-2",
+      "type": "gG",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 88-2",
+      "type": "HRC",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 88-2",
+      "type": "B",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 88-2"
+    },
+    {
+      "standard": "BS 88-3",
+      "type": "gM",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 88-3"
+    },
+    {
+      "standard": "BS 88-3",
+      "type": "HRC",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60269-2",
+      "type": "aM",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60269-3",
+      "type": "aM",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS EN 60269-3"
+    },
+    {
+      "standard": "BS 3036",
+      "type": "Rew",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 3036",
+      "type": "B",
+      "advisory": "incompatible",
+      "marker": "may not be right for BS 3036"
+    },
+    {
+      "standard": "BS 1362",
+      "type": "B",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 646",
+      "type": "gG",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS EN 60269-4",
+      "type": "B",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "",
+      "type": "gG",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "There is no RCBO",
+      "type": "gG",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "BS 7288",
+      "type": "C",
+      "advisory": null,
+      "marker": null
+    },
+    {
+      "standard": "",
+      "type": "superfast",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    },
+    {
+      "standard": "BS 3036",
+      "type": "superfast",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    },
+    {
+      "standard": "BS 1362",
+      "type": "XYZ",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "two two",
+      "advisory": "unknown",
+      "marker": "not a type I know"
+    }
+  ],
+  "display_vectors": [
+    {
+      "standard": "BS 1361",
+      "type": "1",
+      "display": "I"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "2",
+      "display": "II"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "II",
+      "display": "II"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "3",
+      "display": "3"
+    },
+    {
+      "standard": "BS 3871",
+      "type": "2",
+      "display": "2"
+    },
+    {
+      "standard": "BS EN 60947-2",
+      "type": "2",
+      "display": "2"
+    },
+    {
+      "standard": "",
+      "type": "2",
+      "display": "2"
+    },
+    {
+      "standard": "BS EN 60898",
+      "type": "B",
+      "display": "B"
+    },
+    {
+      "standard": "BS 1361",
+      "type": "type 2",
+      "display": "type 2"
+    }
+  ],
+  "single_apply_vectors": [
+    {
+      "ocpd_bs_en": "BS EN 60898",
+      "stored": "B",
+      "candidate": "gG",
+      "written": true,
+      "response": "Set OCPD type to gG on circuit 4 — may not be right for BS EN 60898."
+    },
+    {
+      "ocpd_bs_en": "BS EN 60898",
+      "stored": "",
+      "candidate": "type q",
+      "written": true,
+      "response": "Set OCPD type to Q on circuit 4 — not a type I know."
+    },
+    {
+      "ocpd_bs_en": "BS 3871",
+      "stored": "",
+      "candidate": "type two",
+      "written": true,
+      "response": "Set OCPD type to 2 on circuit 4."
+    },
+    {
+      "ocpd_bs_en": "BS EN 60898",
+      "stored": "",
+      "candidate": "N/A",
+      "written": true,
+      "response": "Set OCPD type to N/A on circuit 4."
+    },
+    {
+      "ocpd_bs_en": "BS EN 60898",
+      "stored": "2",
+      "candidate": "type 2",
+      "written": false,
+      "response": "Already got that — type 2 for circuit 4."
+    },
+    {
+      "ocpd_bs_en": "BS 3871",
+      "stored": "type 2",
+      "candidate": "two",
+      "written": false,
+      "response": "Already got that — type 2 for circuit 4."
+    }
+  ],
+  "bulk_apply_vectors": [
+    {
+      "case": "a all identical",
+      "candidate": "type 2",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "2"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "2"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "2"
+        },
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "type 2"
+        }
+      ],
+      "written": [],
+      "response": "Already got type 2 on circuits 1 to 4."
+    },
+    {
+      "case": "b all different",
+      "candidate": "type 2",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "1"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": ""
+        },
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "3"
+        }
+      ],
+      "written": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "response": "Type 2 set on circuits 1 to 4 — may not be right for BS EN 60898 on circuits 1 and 3."
+    },
+    {
+      "case": "c mixed",
+      "candidate": "type 2",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "2"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "C"
+        },
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "type 2"
+        }
+      ],
+      "written": [
+        2,
+        3
+      ],
+      "response": "Type 2 set on circuits 2 and 3; 1 and 4 already had it — may not be right for BS EN 60898 on circuit 3."
+    },
+    {
+      "case": "d two standards",
+      "candidate": "type 2",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS 3036",
+          "ocpd_type": "Rew"
+        },
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": ""
+        }
+      ],
+      "written": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "response": "Type 2 set on circuits 1 to 4 — may not be right for BS EN 60898 on circuits 2 and 4 and for BS 3036 on circuit 3."
+    },
+    {
+      "case": "e unknown",
+      "candidate": "type Q",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS 3871",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS 3036",
+          "ocpd_type": "Rew"
+        },
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": ""
+        }
+      ],
+      "written": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "response": "Type Q set on circuits 1 to 4 — not a type I know."
+    },
+    {
+      "case": "f compatible, three circuits non-contiguous",
+      "candidate": "C",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 3,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 5,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        }
+      ],
+      "written": [
+        1,
+        3,
+        5
+      ],
+      "response": "Type C set on circuits 1, 3 and 5."
+    },
+    {
+      "case": "g single target identical",
+      "candidate": "B",
+      "rows": [
+        {
+          "circuit": 4,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        }
+      ],
+      "written": [],
+      "response": "Already got type B on circuit 4."
+    },
+    {
+      "case": "h N/A never advises",
+      "candidate": "n a",
+      "rows": [
+        {
+          "circuit": 1,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "B"
+        },
+        {
+          "circuit": 2,
+          "ocpd_bs_en": "BS EN 60898",
+          "ocpd_type": "C"
+        }
+      ],
+      "written": [
+        1,
+        2
+      ],
+      "response": "Type N/A set on circuits 1 and 2."
+    }
+  ]
+}

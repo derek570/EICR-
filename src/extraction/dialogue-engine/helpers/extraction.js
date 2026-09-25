@@ -51,7 +51,22 @@ export function extractNamedFieldValues(text, slots) {
       captured = best.value;
     } else {
       if (!slot.namedExtractor) continue;
-      const m = text.match(slot.namedExtractor);
+      // PLAN-C2 — a slot may scope its extractor to CLAUSES: the text is split
+      // at sentence punctuation and a clause matching `namedExtractorClauseVeto`
+      // (it names another column) is skipped. The first clause that matches
+      // wins, as the whole-text match did.
+      let m = null;
+      if (slot.namedExtractorClauseVeto instanceof RegExp) {
+        // A full stop splits only when it is not a decimal point: "type B 6.5
+        // kA" is one clause, or it would read as the spelled code `B6`.
+        for (const clause of text.split(/[,;?!]|\.(?!\d)/)) {
+          if (slot.namedExtractorClauseVeto.test(clause)) continue;
+          m = clause.match(slot.namedExtractor);
+          if (m) break;
+        }
+      } else {
+        m = text.match(slot.namedExtractor);
+      }
       if (!m) continue;
       // Audit-2026-06-02 Phase 4 — read the first non-null capture group
       // so a slot regex can use multiple alternations with different

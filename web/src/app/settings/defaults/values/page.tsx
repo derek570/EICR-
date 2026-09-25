@@ -7,6 +7,7 @@ import { useCurrentUser } from '@/lib/use-current-user';
 import { useUserDefaults, type UserDefaults } from '@/hooks/use-user-defaults';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
+import { OcpdTypeField } from '@/components/job/ocpd-type-field';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { SelectChips } from '@/components/ui/select-chips';
 import { SegmentedControl } from '@/components/ui/segmented-control';
@@ -33,12 +34,6 @@ const POLARITY_OPTIONS = [
   { value: 'pass', label: 'Pass' },
   { value: 'fail', label: 'Fail' },
   { value: 'na', label: 'N/A' },
-];
-
-const OCPD_TYPES = [
-  { value: 'B', label: 'Type B' },
-  { value: 'C', label: 'Type C' },
-  { value: 'D', label: 'Type D' },
 ];
 
 const IR_VOLTAGE_OPTIONS = [
@@ -170,11 +165,15 @@ export default function DefaultValuesPage() {
           </SectionCard>
 
           <SectionCard accent="green" title="Protection">
-            <SelectChips
+            {/* PLAN-C2 (Decision 6) — a default type is free text too, applied
+                fill-null whatever the circuit's standard; the grid's advisory
+                marker then shows if the pair is off. No standard here, so no
+                incompatible marker — only an unknown type is flagged. */}
+            <OcpdTypeField
               label="OCPD type"
-              options={OCPD_TYPES}
               value={get(FIELD_KEYS.ocpdType) || 'B'}
-              onChange={(v) => setField(FIELD_KEYS.ocpdType, v)}
+              standard=""
+              onCommit={(v) => setField(FIELD_KEYS.ocpdType, v)}
             />
             <FloatingLabelInput
               label="OCPD breaking capacity (kA)"
