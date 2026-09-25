@@ -19,14 +19,19 @@
 #   3. The server's own success line for that rejected write is NEVER spoken
 #      (`confirmations_not_played`). This is the half that made the field bug
 #      invisible: mutation dropped, success read back.
+#
+# Dated note 2026-09-25 (PLAN-C2, WAVE-CONTEXT Decision 6): `ocpd_type` left
+# the closed-enum guard — it is free text with an advisory, and its own
+# scenario is plan-c2-ocpd-type-free-text.yaml. This scenario keeps PLAN-C's
+# coverage on `rcd_type`, which is still guarded, with the same garble.
 
 name: plan-c-closed-enum-reask
 description: |
-  A server voice_command_response carries `update_field{ocpd_type: "MCB"}`.
-  "MCB" is a device class, not a member of the ocpd_type option list
-  (B/C/D/gG/gM/aM/HRC/Rew/N/A), so the client-local apply rejects the whole
+  A server voice_command_response carries `update_field{rcd_type: "MCB"}`.
+  "MCB" is a device class, not a member of the rcd_type option list
+  (AC/A/F/B/S/A-S/B-S/B+/N/A), so the client-local apply rejects the whole
   command, writes nothing, and speaks one re-ask instead of the server's
-  "Set OCPD type to MCB" success line.
+  "Set RCD type to MCB" success line.
 suite: pwa-replay-sessions
 
 metadata:
@@ -63,11 +68,11 @@ mock_frames:
         understood: true
         # Byte-shaped as the backend builds it: the model's own success
         # text, written before any client validation exists.
-        spoken_response: 'Set OCPD type to MCB on circuit 3.'
+        spoken_response: 'Set RCD type to MCB on circuit 3.'
         action:
           type: update_field
           params:
-            field: ocpd_type
+            field: rcd_type
             value: MCB
             circuit: 3
 
@@ -76,9 +81,9 @@ expect:
     gate_passed:
       - 'The breaker on circuit 3 is an MCB.'
     not_applied_fields:
-      - key: ocpd_type
+      - key: rcd_type
     confirmations_played:
-      - contains: "I heard OCPD type 'MCB', which isn't a valid option"
+      - contains: "I heard RCD type 'MCB', which isn't a valid option"
     confirmations_not_played:
-      - contains: 'Set OCPD type to MCB'
+      - contains: 'Set RCD type to MCB'
     confirmation_played_exactly_once: true

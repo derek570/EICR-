@@ -286,7 +286,11 @@ describe('all 8 DEVICE_ATTRIBUTE_FIELDS — write-and-read-back, spares included
       const updated = out.patch?.circuits as Array<Record<string, unknown>>;
       expect(updated).toHaveLength(3);
       expect(updated.every((r) => r[canonical] === stored)).toBe(true);
-      expect(out.response).toContain('for 3 circuits');
+      // PLAN-C2 — the OCPD type's bulk outcome names the circuits (its pinned
+      // sentence family, shared with iOS); every other field names the count.
+      expect(out.response).toContain(
+        canonical === 'ocpd_type' ? 'Type B set on circuits 1 to 3' : 'for 3 circuits'
+      );
       expect(out.response).not.toContain('spare');
     }
   );

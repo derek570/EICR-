@@ -278,7 +278,10 @@ const STANDARD_TYPE_KEYS: Readonly<Record<string, Readonly<Record<string, string
     'BS EN 61009': Object.freeze({ B: 'B', C: 'C', D: 'D' }),
     'BS EN 62423': Object.freeze({ B: 'B', C: 'C', D: 'D' }),
     'BS 3036': Object.freeze({ REW: 'BS3036', '1': 'BS3036' }),
-    'BS 1361': Object.freeze({ '2': 'BS1361' }),
+    // PLAN-C2 (C2.6) — BS 1361 Type I and Type II, stored as dictated: the
+    // Roman forms and their bare-digit display aliases `1` / `2` all read the
+    // one BS 1361 row of Table 41.4.
+    'BS 1361': Object.freeze({ '2': 'BS1361', '1': 'BS1361', I: 'BS1361', II: 'BS1361' }),
     'BS 88-2': Object.freeze({ GG: 'BS88' }),
     'BS 88-3': Object.freeze({ GG: 'BS88' }),
     'BS EN 60269-2': Object.freeze({ GG: 'BS88' }),

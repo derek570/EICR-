@@ -74,7 +74,7 @@ describe('closed-enum fixture — cross-platform pins', () => {
    *  BOTH constants in the same coordinated change. */
   it('fixture bytes match the pinned cross-platform digest', () => {
     const digest = createHash('sha256').update(readFileSync(FIXTURE_PATH)).digest('hex');
-    expect(digest).toBe('49999c52c994071e02a0db752a2bbe1322ed14e04fb2461b4c29d67526395f42');
+    expect(digest).toBe('3bc41e47b8eb1f9993974b41c9b0d67a9ee81e1ee3d4492257bdc16560d9d0f6');
   });
 
   it('fixture options are exactly field_schema.json minus the empty sentinel', () => {
@@ -186,9 +186,9 @@ describe('canonicaliseClosedEnumValue — rejected vectors', () => {
   });
 
   it('non-string values: finite numbers are echoed, structural non-values are missing', () => {
-    expect(canonicaliseClosedEnumValue('ocpd_type', 1)).toEqual({
+    expect(canonicaliseClosedEnumValue('ref_method', 1)).toEqual({
       kind: 'invalid_value',
-      field: 'ocpd_type',
+      field: 'ref_method',
       heard: '1',
     });
     for (const v of [true, false, null, undefined, {}, [], NaN]) {
@@ -295,8 +295,12 @@ describe('deliberate divergence — codes the iOS dropdown offers but the schema
     expect(fixture.options.ref_method).not.toContain('A1');
   });
 
-  it('ocpd_type 1 is refused (a device-count digit is not a trip curve)', () => {
-    expect(canonicaliseClosedEnumValue('ocpd_type', '1').kind).toBe('invalid_value');
+  // PLAN-C2 (Decision 6) — REVERSED: `ocpd_type` left the guard. `1` is a real
+  // BS 3871 / BS EN 60947-2 type, recorded as said with an advisory where the
+  // standard makes it unlikely (see ocpd-type.test.ts).
+  it('ocpd_type is no longer guarded — `1` is not refused here', () => {
+    expect(canonicaliseClosedEnumValue('ocpd_type', '1').kind).toBe('unknown_field');
+    expect(fixture.guarded_fields).not.toContain('ocpd_type');
   });
 
   it('the refusal is audible and restates the field, not a silent drop', () => {

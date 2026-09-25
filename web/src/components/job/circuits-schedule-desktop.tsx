@@ -27,6 +27,7 @@
 import * as React from 'react';
 import { MaxZsMarker } from '@/components/job/max-zs-marker';
 import { OcpdStandardComboCell } from '@/components/job/ocpd-standard-field';
+import { OcpdTypeComboCell } from '@/components/job/ocpd-type-field';
 import { OCPD_BS_TIER1, OCPD_BS_TIER2 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 import { ChevronDown, Trash2 } from 'lucide-react';
 import { IconButton } from '@/components/ui/icon-button';
@@ -653,6 +654,7 @@ function Row({
                   id={circuit.id}
                   column={col}
                   value={v(col.key)}
+                  standard={v('ocpd_bs_en')}
                   onPatch={onPatch}
                   circuitRef={ref}
                   isOpen={activeCell === cellKey}
@@ -665,6 +667,7 @@ function Row({
                 id={circuit.id}
                 column={col}
                 value={v(col.key)}
+                standard={v('ocpd_bs_en')}
                 onPatch={onPatch}
                 circuitRef={ref}
                 isOpen={activeCell === cellKey}
@@ -695,6 +698,7 @@ function CellField({
   id,
   column,
   value,
+  standard,
   onPatch,
   circuitRef,
   isOpen,
@@ -704,6 +708,8 @@ function CellField({
   id: string;
   column: ColumnSpec;
   value: string | undefined;
+  /** PLAN-C2 — the row's OCPD standard, for the type cell's alias and marker. */
+  standard?: string;
   onPatch: (id: string, patch: Record<string, string>) => void;
   circuitRef: string;
   isOpen: boolean;
@@ -720,6 +726,21 @@ function CellField({
         value={value ?? ''}
         onCommit={(next) => onPatch(id, { ocpd_bs_en: next })}
         circuitId={id}
+        ariaLabel={ariaLabel}
+        isOpen={isOpen}
+        onOpen={onOpen}
+        onClose={onClose}
+      />
+    );
+  }
+  // PLAN-C2 — the OCPD type is free text too (Decision 6): the same combo
+  // contract as the card and the sticky table, with the advisory marker.
+  if (column.key === 'ocpd_type') {
+    return (
+      <OcpdTypeComboCell
+        value={value ?? ''}
+        standard={standard ?? ''}
+        onCommit={(next) => onPatch(id, { ocpd_type: next })}
         ariaLabel={ariaLabel}
         isOpen={isOpen}
         onOpen={onOpen}

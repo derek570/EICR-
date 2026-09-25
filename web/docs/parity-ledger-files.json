@@ -9,7 +9,8 @@
     "recording/voice-command-executor-e-g-move",
     "recording/dictated-readback-policy",
     "recording/ze-accepted-alias-consistency",
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/app/alerts/page.tsx": [
     "dashboard/alertsview",
@@ -127,7 +128,8 @@
     "circuits-rail/circuitstab-79",
     "circuits-rail/doc-extraction-parity",
     "circuits/lim-sentinel-display",
-    "crosscutting/keyboard-accessory-bar"
+    "crosscutting/keyboard-accessory-bar",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/app/job/[id]/design/page.tsx": [
     "design/designtab-24",
@@ -214,7 +216,8 @@
     "pdf/pdftab-225",
     "pdf/pdftab-243",
     "pdf/pdftab-270",
-    "pdf/pdftab-68"
+    "pdf/pdftab-68",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/app/job/[id]/staff/page.tsx": [
     "staff/inspectortab-112",
@@ -349,14 +352,16 @@
   ],
   "web/src/components/job/circuits-schedule-desktop.tsx": [
     "crosscutting/keyboard-accessory-bar",
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/components/job/circuits-sticky-table.tsx": [
     "circuits-col/constants-209",
     "circuits-col/constants-210",
     "circuits-misc/circuitstab-565",
     "crosscutting/keyboard-accessory-bar",
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/components/job/floating-action-bar.tsx": [
     "crosscutting/floating-mic-fab-when-idle"
@@ -550,7 +555,8 @@
     "pdf/pdf-fidelity"
   ],
   "web/src/lib/pdf/template/eicr-html-template.ts": [
-    "pdf/pdf-fidelity"
+    "pdf/pdf-fidelity",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/lib/pdf/template/helpers.ts": [
     "pdf/pdf-fidelity"
@@ -589,11 +595,13 @@
     "ccu-flow/off-peak-mode",
     "ccu/main-switch-target",
     "supply/surge-namespace",
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/lib/recording/apply-document-extraction.ts": [
     "supply/surge-namespace",
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/lib/recording/apply-extraction.ts": [
     "installation/eic-comments",
@@ -670,7 +678,8 @@
   ],
   "web/src/lib/recording/transcript-field-matcher.ts": [
     "recording/garble-aliases-f8-f10",
-    "recording/regex-occurrence-freshness"
+    "recording/regex-occurrence-freshness",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/lib/recording/transcript-gate.ts": [
     "recording/transcript-gate"
@@ -742,10 +751,12 @@
     "circuits/ocpd-bs-en-free-text-client"
   ],
   "packages/shared-utils/src/max-zs-lookup.ts": [
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "packages/shared-utils/src/closed-enum-guard.ts": [
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "packages/shared-utils/src/apply-defaults.ts": [
     "circuits/ocpd-bs-en-free-text-client"
@@ -760,12 +771,28 @@
     "circuits/ocpd-bs-en-free-text-client"
   ],
   "web/src/lib/constants/circuit-field-options.ts": [
-    "circuits/ocpd-bs-en-free-text-client"
+    "circuits/ocpd-bs-en-free-text-client",
+    "circuits/ocpd-type-free-text"
   ],
   "web/src/lib/recording/voice-pause.ts": [
     "recording/voice-pause"
   ],
   "web/src/lib/recording/uplink-loss-ledger.ts": [
     "recording/voice-pause"
+  ],
+  "packages/shared-utils/src/ocpd-type.ts": [
+    "circuits/ocpd-type-free-text"
+  ],
+  "web/src/components/job/ocpd-type-field.tsx": [
+    "circuits/ocpd-type-free-text"
+  ],
+  "web/src/app/settings/defaults/values/page.tsx": [
+    "circuits/ocpd-type-free-text"
+  ],
+  "web/src/app/settings/defaults/cable/page.tsx": [
+    "circuits/ocpd-type-free-text"
+  ],
+  "config/ocpd-type-suggestions.json": [
+    "circuits/ocpd-type-free-text"
   ]
 }

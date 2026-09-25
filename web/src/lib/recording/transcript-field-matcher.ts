@@ -252,12 +252,6 @@ const STOP_WORDS = new Set([
   'me',
 ]);
 
-const BS_EN_TO_OCPD_TYPE: Record<string, string> = {
-  '60898': 'MCB',
-  '61009': 'RCBO',
-  '60909': 'RCBO',
-};
-
 const BS_EN_MAP: Record<string, string> = {
   '1361': '1361 type 1',
   '3036': '3036 (S-E)',
@@ -528,7 +522,6 @@ const OCPD_RATING_AFTER =
 const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d])\b/gi;
 const WIRING_OR_REF_BEFORE_TYPE =
   /\b(?:wir\w+|worrying|cable|ref\w*|reference|installation)\s+type\s+(?:is\s+)?[a-g]\b/gi;
-const OCPD_DEVICE_PATTERN = /\b(mcb|rcbo|rccb)\b/gi;
 const BS_EN_STANDARD_PATTERN = /\b(60898|61009|60909)\b/gi;
 const OCPD_COMPOSITE_PATTERN =
   /\b(?:bs\s*(?:en)?\s*)?(60898|61009|60909)\s+(?:(?:type|time(?:\s+for)?)\s+([a-d]))?\s*(\d+)?\s*(?:amp|amber|a)?/gi;
@@ -1874,11 +1867,10 @@ export class TranscriptFieldMatcher {
         const bsEn = m[1];
         const typeLetter = m[2];
         const rating = m[3];
-        if (bsEn) {
-          updates.ocpd_bs_en = bsEn;
-          const mapped = BS_EN_TO_OCPD_TYPE[bsEn];
-          if (mapped) updates.ocpd_type = mapped;
-        }
+        // PLAN-C2 (Decision 6) — a standard is not a type. The BS-number →
+        // `MCB` / `RCBO` inference that stood here wrote a device CLASS into
+        // the type column; only an explicitly spoken type token may write it.
+        if (bsEn) updates.ocpd_bs_en = bsEn;
         if (typeLetter) updates.ocpd_type = typeLetter.toUpperCase();
         if (rating) {
           const n = parseInt(rating, 10);
@@ -1908,21 +1900,16 @@ export class TranscriptFieldMatcher {
     // BS EN standard (independent of composite).
     {
       const bsEn = lastCapture(BS_EN_STANDARD_PATTERN, text);
-      if (bsEn !== undefined) {
-        updates.ocpd_bs_en = bsEn;
-        const mapped = BS_EN_TO_OCPD_TYPE[bsEn];
-        if (mapped && updates.ocpd_type === undefined) updates.ocpd_type = mapped;
-      }
+      if (bsEn !== undefined) updates.ocpd_bs_en = bsEn;
     }
 
-    // Bare "type X" — only when not preceded by wiring/ref/cable.
+    // Bare "type X" — only when not preceded by wiring/ref/cable. PLAN-C2:
+    // the bare device-class fallback ("MCB" / "RCBO" → type) is gone; a device
+    // class is not a type the inspector dictated.
     {
       const v = lastCapture(OCPD_TYPE_PATTERN, text);
-      if (v !== undefined) {
-        if (!hasMatch(WIRING_OR_REF_BEFORE_TYPE, text)) updates.ocpd_type = v.toUpperCase();
-      } else {
-        const dev = lastCapture(OCPD_DEVICE_PATTERN, text, 0);
-        if (dev !== undefined) updates.ocpd_type = dev.toUpperCase();
+      if (v !== undefined && !hasMatch(WIRING_OR_REF_BEFORE_TYPE, text)) {
+        updates.ocpd_type = v.toUpperCase();
       }
     }
 

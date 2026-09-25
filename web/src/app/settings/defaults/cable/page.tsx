@@ -7,6 +7,7 @@ import { useCurrentUser } from '@/lib/use-current-user';
 import { useUserDefaults, type UserDefaults } from '@/hooks/use-user-defaults';
 import { HeroHeader } from '@/components/ui/hero-header';
 import { SectionCard } from '@/components/ui/section-card';
+import { OcpdTypeField } from '@/components/job/ocpd-type-field';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
 import { Button } from '@/components/ui/button';
 
@@ -138,11 +139,13 @@ export default function CableSizeDefaultsPage() {
                   value={get(type.key, 'ocpd_rating_a')}
                   onChange={(e) => setField(type.key, 'ocpd_rating_a', e.target.value)}
                 />
-                <FloatingLabelInput
+                {/* PLAN-C2 — the same free-text type control as the grid:
+                    suggestions, canonicalise on commit, 24-character cap. */}
+                <OcpdTypeField
                   label="OCPD type"
-                  placeholder="B / C / D"
                   value={get(type.key, 'ocpd_type')}
-                  onChange={(e) => setField(type.key, 'ocpd_type', e.target.value)}
+                  standard=""
+                  onCommit={(v) => setField(type.key, 'ocpd_type', v)}
                 />
               </div>
             </SectionCard>

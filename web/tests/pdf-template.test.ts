@@ -305,3 +305,38 @@ describe('PLAN-CC · a free-text OCPD standard prints whole', () => {
     }
   );
 });
+
+describe('PLAN-C2 · a free-text OCPD type prints whole, BS 1361 aliased', () => {
+  // Acceptance 5: persisted `BS 1361 + 1` displays `I`; the printed PDF shows
+  // `2` and `Q` as recorded; the Type cell (column 10) wraps rather than clips.
+  it.each([
+    ['BS 1361', '1', 'I'],
+    ['BS 1361', '2', 'II'],
+    ['BS EN 60898', '2', '2'],
+    ['BS 3871', 'Q', 'Q'],
+    ['BS EN 60898', 'extraordinarily', 'extraordinarily'],
+  ])('%s + %s prints %s in the wrapped tenth cell', (standard, type, printed) => {
+    const job = baseJob({
+      circuits: [
+        {
+          id: 'c1',
+          boardId: 'b1',
+          circuitRef: '1',
+          circuitDesignation: 'Cooker',
+          ocpdBsEn: standard,
+          ocpdType: type,
+        },
+      ],
+    });
+    const { landscape } = buildCertificateHtml(job, company, inspector);
+    const row = /<tr><td>1<\/td><td style="text-align:left;">Cooker<\/td>.*?<\/tr>/s.exec(
+      landscape!
+    );
+    const cells = Array.from(row![0].matchAll(/<td[^>]*>(.*?)<\/td>/gs), (m) => m[1]);
+    expect(cells[8]).toBe(standard);
+    expect(cells[9]).toBe(printed);
+    expect(landscape).toMatch(
+      /\.circuit-table td:nth-child\(10\)\s*\{\s*white-space:\s*normal;[^}]*overflow-wrap:\s*break-word;/
+    );
+  });
+});

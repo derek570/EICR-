@@ -2639,6 +2639,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 dedupeKey: queued.dedupeKey,
                 enqueued: queued.enqueued,
               });
+            } else if (outcome.protectedLocalReadback) {
+              // PLAN-C2 — an OCPD-type Apply outcome carries its advisory clause
+              // (or the truthful identical-value duplicate line). Before this it
+              // took the pre-empting direct `speak()`, which flushes the FIFO
+              // and gives the read-back no operation identity. It now takes the
+              // same protected, re-parking local-command path as Calculate: one
+              // dedupe key per utterance, heard exactly once (Audio-First #1).
+              const queued = speakLocalCommandOutcome(outcome.response);
+              clientDiagnostic('local_ocpd_type_outcome', {
+                outcome: outcome.actionOutcome ?? 'unknown',
+                appliedCount: outcome.appliedResults?.length ?? 0,
+                responsePreview: outcome.response.slice(0, 80),
+                dedupeKey: queued.dedupeKey,
+                enqueued: queued.enqueued,
+              });
             } else {
               speak(outcome.response);
             }

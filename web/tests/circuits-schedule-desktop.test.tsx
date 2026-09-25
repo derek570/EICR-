@@ -107,14 +107,16 @@ describe('CircuitsScheduleDesktop', () => {
         onRemove={() => {}}
       />
     );
+    // PLAN-C2 — the Type cell is a free-text combo now; its suggestions sit
+    // behind the chevron and the list is portalled to <body>.
     const trigger = mounted.container.querySelector(
-      'button[aria-label="Circuit 1 Type"]'
+      'button[aria-label="Circuit 1 Type suggestions"]'
     ) as HTMLButtonElement | null;
     expect(trigger).not.toBeNull();
     act(() => {
       trigger!.click();
     });
-    const listbox = mounted.container.querySelector('ul[role="listbox"]');
+    const listbox = document.body.querySelector('ul[role="listbox"]');
     expect(listbox).not.toBeNull();
     const optionD = Array.from(listbox!.querySelectorAll('button[role="option"]')).find(
       (b) => (b as HTMLElement).textContent?.trim() === 'D'

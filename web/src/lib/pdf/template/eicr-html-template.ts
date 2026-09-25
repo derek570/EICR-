@@ -1,3 +1,4 @@
+import { ocpdTypeDisplay } from '@certmate/shared-utils';
 import { htmlHead } from './css';
 import {
   afddButtonDisplay,
@@ -1667,7 +1668,10 @@ function buildCircuitSchedulePages(
         html += `<td>${esc(circuit.cpcCsaMm2)}</td>`;
         html += `<td>${esc(circuit.maxDisconnectTimeS)}</td>`;
         html += `<td>${esc(circuit.ocpdBsEn)}</td>`;
-        html += `<td>${esc(circuit.ocpdType)}</td>`;
+        // PLAN-C2 — the BS 1361 display alias: a stored `1` / `2` prints
+        // `I` / `II`. Storage is never rewritten; every other value prints as
+        // recorded.
+        html += `<td>${esc(ocpdTypeDisplay(circuit.ocpdBsEn, circuit.ocpdType))}</td>`;
         html += `<td>${esc(circuit.ocpdRatingA)}</td>`;
         html += `<td>${esc(circuit.ocpdBreakingCapacityKa)}</td>`;
         html += `<td>${esc(circuit.ocpdMaxZsOhm)}</td>`;

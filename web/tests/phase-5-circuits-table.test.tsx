@@ -161,15 +161,15 @@ describe('CircuitsStickyTable', () => {
         onRemove={() => {}}
       />
     );
-    const ocpdSelect = mounted.container.querySelector(
-      'select[aria-label="Circuit 1 Type"]'
-    ) as HTMLSelectElement | null;
-    expect(ocpdSelect).not.toBeNull();
-    const ocpdValues = Array.from(ocpdSelect!.options).map((o) => o.value);
-    // Table OCPD options MUST match the card's OCPD_TYPES — any extra
-    // value written here would appear as "unselected" when the user
-    // toggles back to the card view and would be silently overwritten.
-    expect(ocpdValues).toEqual(['', 'B', 'C', 'D']);
+    // PLAN-C2 (Decision 6) — the OCPD type is no longer a select on ANY
+    // surface: it is the shared free-text combo, so a value set on the card
+    // (or dictated, or imported) is shown here verbatim rather than as an
+    // "unselected" option.
+    expect(mounted.container.querySelector('select[aria-label="Circuit 1 Type"]')).toBeNull();
+    const ocpdInput = mounted.container.querySelector(
+      'input[aria-label="Circuit 1 Type"]'
+    ) as HTMLInputElement | null;
+    expect(ocpdInput).not.toBeNull();
 
     const polaritySelect = mounted.container.querySelector(
       'select[aria-label="Circuit 1 Pol"]'

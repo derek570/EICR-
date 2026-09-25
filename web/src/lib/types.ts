@@ -450,7 +450,8 @@ export interface CCUAnalysisCircuit {
    *  rows with `circuit_number: null` and `is_rcd_device: true`. */
   circuit_number?: number | null;
   label?: string | null;
-  ocpd_type?: 'B' | 'C' | 'D' | null;
+  /** PLAN-C2 — free text (Decision 6), not a B/C/D union. */
+  ocpd_type?: string | null;
   ocpd_rating_a?: string | null;
   ocpd_bs_en?: string | null;
   ocpd_breaking_capacity_ka?: string | null;

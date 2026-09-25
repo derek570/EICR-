@@ -560,3 +560,30 @@ describe('TranscriptFieldMatcher — ring continuity', () => {
     expect(r2.circuit_updates['2']?.ring_r2_ohm).toBe('1.20');
   });
 });
+
+describe('PLAN-C2 — the regex matcher never INFERS an OCPD type', () => {
+  // Decision 6 records what was said. A standard or a device class is not a
+  // type, so neither may write `ocpd_type`; only an explicitly spoken type
+  // token may (and the server read-back owns the advisory).
+  const job = () =>
+    ({
+      id: 'j1',
+      circuits: [{ id: 'c1', circuit_ref: '1', circuit_designation: 'Sockets' }],
+    }) as unknown as JobDetail;
+
+  it.each([
+    'circuit 1 BS 60898',
+    'circuit 1 is BS EN 61009',
+    'circuit 1 is an MCB',
+    'circuit 1 is an RCBO',
+    'circuit 1 60898 32 amp',
+  ])('%s produces no ocpd_type', (text) => {
+    const result = new TranscriptFieldMatcher().match(text, job());
+    expect(result.circuit_updates['1']?.ocpd_type).toBeUndefined();
+  });
+
+  it('an explicitly spoken type still matches: "circuit 1 type B"', () => {
+    const result = new TranscriptFieldMatcher().match('circuit 1 type B', job());
+    expect(result.circuit_updates['1']?.ocpd_type).toBe('B');
+  });
+});

@@ -9,6 +9,7 @@
  * stay aligned with the picker UI.
  */
 
+import { OCPD_TYPE_SUGGESTIONS } from '@certmate/shared-utils';
 import { OCPD_BS_TIER1, OCPD_BS_TIER2 } from '@/lib/recording/ocpd-bs-suggestions.generated';
 
 export type CircuitFieldKey =
@@ -32,7 +33,11 @@ export const CIRCUIT_FIELD_OPTIONS: Record<CircuitFieldKey, readonly string[]> =
   // combo (`OcpdStandardField`); this entry drives the desktop column bulk-fill
   // popover, which offers both tiers rather than the old eight.
   ocpd_bs_en: [...OCPD_BS_TIER1, ...OCPD_BS_TIER2],
-  ocpd_type: ['B', 'C', 'D', 'gG', 'gM', 'aM', 'HRC', 'Rew', 'N/A'],
+  // PLAN-C2 (Decision 6) — `ocpd_type` is free text too. These are the
+  // suggestions from `config/ocpd-type-suggestions.json` (via the TS twin); the
+  // per-cell editor is `OcpdTypeComboCell`, and this entry drives the desktop
+  // column bulk-fill popover.
+  ocpd_type: [...OCPD_TYPE_SUGGESTIONS],
   rcd_bs_en: ['BS EN 61008', 'BS EN 61009', 'BS EN 62423', 'N/A'],
   rcd_type: ['AC', 'A', 'F', 'B', 'S', 'N/A'],
   polarity_confirmed: ['OK', 'Y', 'N'],

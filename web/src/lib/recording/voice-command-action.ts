@@ -58,6 +58,12 @@ export function mapServerActionToVoiceCommand(
     return '';
   };
 
+  /** PLAN-C2 — `ocpd_type` left the guarded set (free text, Decision 6), so it
+   *  keeps the ordinary `!value → null` rule, but a finite number is a real
+   *  type (`2`) and stringifies rather than dropping the action. */
+  const asTypeValue = (v: unknown): string | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? String(v) : asString(v);
+
   /** PLAN-F item 1 — the orthogonal spare filter, decoded defensively:
    *  only the three known tokens survive, anything else is dropped to
    *  `undefined` (= 'automatic', the per-field-family default). Web
@@ -95,7 +101,9 @@ export function mapServerActionToVoiceCommand(
       if (isValueCheckedCircuitField(field)) {
         return { type: 'update_field', field, value: asGuardedValue(params.value), circuit };
       }
-      const value = asString(params.value);
+      // PLAN-C2 — `ocpd_type` is free text, so a numeric type (`2`) is a real
+      // value and must not be dropped for failing `asString`.
+      const value = field === 'ocpd_type' ? asTypeValue(params.value) : asString(params.value);
       if (!value) return null;
       return { type: 'update_field', field, value, circuit };
     }
@@ -143,7 +151,7 @@ export function mapServerActionToVoiceCommand(
           ...(sparePolicy ? { sparePolicy } : {}),
         };
       }
-      const value = asString(params.value);
+      const value = field === 'ocpd_type' ? asTypeValue(params.value) : asString(params.value);
       if (!value || !scope) return null;
       return { type: 'apply_field', field, value, scope, ...(sparePolicy ? { sparePolicy } : {}) };
     }

@@ -70,6 +70,7 @@ import {
 import { writeMatchHandoff } from '@/lib/recording/ccu-match-handoff';
 import { MaxZsMarker } from '@/components/job/max-zs-marker';
 import { OcpdStandardField } from '@/components/job/ocpd-standard-field';
+import { OcpdTypeField } from '@/components/job/ocpd-type-field';
 import { PendingCcuBanner } from '@/components/job/pending-ccu-banner';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { FloatingLabelInput } from '@/components/ui/floating-label-input';
@@ -107,12 +108,6 @@ import { useCircuitAccessoryController } from '@/components/job/circuit-keyboard
  */
 
 type Circuit = Record<string, string | undefined> & { id: string };
-
-const OCPD_TYPES = [
-  { value: 'B', label: 'Type B' },
-  { value: 'C', label: 'Type C' },
-  { value: 'D', label: 'Type D' },
-];
 
 const RCD_TYPES = [
   { value: 'AC', label: 'AC' },
@@ -1770,11 +1765,14 @@ function CircuitCard({
                 value={text('ocpd_bs_en')}
                 onPatch={onPatch}
               />
-              <SelectChips
-                label="Type"
-                value={text('ocpd_type') || null}
-                options={OCPD_TYPES}
-                onChange={(v) => onPatch({ ocpd_type: v })}
+              {/* PLAN-C2 (Decision 6) — free text with suggestions, the
+                  BS 1361 display alias and the advisory marker. It was a
+                  three-chip B/C/D picker, so a fuse type could not be set
+                  here at all. */}
+              <OcpdTypeField
+                value={text('ocpd_type')}
+                standard={text('ocpd_bs_en')}
+                onCommit={(next) => onPatch({ ocpd_type: next } as Partial<Circuit>)}
               />
               <CircuitFieldInput
                 circuitId={circuitId}

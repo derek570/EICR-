@@ -127,6 +127,13 @@ export function cssStyles(): string {
         .circuit-table td:nth-child(9) {
             white-space: normal; word-break: break-word; overflow-wrap: break-word;
         }
+        /* PLAN-C2 (feedback-2026-09-17, Decision 6) — the OCPD Type column is
+           free text too ("extraordinarily", "Type II"), so it wraps rather
+           than clipping a recorded value. Column 10; the iOS template carries
+           the identical rule. */
+        .circuit-table td:nth-child(10) {
+            white-space: normal; word-break: break-word; overflow-wrap: break-word;
+        }
         .circuit-table td:nth-child(2) {
             white-space: normal; word-wrap: break-word; overflow-wrap: break-word;
             text-align: left;

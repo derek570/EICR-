@@ -36,7 +36,9 @@ export const CCUAnalysisCircuitSchema = z
      *  consumers must filter them out before mapping to a circuit. */
     circuit_number: z.number().nullable().optional(),
     label: nstr,
-    ocpd_type: z.enum(['B', 'C', 'D']).nullable().optional(),
+    // PLAN-C2 (Decision 6) — free text: a K curve or a fuse type read off the
+    // device must not fail the whole analysis's parse.
+    ocpd_type: nstr,
     ocpd_rating_a: nstr,
     ocpd_bs_en: nstr,
     ocpd_breaking_capacity_ka: nstr,
