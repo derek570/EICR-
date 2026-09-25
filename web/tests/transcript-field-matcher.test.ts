@@ -587,6 +587,11 @@ describe('PLAN-C2 — the regex matcher never INFERS an OCPD type', () => {
     expect(result.circuit_updates['1']?.ocpd_type).toBe('2');
   });
 
+  it('a wiring-scoped numeric type is not an OCPD type: "circuit 1 wiring type 2" (Codex cycle 2)', () => {
+    const result = new TranscriptFieldMatcher().match('circuit 1 wiring type 2', job());
+    expect(result.circuit_updates['1']?.ocpd_type).toBeUndefined();
+  });
+
   it('an explicitly spoken type still matches: "circuit 1 type B"', () => {
     const result = new TranscriptFieldMatcher().match('circuit 1 type B', job());
     expect(result.circuit_updates['1']?.ocpd_type).toBe('B');

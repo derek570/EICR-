@@ -107,6 +107,26 @@ import {
   OCPD_VALUE_UNCHANGED,
   ocpdPairMemberUnchanged,
 } from './dialogue-engine/parsers/mcb-type.js';
+
+// PLAN-C2 (Decision 6) — "unchanged" is judged against the value the slot held
+// BEFORE THIS TURN, not before this write. A turn that writes the standard to
+// BS 3871 and then back to BS EN 60898 ends where it started, and only its last
+// write is read back; comparing that write with the intermediate value would
+// re-advise an unchanged pair (Codex EP review cycle 2). Keyed by the turn's own
+// perTurnWrites object, so it can never outlive or cross a turn.
+const OCPD_PRE_TURN_VALUES = new WeakMap();
+function ocpdPreTurnValue(perTurnWrites, field, circuit, boardId, storedNow) {
+  if (field !== 'ocpd_type' && field !== 'ocpd_bs_en') return storedNow;
+  if (!perTurnWrites || typeof perTurnWrites !== 'object') return storedNow;
+  let seen = OCPD_PRE_TURN_VALUES.get(perTurnWrites);
+  if (!seen) {
+    seen = new Map();
+    OCPD_PRE_TURN_VALUES.set(perTurnWrites, seen);
+  }
+  const key = `${field}::${circuit}::${boardId ?? ''}`;
+  if (!seen.has(key)) seen.set(key, storedNow);
+  return seen.get(key);
+}
 import {
   canonicaliseCircuitDesignation,
   designationCanonicalisesToEmpty,
@@ -837,13 +857,16 @@ export async function dispatchRecordReading(call, ctx) {
   // PLAN-C2 (Decision 6) — read the stored OCPD type / standard BEFORE the
   // write overwrites it, so the bundler can tell a re-statement of the same
   // (standard, type) pair from a change.
+  const ocpdEffectiveBoard = resolveEffectiveBoardId(session, input.board_id);
   const ocpdTypeWasAlreadyStored = ocpdPairMemberUnchanged(
     input.field,
-    getCircuitBucket(
-      session.stateSnapshot,
+    ocpdPreTurnValue(
+      perTurnWrites,
+      input.field,
       input.circuit,
-      resolveEffectiveBoardId(session, input.board_id)
-    )?.[input.field],
+      ocpdEffectiveBoard,
+      getCircuitBucket(session.stateSnapshot, input.circuit, ocpdEffectiveBoard)?.[input.field]
+    ),
     input.value
   );
   applyReadingFlagAware(session.stateSnapshot, {
@@ -3351,9 +3374,16 @@ export async function dispatchSetFieldForAllCircuits(call, ctx) {
     // correct composite-key bucket (under flag-on) or the legacy numeric
     // bucket (under flag-off, where boardId is ignored by the mutator).
     // PLAN-C2 — same pre-write read as record_reading (see there).
+    const bulkEffectiveBoard = resolveEffectiveBoardId(session, boardId);
     const bulkTypeWasAlreadyStored = ocpdPairMemberUnchanged(
       input.field,
-      getCircuitBucket(snapshot, ref, resolveEffectiveBoardId(session, boardId))?.[input.field],
+      ocpdPreTurnValue(
+        perTurnWrites,
+        input.field,
+        ref,
+        bulkEffectiveBoard,
+        getCircuitBucket(snapshot, ref, bulkEffectiveBoard)?.[input.field]
+      ),
       input.value
     );
     applyReadingFlagAware(snapshot, {

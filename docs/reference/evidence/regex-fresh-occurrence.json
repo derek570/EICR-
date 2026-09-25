@@ -35,7 +35,7 @@
       "web/src/lib/recording/regex-match-result.ts": "132f52a97a38a78fb5686ecb10eeea4fa9c23ef8c92ef9e4c34c2ba7a2dd72ce",
       "web/src/lib/recording/sonnet-session.ts": "cc957f73851120fcb154479b9bb881ff29408857646d2d403c8bd26645ceb5c4",
       "web/src/lib/recording/test-services.ts": "d2ecc96ca6cb900e537ce181d00cf1fcc068bfaec5a205da45f4c2bacd04e08e",
-      "web/src/lib/recording/transcript-field-matcher.ts": "d05596461f39d39b634e75f29a5fa4688dfae531d8afac0aaa0a9ad2e63f24a1",
+      "web/src/lib/recording/transcript-field-matcher.ts": "5b47d1678d4ca05fc4b8fc6c4f85ec5efa77cf5b54af34134a57ae81be7ae474",
       "web/src/lib/recording/tts.ts": "16e3b6f7f5f83c67cdf29009d44fd96440ab2d7dd356f4768a9a7651f3bdb1b4",
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
     },
@@ -4058,6 +4058,14 @@
         "sources: web/src/lib/recording/transcript-field-matcher.ts",
         "tests: web/tests/apply-regex-match.test.ts",
         "tests: web/tests/closed-enum-guard.test.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-C2",
+      "date": "2026-09-25",
+      "files": [
+        "sources: web/src/lib/recording/transcript-field-matcher.ts"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     },

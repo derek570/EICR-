@@ -509,3 +509,53 @@ describe("cycle 1 c1-1 — the named extractor never writes another column's typ
     }
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// EP review cycle 2 (Codex c3-1, c3-2) regressions
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('cycle 2 c3-2 — unchanged is judged against the pre-TURN value', () => {
+  test('a turn that moves the standard away and back ends unchanged: no advisory', async () => {
+    const session = makeSession({ 4: { ocpd_bs_en: 'BS EN 60898', ocpd_type: 'gG' } });
+    const std = (value) => ({
+      name: 'record_reading',
+      input: { field: 'ocpd_bs_en', circuit: 4, value, confidence: 1, source_turn_id: 't' },
+    });
+    const { confirmations } = await modelTurn(session, [std('BS 3871'), std('BS EN 60898')]);
+    expect(session.stateSnapshot.circuits[4].ocpd_bs_en).toBe('BS EN 60898');
+    expect(count(allText(confirmations), 'may not be right')).toBe(0);
+  });
+
+  test('a genuine change later in the same turn is still advised once', async () => {
+    const session = makeSession({ 4: { ocpd_bs_en: 'BS 88-2', ocpd_type: 'gG' } });
+    const std = (value) => ({
+      name: 'record_reading',
+      input: { field: 'ocpd_bs_en', circuit: 4, value, confidence: 1, source_turn_id: 't' },
+    });
+    const { confirmations } = await modelTurn(session, [std('BS 3871'), std('BS EN 60898')]);
+    expect(count(allText(confirmations), 'may not be right for BS EN 60898')).toBe(1);
+  });
+});
+
+describe('cycle 2 c3-1 — RCD scope within two words, never across a comma', () => {
+  test.each(['RCD has type B', 'type B for RCD', 'type B on the RCD', "the RCD's type is B"])(
+    'inside an RCBO walk, %p leaves ocpd_type unwritten',
+    (reply) => {
+      const ws = new FakeWS();
+      const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { 6: {} } } };
+      turn(session, ws, 'RCBO on circuit 6.', 1000);
+      turn(session, ws, 'BS EN 61009', 2000);
+      turn(session, ws, reply, 3000);
+      expect(session.stateSnapshot.circuits[6].ocpd_type).toBeUndefined();
+    }
+  );
+
+  test('"type B, RCD type A" still writes the OCPD type across the clause boundary', () => {
+    const ws = new FakeWS();
+    const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { 6: {} } } };
+    turn(session, ws, 'RCBO on circuit 6.', 1000);
+    turn(session, ws, 'BS EN 61009', 2000);
+    turn(session, ws, 'type B, RCD type A', 3000);
+    expect(session.stateSnapshot.circuits[6].ocpd_type).toBe('B');
+  });
+});

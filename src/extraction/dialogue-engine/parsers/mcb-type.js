@@ -235,16 +235,21 @@ export function ocpdTypeAdvisoryText(args) {
  * "type extraordinarily long" gives nothing (the script steps aside).
  *
  * Three guards keep it off other columns, which the pre-plan `[BCD]` class
- * could never reach: no capture after an RCD, wiring or reference-method
- * anchor, optionally followed by "is"/"was" ("RCD type A", "RCD is type B",
- * "residual current device type AC", "wiring type K"); no capture that an RCD
- * anchor FOLLOWS ("type B RCD" — the run extends to "B RCD", which the
- * single-token admission refuses); and none of the RCD waveform codes that are
- * not OCPD types (`AC`, `A`, `F`, `S`, `A-S`, `B-S`).
+ * could never reach. Each is a PROXIMITY window of up to two words inside the
+ * same clause — whitespace only, so it never reaches across a comma:
+ *   - no capture within two words AFTER an RCD, wiring, cable or
+ *     reference-method anchor ("RCD type A", "RCD is type B", "RCD has type B",
+ *     "the RCD's type B", "wiring type K");
+ *   - no capture within two words BEFORE an RCD anchor ("type B RCD",
+ *     "type B for RCD", "type B on the RCD"). The lazy run then extends, and
+ *     the single-token admission refuses it, so the script steps aside;
+ *   - none of the RCD waveform codes that are not OCPD types (`AC`, `A`, `F`,
+ *     `S`, `A-S`, `B-S`).
+ * A comma still separates clauses, so "type B, RCD type A" captures `B`.
  * The `<letter> curve` form is kept as its own arm.
  */
 export const OCPD_TYPE_NAMED_EXTRACTOR =
-  /(?<!\b(?:rcd|residual|current|device|waveform|wiring|cable|ref|reference|method|installation)(?:\s+(?:is|was))?\s+)\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s*[,.;?!]|\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?!\s+(?:rcd|residual|rccb)\b)(?=\s*[,.;?!]|\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
+  /(?<!\b(?:rcd|rccb|residual|current|device|waveform|wiring|cable|ref|reference|method|installation)(?:'s)?(?:\s+[a-z']+){0,2}\s+)\b(?:type|curve)\s+(?:(?:is|was|of)\s+)?(?!(?:ac|a|f|s|a-s|b-s)(?:\s*[,.;?!]|\s|$))([a-z0-9+/][a-z0-9+/ -]*?)(?!(?:\s+[a-z']+){0,2}\s+(?:rcd|rccb|residual)\b)(?=\s*[,.;?!]|\s+\d+(?:\.\d+)?\s*(?:amps?|a|ka|kilo\s*amps?)\b|\s+(?:on|for|at|in|and|with|rated|rating|breaking|bs|b\s*s|circuit|rcbo|mcb)\b|\s*$)|\b([a-z])\s*-?\s*curve\b/i;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Grouped advisory clause — the backend twin of the TS
