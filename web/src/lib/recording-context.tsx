@@ -2604,9 +2604,14 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // because a forwarded utterance can be consumed as the answer to
           // the unrelated open question. The authority read is
           // non-consuming: the ask is exactly as live afterwards.
+          // A voice-feedback capture in progress also keeps the re-ask: the
+          // fall-through would hand the utterance to the capture (which
+          // consumes it silently as feedback text), not to the model.
+          const cd2Capturing = feedbackCaptureRef.current?.isCapturing === true;
           const cd2Handoff =
             outcome.ocpdStandardMiss === true &&
             sonnetRef.current != null &&
+            !cd2Capturing &&
             !sonnetRef.current.hasUnresolvedBackendAsk();
           if (outcome.ocpdStandardMiss === true) {
             clientDiagnostic('cd2_ocpd_miss_routed', {
@@ -2615,7 +2620,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 ? 'no_ask_live'
                 : sonnetRef.current == null
                   ? 'no_session'
-                  : 'ask_live',
+                  : cd2Capturing
+                    ? 'feedback_capture'
+                    : 'ask_live',
               commandType: command.type,
               textPreview: text.slice(0, 80),
             });
@@ -2772,7 +2779,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // transcript gate's hasPendingAsk input. Consumption of the
         // tool_call_id happens only on the gate-PASS path immediately
         // before the send — a gate REJECT must not burn ask state.
-        const peekedPayload = inFlightQuestionRef.current.peekPayloadForTranscript();
+        // PLAN-CD — a handed-off miss forwards as an ORDINARY transcript. CD2
+        // established that no interactive backend ask is live, so whatever
+        // the attribution tracker still holds (an expired ask, or an
+        // expected_answer_shape "none" acknowledgement web still enqueues)
+        // is not a question this utterance answers: no ask_user_answered,
+        // no in_response_to, and the tracker is left untouched.
+        const peekedPayload = cd1LocalForwardAuthority
+          ? null
+          : inFlightQuestionRef.current.peekPayloadForTranscript();
         const peekedToolCallId =
           peekedPayload?.type !== 'address_mirror_direct' && peekedPayload?.tool_call_id
             ? peekedPayload.tool_call_id
@@ -3027,7 +3042,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // (DeepgramRecordingViewModel.swift:1955-1964). We still call
         // takePayload to drain the slot so it can't mis-attach to the
         // NEXT unrelated transcript.
-        const drainedPayload = inFlightQuestionRef.current.takePayload(text);
+        const drainedPayload = cd1LocalForwardAuthority
+          ? null
+          : inFlightQuestionRef.current.takePayload(text);
         const inResponseTo = inFlightToolCallId ? undefined : (drainedPayload ?? undefined);
         // Gate-pass chime — iOS chimes on BOTH branches (stage6_ask_answer
         // and legacy_free_text) before the send; TranscriptGate.playChime
@@ -5645,6 +5662,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         if (matched) {
           clientDiagnostic('inflight_question_anchored', {
             questionPreview: spokenText.slice(0, 80),
+            // What the stale-entry purge left behind (PLAN-CD's pending-FIFO
+            // purge window is observed through this).
+            pendingAfterPurge: inFlightQuestionRef.current.pendingCount,
           });
         }
       } else if (event === 'end' && spokenText) {

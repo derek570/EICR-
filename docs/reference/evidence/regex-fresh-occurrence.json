@@ -22,7 +22,7 @@
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "22f51b6061beb7d3d75edc41d1798c304f514d572cb16d29cf449b2d5a6ebe6e",
       "src/extraction/sonnet-stream.js": "4d40f649aa130869d1d2086e7fd2cfb105dd660569d1ef498167bbc7c87a87e8",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "1b8595b24624470cb0aa4d633acf21fc455b2893639656c8932adfa3828059e6",
+      "web/src/lib/recording-context.tsx": "4dd410d17bf544b9b8159573b7636b7b7a1aa8db4be6a952e181c00b329a2960",
       "web/src/lib/recording/apply-extraction.ts": "61b017779e2956a4f95d287e35654933aa3ab7ee7b6dc6d00dedcce4dab9af44",
       "web/src/lib/recording/apply-regex-match.ts": "de20c80b2d332b502f97ea92b3b36a8d7429874809fafc0c5e729d09bc83e4b4",
       "web/src/lib/recording/deepgram-service.ts": "1bc6a0d1a0bf7cb97a4e066f3a51adccd6f21b545ea156fa6ccae74c20b1bbe8",
@@ -4093,6 +4093,14 @@
         "sources: web/src/lib/recording/sonnet-session.ts",
         "sources: web/src/lib/recording/test-services.ts",
         "sources: web/src/lib/recording/transcript-field-matcher.ts"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-CD",
+      "date": "2026-09-25",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }

@@ -336,38 +336,100 @@ describe('PLAN-CD — ocpd_bs_en canonicalisation miss at the local command boun
     expect(s.hasUnresolvedBackendAsk()).toBe(true);
   });
 
-  it('acceptance 4 windows — client-stale and pending-FIFO purge: attribution state has expired, the backend ask has not', async () => {
-    // Past the attribution stale window (10 s) and past the FIFO purge
-    // (2 × stale window), both inside the dispatcher class's lifetime.
-    for (const elapsedMs of [11_000, 21_000]) {
-      const m = await mount();
-      const askId = vectorId('live_openai_call');
-      await openAsk(m.sonnet(), askId);
-      await advance(elapsedMs);
-      const [entry] = (
-        m.sonnet().inner as unknown as {
-          unresolvedAsks: { liveEntries(): Array<{ lifetimeMs: number }> };
-        }
-      ).unresolvedAsks.liveEntries();
-      expect(elapsedMs).toBeLessThan(entry.lifetimeMs);
-      // The attribution peek has gone empty — that is the window.
-      const before = snapshot(m);
-      await final(m.h, MISS);
-      const s = m.sonnet();
-      expect(ocpdValues(m.job())).toEqual([null, null]);
-      expect(count(played(m.h), isReask)).toBe(1);
-      expect(wire(s, 'transcript')).toHaveLength(before.transcripts);
-      expect(wire(s, 'ask_user_answered')).toHaveLength(before.answers);
-      expect(m.h.chimes.count).toBe(before.chimes);
-      expect(s.hasUnresolvedBackendAsk()).toBe(true);
-      await act(async () => {
-        root.unmount();
+  it('acceptance 4 window — client-stale: past the attribution stale window, inside the backend lifetime', async () => {
+    const m = await mount();
+    const askId = vectorId('live_openai_call');
+    await openAsk(m.sonnet(), askId);
+    await advance(11_000);
+    const inner = m.sonnet().inner as unknown as {
+      unresolvedAsks: { liveEntries(): Array<{ lifetimeMs: number }> };
+    };
+    expect(11_000).toBeLessThan(inner.unresolvedAsks.liveEntries()[0].lifetimeMs);
+    const before = snapshot(m);
+    await final(m.h, MISS);
+    const s = m.sonnet();
+    expect(ocpdValues(m.job())).toEqual([null, null]);
+    expect(count(played(m.h), isReask)).toBe(1);
+    expect(wire(s, 'transcript')).toHaveLength(before.transcripts);
+    expect(wire(s, 'ask_user_answered')).toHaveLength(before.answers);
+    expect(m.h.chimes.count).toBe(before.chimes);
+    expect(s.hasUnresolvedBackendAsk()).toBe(true);
+  });
+
+  it("acceptance 4 window — pending-FIFO purge: an unrelated prompt's TTS purges the unplayed ask, the authority still holds", async () => {
+    const m = await mount();
+    const s = m.sonnet();
+    const askId = vectorId('live_openai_call');
+    // 1. The ask arrives while the inspector is speaking: its prompt is
+    //    deferred, so it sits in the pending FIFO, never promoted.
+    await act(async () => {
+      m.h.refs.deepgram!.emitSpeechStarted();
+    });
+    await openAsk(s, askId);
+    // 2. More than 2 x the attribution stale window later, an UNRELATED
+    //    legacy question (no tool_call_id, so it latches nothing) takes the
+    //    deferral slot, and chatter ends the utterance so it plays: its
+    //    TTS start runs the purge.
+    await advance(21_000);
+    await act(async () => {
+      s.emitRaw({
+        type: 'question',
+        question: 'Which board is this circuit on?',
+        question_type: 'clarification',
       });
-      root = createRoot(container);
-      resetTtsQueue();
-      __resetTtsFingerprintsForTests();
-      __resetTtsWindowForTests();
-    }
+    });
+    await final(m.h, 'right then');
+    await advance(1_000);
+    // 3. Both attribution structures are empty of the ask: the purge left
+    //    nothing pending, and the active slot holds the unrelated prompt.
+    const anchored = m.h.diagnostics.filter((d) => d.category === 'inflight_question_anchored');
+    expect(anchored.at(-1)?.payload).toMatchObject({
+      questionPreview: 'Which board is this circuit on?',
+      pendingAfterPurge: 0,
+    });
+    // 4. The backend ask is still inside its registration, and
+    // 5. the CD2 authority is NOT empty, so the miss keeps the re-ask.
+    const inner = s.inner as unknown as {
+      unresolvedAsks: { liveEntries(): Array<{ lifetimeMs: number; latchedAtMs: number }> };
+    };
+    const [entry] = inner.unresolvedAsks.liveEntries();
+    expect(Date.now() - entry.latchedAtMs).toBeLessThan(entry.lifetimeMs);
+    expect(s.hasUnresolvedBackendAsk()).toBe(true);
+    const before = snapshot(m);
+    await final(m.h, MISS);
+    expect(ocpdValues(m.job())).toEqual([null, null]);
+    expect(count(played(m.h), isReask)).toBe(1);
+    expect(wire(s, 'transcript')).toHaveLength(before.transcripts);
+    expect(wire(s, 'ask_user_answered')).toHaveLength(before.answers);
+    expect(m.h.chimes.count).toBe(before.chimes);
+    expect(s.hasUnresolvedBackendAsk()).toBe(true);
+  });
+
+  it('a handoff is an ORDINARY transcript: an expected_answer_shape "none" acknowledgement web still attributes is never answered', async () => {
+    const m = await mount();
+    const s = m.sonnet();
+    await openAsk(s, vectorId('script_srv_rcs_slot'), {
+      question: 'Got it.',
+      expected_answer_shape: 'none',
+    });
+    await advance(1_000); // past the prompt's post-playback echo window
+    await final(m.h, MISS);
+    const sent = wire(s, 'transcript');
+    expect(sent.map((f) => f.text)).toEqual([MISS]);
+    expect(sent[0]).not.toHaveProperty('in_response_to');
+    expect(wire(s, 'ask_user_answered')).toEqual([]);
+  });
+
+  it('a voice-feedback capture in progress keeps the re-ask (the fall-through would feed the capture, silently)', async () => {
+    const m = await mount();
+    await final(m.h, 'feedback the standard picker is slow');
+    const before = snapshot(m);
+    await final(m.h, MISS);
+    const routed = m.h.diagnostics.filter((d) => d.category === 'cd2_ocpd_miss_routed');
+    expect(routed.at(-1)?.payload).toMatchObject({ route: 'reask', reason: 'feedback_capture' });
+    expect(count(played(m.h), isReask)).toBe(1);
+    expect(wire(m.sonnet(), 'transcript')).toHaveLength(before.transcripts);
+    expect(ocpdValues(m.job())).toEqual([null, null]);
   });
 
   // The per-class timer path, asserted as ELAPSED TIME against the lifetime

@@ -471,6 +471,13 @@ happens next depends on one question: is a backend ask open?
 | No | None: no re-ask and no "Done." | Yes, as an ordinary transcript; the model speaks the outcome | Once, by the forward path |
 | Yes | Today's single re-ask | No: no chime, no transcript, no `ask_user_answered` | Once, locally |
 
+Two more rules keep the handoff honest. A voice-feedback capture in progress also keeps
+the re-ask, because the fall-through would feed the utterance into the capture buffer,
+not to the model. A handed-off utterance is an ORDINARY transcript: it never carries
+`in_response_to` and is never sent as `ask_user_answered`, whatever the attribution
+tracker still holds (an expired ask's slot, or on web an `expected_answer_shape:
+"none"` acknowledgement it still enqueues).
+
 A canonicalised success still writes locally, reads back once and returns early, so
 the model never makes a second, conflicting extraction. Only a canonicaliser MISS
 takes this branch: an empty value, a missing target and every other closed-enum
