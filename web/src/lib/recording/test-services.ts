@@ -98,6 +98,8 @@ export interface SonnetSessionLike {
   peekInFlightToolCallId(): string | null;
   consumeInFlightToolCallId(expectedId?: string | null): string | null;
   clearInFlightToolCallIdByPrefix(prefix: string): void;
+  /** PLAN-CD (CD2) — the non-consuming unresolved-backend-ask authority. */
+  hasUnresolvedBackendAsk(): boolean;
   readonly connectionState: SonnetConnectionState;
   /** Diagnostic sink surface — recording-context wires the session into
    *  `setDiagnosticSink(session)`. */

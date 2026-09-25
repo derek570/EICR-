@@ -22,6 +22,7 @@ import type {
 } from '@/lib/recording/test-services';
 import type { CapturedPcmSegment } from '@/lib/recording/tagged-pcm-segment';
 import { SonnetSession, type SonnetConnectionState } from '@/lib/recording/sonnet-session';
+import { UnresolvedAskAuthority } from '@/lib/recording/unresolved-ask-authority';
 import type { MicCaptureHandle, MicCaptureOptions } from '@/lib/recording/mic-capture';
 import type { SpeakOptions } from '@/lib/recording/tts';
 import type { QueuePlayControls, PreparedAudio } from '@/lib/recording/tts-queue';
@@ -365,6 +366,7 @@ export class FakeSonnetSession implements SonnetSessionLike {
   readonly diagnostics: Array<{ category: string; payload: Record<string, unknown> }> = [];
   private inFlightToolCallId: string | null = null;
   private state: SonnetConnectionState = 'idle' as SonnetConnectionState;
+  readonly unresolvedAsks = new UnresolvedAskAuthority();
 
   constructor(callbacks: FakeSonnetCallbacks) {
     this.callbacks = callbacks;
@@ -390,6 +392,7 @@ export class FakeSonnetSession implements SonnetSessionLike {
     _purpose?: string | null
   ): void {
     this.sentAskAnswers.push({ toolCallId, text, utteranceId });
+    this.unresolvedAsks.resolve(toolCallId);
   }
   sendAddressMirrorDeliveryAck(deliveryToken: string): void {
     this.sentAddressMirrorDeliveryAcks.push(deliveryToken);
@@ -404,8 +407,17 @@ export class FakeSonnetSession implements SonnetSessionLike {
     if (this.inFlightToolCallId === id) this.inFlightToolCallId = null;
     return id;
   }
-  clearInFlightToolCallIdByPrefix(): void {
+  clearInFlightToolCallIdByPrefix(prefix?: string): void {
     this.inFlightToolCallId = null;
+    if (prefix) this.unresolvedAsks.cancelByPrefix(prefix);
+  }
+  /** PLAN-CD (CD2) — the fake drives the REAL authority class: a question
+   *  emitted with a `tool_call_id` latches it (interactive unless the frame
+   *  says `expected_answer_shape: 'none'`), an ask answer resolves it. A
+   *  mounted test that must prove the production DECODER latches uses
+   *  `RealDecoderSonnetSession` instead. */
+  hasUnresolvedBackendAsk(): boolean {
+    return this.unresolvedAsks.hasLive();
   }
   get connectionState(): SonnetConnectionState {
     return this.state;
@@ -422,6 +434,10 @@ export class FakeSonnetSession implements SonnetSessionLike {
     this.callbacks.onExtraction?.(result);
   }
   emitQuestion(q: unknown): void {
+    const frame = (q ?? {}) as { tool_call_id?: unknown; expected_answer_shape?: unknown };
+    if (typeof frame.tool_call_id === 'string') {
+      this.unresolvedAsks.latch(frame.tool_call_id, frame.expected_answer_shape);
+    }
     this.callbacks.onQuestion?.(q);
   }
   /** Stage 6 STI-05 `field_corrected` frame (clear_reading wire). Drives
@@ -541,6 +557,9 @@ export class RealDecoderSonnetSession implements SonnetSessionLike {
   }
   clearInFlightToolCallIdByPrefix(prefix: string): void {
     this.inner.clearInFlightToolCallIdByPrefix(prefix);
+  }
+  hasUnresolvedBackendAsk(): boolean {
+    return this.inner.hasUnresolvedBackendAsk();
   }
   get connectionState(): SonnetConnectionState {
     return this.inner.connectionState;

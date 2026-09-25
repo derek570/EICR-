@@ -1610,6 +1610,16 @@ export class EICRExtractionSession {
    * session env mutation must NOT drift the feature — Research §Pitfall 4).
    * Default TRUE unless the env is exactly the string 'false'. The options
    * override exists for tests (boolean only).
+   *
+   * CLIENT DEPENDENCY (PLAN-CD, feedback-2026-09-17 wave; Decision 13). Both
+   * clients hand a locally parsed `ocpd_bs_en` command whose value the
+   * canonicaliser cannot read to the model as an ORDINARY transcript, with no
+   * marker. Such an utterance ("OCPD standard grey square for all") carries no
+   * digit and no trigger word, so it reaches the model ONLY because this flag
+   * turns the gate's LOW_CONTENT drop into BORDERLINE_FORWARD. Set it to
+   * 'false' and those dictations go silent after the client has already
+   * chimed. Derek accepted that dependency; it is pinned by
+   * `src/__tests__/pre-llm-gate-cd-agentic-dependency.test.js`.
    */
   _resolveAgenticAnswers(override) {
     if (typeof override === 'boolean') return override;

@@ -526,6 +526,14 @@ const OCPD_TYPE_PATTERN = /\btype\s+(?:is\s+)?([a-d]|[1-4])\b/gi;
 // the OCPD pattern now accepts, so "wiring type 2" is not an OCPD type.
 const WIRING_OR_REF_BEFORE_TYPE =
   /\b(?:wir\w+|worrying|cable|ref\w*|reference|installation)\s+type\s+(?:is\s+)?(?:[a-g]|[1-4])\b/gi;
+// PLAN-CD — Decision 12 REVISIT TRIGGER (Derek, 2026-09-20). These two
+// patterns match literal standard numbers only, so a regex instant-fill of
+// `ocpd_bs_en` (write path 18) can never carry a value the canonicaliser
+// misses, and PLAN-CD deliberately ships NO path-18 miss handling. Widening
+// either pattern past literal numbers — so free text reaches the
+// canonicaliser at this ingress — makes that miss reachable: it reopens
+// Decision 12's scope, needs its own follow-up (the Decision 7 handoff at
+// this ingress), and whoever widens it owns raising that.
 const BS_EN_STANDARD_PATTERN = /\b(60898|61009|60909)\b/gi;
 const OCPD_COMPOSITE_PATTERN =
   /\b(?:bs\s*(?:en)?\s*)?(60898|61009|60909)\s+(?:(?:type|time(?:\s+for)?)\s+([a-d]))?\s*(\d+)?\s*(?:amp|amber|a)?/gi;

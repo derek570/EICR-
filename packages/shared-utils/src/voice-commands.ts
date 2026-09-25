@@ -201,6 +201,15 @@ export interface VoiceCommandOutcome {
    *  confirmations-OFF. NEVER infer rejection from an absent patch —
    *  a legitimately no-op apply also has no patch. */
   invalidClosedEnum?: boolean;
+  /** PLAN-CD (feedback-2026-09-17 wave) — the guard's own verdict that the
+   *  rejection above is an `ocpd_bs_en` CANONICALISATION MISS: a non-empty
+   *  dictated value `canonicaliseOcpdStandard` could not read. Set ONLY on
+   *  that branch, never on a missing value, a missing target or any other
+   *  closed-enum rejection, so a caller never re-derives it from the
+   *  response text. The client-local command boundary reads it to hand the
+   *  utterance to the model (Decision 7) when no backend ask is live
+   *  (Decision 15); every other caller ignores it and keeps the re-ask. */
+  ocpdStandardMiss?: boolean;
   /** PLAN-C — the command targeted a closed-enum field and the dictated
    *  value was CANONICALISED to a different string than the inspector
    *  said ("60898" → "BS EN 60898", "twin and earth" → "A"). The
@@ -1044,6 +1053,9 @@ function guardOcpdStandardWrite(rawValue: unknown, target: GuardedTarget): Close
       outcome: {
         response: renderClosedEnumReask('ocpd_bs_en', reason, cleaned, target),
         invalidClosedEnum: true,
+        // PLAN-CD — only a value the canonicaliser actually MISSED; an empty
+        // value is a structural gap and keeps its question.
+        ...(reason === 'invalid_value' ? { ocpdStandardMiss: true } : {}),
       },
     };
   }
