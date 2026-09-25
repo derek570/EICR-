@@ -493,6 +493,9 @@ describe("cycle 1 c1-1 — the named extractor never writes another column's typ
     'the RCD fitted here is type B',
     'wiring on this circuit has type 2',
     'reference method for this circuit is type C',
+    'reference type C',
+    'installation type C',
+    'worrying type A',
   ])('%s captures no OCPD type', async (phrase) => {
     const { extractNamedFieldValues } =
       await import('../extraction/dialogue-engine/helpers/extraction.js');
@@ -511,6 +514,9 @@ describe("cycle 1 c1-1 — the named extractor never writes another column's typ
     ['type B, RCD type A', 'B'],
     ['type X Y Z', 'XYZ'],
     ['the type is C', 'C'],
+    // A decimal point is not a clause boundary (would read as the code `B6`).
+    ['type B 6.5 kA', 'B'],
+    ['type C 32 amps 1.5 kA', 'C'],
   ])('a legitimate compound reply %p still extracts %p', async (phrase, want) => {
     const { extractNamedFieldValues } =
       await import('../extraction/dialogue-engine/helpers/extraction.js');
@@ -579,5 +585,21 @@ describe('cycle 2 c3-1 — RCD scope within two words, never across a comma', ()
     turn(session, ws, 'BS EN 61009', 2000);
     turn(session, ws, 'type B, RCD type A', 3000);
     expect(session.stateSnapshot.circuits[6].ocpd_type).toBe('B');
+  });
+});
+
+describe('cycle 4 — through the real OCPD and RCBO dialogue paths', () => {
+  test.each([
+    ['MCB on circuit 4.', 4, 'reference type C', undefined],
+    ['MCB on circuit 4.', 4, 'installation type C', undefined],
+    ['MCB on circuit 4.', 4, 'type B 6.5 kA', 'B'],
+    ['RCBO on circuit 4.', 4, 'type B 6.5 kA', 'B'],
+  ])('%s on circuit %s, reply %p writes ocpd_type %p', (entry, circuit, reply, want) => {
+    const ws = new FakeWS();
+    const session = { sessionId: SESSION_ID, stateSnapshot: { circuits: { [circuit]: {} } } };
+    turn(session, ws, entry, 1000);
+    turn(session, ws, entry.startsWith('RCBO') ? 'BS EN 61009' : 'BS EN 60898', 2000);
+    turn(session, ws, reply, 3000);
+    expect(session.stateSnapshot.circuits[circuit].ocpd_type).toBe(want);
   });
 });

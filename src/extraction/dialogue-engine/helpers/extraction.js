@@ -57,7 +57,9 @@ export function extractNamedFieldValues(text, slots) {
       // wins, as the whole-text match did.
       let m = null;
       if (slot.namedExtractorClauseVeto instanceof RegExp) {
-        for (const clause of text.split(/[,.;?!]/)) {
+        // A full stop splits only when it is not a decimal point: "type B 6.5
+        // kA" is one clause, or it would read as the spelled code `B6`.
+        for (const clause of text.split(/[,;?!]|\.(?!\d)/)) {
           if (slot.namedExtractorClauseVeto.test(clause)) continue;
           m = clause.match(slot.namedExtractor);
           if (m) break;

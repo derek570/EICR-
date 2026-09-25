@@ -250,10 +250,13 @@ export const OCPD_TYPE_NAMED_EXTRACTOR =
 /**
  * A clause that names another column's type. When it matches, the clause
  * yields no OCPD type (Decision 7: the fast path does not decide scope it
- * cannot see; the model has the whole utterance).
+ * cannot see; the model has the whole utterance). The wiring / reference /
+ * installation labels are the SAME vocabulary both client matchers exclude
+ * (`WIRING_OR_REF_BEFORE_TYPE` on web, its iOS twin), including the Deepgram
+ * garble "worrying", so the three paths agree (Codex EP cycle 4).
  */
 export const OCPD_TYPE_CLAUSE_VETO =
-  /\b(?:rcd|rccb|residual|waveform|wiring|cable|ref(?:erence)?\s+method|installation\s+method)\b/i;
+  /\b(?:rcd|rccb|residual|waveform|wir\w*|worrying|cable|ref\w*|reference|installation)\b/i;
 
 // ─────────────────────────────────────────────────────────────────────────
 // Grouped advisory clause — the backend twin of the TS
