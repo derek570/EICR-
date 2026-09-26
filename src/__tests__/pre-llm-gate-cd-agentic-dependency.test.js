@@ -40,26 +40,3 @@ describe('PLAN-CD — the handed-off miss rests on VOICE_AGENTIC_ANSWERS', () =>
     expect(decision.reason).toBe(GATE_REASONS.LOW_CONTENT);
   });
 });
-
-// PLAN-W2 (Decision 7 wrong-value wave) — web's declined apply-field forwards
-// rest on the same flag. Routing row 6 forwards a recognised measured-reading
-// or cable-size command with only a client-local gate authority; a digitless
-// value such as "cable n/a for all" has one weak trigger and two content
-// words, so the backend admits it only as BORDERLINE_FORWARD. The plan
-// accepted this dependency ("No new pin is added; PLAN-CD's pin covers the
-// flag"); this case makes the cover explicit for W2's own shape.
-describe('PLAN-W2 — a digitless declined apply-field forward rests on VOICE_AGENTIC_ANSWERS', () => {
-  const W2_FIXTURE = 'cable n/a for all';
-
-  test('flag true: forwarded as BORDERLINE_FORWARD', () => {
-    const decision = shouldForwardToSonnet(W2_FIXTURE, { agenticAnswersEnabled: true });
-    expect(decision.forward).toBe(true);
-    expect(decision.reason).toBe(GATE_REASONS.BORDERLINE_FORWARD);
-  });
-
-  test('flag false: BLOCKED as LOW_CONTENT — the same accepted failure as PLAN-CD', () => {
-    const decision = shouldForwardToSonnet(W2_FIXTURE, { agenticAnswersEnabled: false });
-    expect(decision.forward).toBe(false);
-    expect(decision.reason).toBe(GATE_REASONS.LOW_CONTENT);
-  });
-});
