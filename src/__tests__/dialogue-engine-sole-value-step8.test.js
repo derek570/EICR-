@@ -153,6 +153,8 @@ describe('red proofs — a non-sole reply hands off instead of writing', () => {
     'the main switch is AC but this one is A',
     // Review cycle 2: a sibling capture after the competing value.
     'the main switch is type AC but this one is A, BS EN 61008',
+    // Review cycle 3: a multiword competing value before a sibling capture.
+    'the main switch is type AC but the RCD type on this one is not applicable, BS EN 61008',
   ])('RCD type question, "%s" (main writes AC)', (reply) => {
     expectHandoffNoWrite(drive(processProtectiveDeviceTurn, RCD_TO_TYPE, reply), 'rcd_type');
   });

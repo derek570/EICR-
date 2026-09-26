@@ -86,14 +86,21 @@ describe('helper — red proofs (each is written today as the value it corrected
     expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toBeNull();
   });
 
-  // A correction marker that introduces ANOTHER slot's value corrects that
-  // slot, not the capture before it (EP deviation D-2: the literal rule flipped
-  // two existing mid-walk BS overrides, which the plan forbids).
+  // EP review cycles 1-3: ANY correction marker or contrasting "but" after a
+  // capture hands off, including one that introduces another slot's value.
+  // Attributing the marker to that slot was a heuristic three review rounds
+  // broke; a false handoff costs one model turn (Decision 7's accepted cost).
   test.each([
-    ['ocpd', 'type B, actually BS 3871'],
-    ['rcd', 'Type AC, actually BS EN 62423'],
-  ])('control — %s: "%s" is not ambiguous (the marker belongs to the BS slot)', (schema, text) => {
-    expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toBeNull();
+    ['ocpd', 'type B, actually BS 3871', 'ocpd_type'],
+    ['rcd', 'Type AC, actually BS EN 62423', 'rcd_type'],
+    ['ocpd', '32 amps but the breaking capacity is 6 kA', 'ocpd_rating_a'],
+    [
+      'rcd',
+      'the main switch is type AC but the RCD type on this one is not applicable, BS EN 61008',
+      'rcd_type',
+    ],
+  ])('%s: "%s" hands off (ambiguous on %s)', (schema, text, field) => {
+    expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toMatchObject({ field });
   });
 
   test.each([
@@ -101,12 +108,6 @@ describe('helper — red proofs (each is written today as the value it corrected
     ['ocpd', '32 amps but I think it is a 40', 'ocpd_rating_a'],
   ])('a contrasting "but" retracts: %s "%s" is ambiguous on %s', (schema, text, field) => {
     expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toMatchObject({ field });
-  });
-
-  test('control: "but" introducing another slot\'s value is not a retraction', () => {
-    expect(
-      findAmbiguousNamedCapture('32 amps but the breaking capacity is 6 kA', slotsOf('ocpd'))
-    ).toBeNull();
   });
 
   test('a marker followed by no value still retracts: "trip time 25 milliseconds, no issues" hands off', () => {
@@ -166,6 +167,20 @@ describe('active path — the script hands off instead of writing', () => {
       ring_r2_ohm: '1.19',
     });
     expect(out.transcriptText.startsWith('[Server note:')).toBe(true);
+  });
+});
+
+describe('active path — a marker after a capture hands off, never writes', () => {
+  test('OCPD type question answered "type B, actually BS 3871": no write, handoff', () => {
+    const { ws, session, rows, turn } = rig();
+    turn(processProtectiveDeviceTurn, 'MCB on circuit 3.');
+    turn(processProtectiveDeviceTurn, 'BS EN 60898');
+    expect(ws.sent.at(-1).context_field).toBe('ocpd_type');
+    const out = turn(processProtectiveDeviceTurn, 'type B, actually BS 3871');
+    expect(session.stateSnapshot.circuits[3].ocpd_type).toBeUndefined();
+    expect(session.stateSnapshot.circuits[3].ocpd_bs_en).toBe('BS EN 60898');
+    expect(out.transcriptText.startsWith('[Server note:')).toBe(true);
+    expect(rows.filter((r) => r.event === 'stage6.script_handoff')).toHaveLength(1);
   });
 });
 

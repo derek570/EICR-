@@ -561,7 +561,9 @@ describe('acceptance 3 — RCBO, no mirrors (CS-64 / CS-65 / CS-66 / CS-100)', (
     const session = buildSession({ 5: {} });
     say(ws, session, 'MCB on circuit 5.', 1000);
     say(ws, session, 'BS EN 60898', 2000);
-    const out = say(ws, session, 'type B, actually BS 3871', 3000);
+    // PLAN-W1 M2d: without "actually" — a correction marker after the type
+    // capture now hands the whole reply to the model (EP review cycle 3).
+    const out = say(ws, session, 'type B, BS 3871', 3000);
     expect(out.fallthrough).toBe(false);
     expect(session.stateSnapshot.circuits[5].ocpd_bs_en).toBe('BS 3871');
     expect(session.stateSnapshot.circuits[5].ocpd_type).toBe('B');

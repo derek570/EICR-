@@ -111,10 +111,9 @@ export const CORRECTION_MARKER_RE =
   /\b(?:no|not|actually|sorry|wait|cancel\s+that|i\s+meant|scratch\s+that)\b/i;
 
 // PLAN-W1 review cycle 1 (Codex BLOCKER, the plan's A-1 repro) — "but"
-// introduces a contrasting value for the same thing: "the main switch is type
-// AC but this one is A". The capture before it is the value the inspector set
-// aside, so it counts as a retraction under the same attribution rule as the
-// correction markers ("32 amps but the kA is 6" still belongs to the kA slot).
+// introduces a contrasting value: "the main switch is type AC but this one is
+// A". The capture before it may be the value the inspector set aside, so it
+// counts as a retraction, like the correction markers.
 const CONTRAST_MARKER_RE = /\bbut\b/i;
 
 // A value directly preceded, within its own clause, by a negation: "the
@@ -190,37 +189,7 @@ function captureSpansFor(slot, text) {
   return [captures];
 }
 
-// A correction or contrast marker belongs to ANOTHER slot when that slot's
-// capture is the next thing after it AND nothing between the marker and that
-// capture reads as a value of the captured slot itself: "type B, actually BS
-// 3871" corrects the BS standard, not the type. Anything else retracts the
-// capture before the marker — an unlabelled value of the same slot ("no, 28";
-// "…type AC but this one is A, BS EN 61008", where "A" is an RCD type), or no
-// value at all ("no issues").
-//
-// Review cycle 2: the first version looked only for the first DIGIT after the
-// marker, so a non-numeric competing value ("A") slipped past it to a later
-// sibling capture. The captured slot's own parser now judges each word.
-function markerAttributedElsewhere(text, markerEnd, slot, otherCaptures) {
-  const next = otherCaptures
-    .filter((c) => c.start >= markerEnd)
-    .reduce((best, c) => (best === null || c.start < best.start ? c : best), null);
-  if (next === null) return false;
-  const between = text.slice(markerEnd, next.start);
-  for (const word of between.split(/[^A-Za-z0-9.>∞]+/)) {
-    if (!word) continue;
-    let parsed = null;
-    try {
-      parsed = slot.parser(word);
-    } catch {
-      parsed = null;
-    }
-    if (parsed !== null && parsed !== undefined) return false;
-  }
-  return true;
-}
-
-function capturesAreAmbiguous(text, captures, otherCaptures, slot) {
+function capturesAreAmbiguous(text, captures) {
   if (captures.length === 0) return false;
   const distinct = new Set(captures.map((c) => String(c.value)));
   if (distinct.size >= 2) return true;
@@ -232,17 +201,21 @@ function capturesAreAmbiguous(text, captures, otherCaptures, slot) {
   ) {
     return true;
   }
-  // One value, later retracted: a correction marker after a capture, where
-  // the corrected value may carry no label ("trip time 25 ms, no, 28").
+  // One value, later retracted: a correction marker or a contrasting "but"
+  // after a capture ("trip time 25 ms, no, 28"; "the main switch is type AC
+  // but this one is A"). ANY such marker hands the reply to the model.
+  //
+  // EP review cycles 1-3 (2026-09-26): an earlier version tried to decide
+  // whether a marker introduced ANOTHER slot's value ("type B, actually BS
+  // 3871") and so did not retract. Three consecutive review rounds each found
+  // a reply that heuristic attributed wrongly — two of them wrote a value the
+  // inspector had set aside. The attribution is deleted: a false handoff costs
+  // one model turn, which Decision 7 accepts; a wrong attribution reaches the
+  // certificate.
   const markers = new RegExp(`${CORRECTION_MARKER_RE.source}|${CONTRAST_MARKER_RE.source}`, 'gi');
   for (const c of captures) {
     markers.lastIndex = c.end;
-    let m;
-    while ((m = markers.exec(text)) !== null) {
-      if (!markerAttributedElsewhere(text, m.index + m[0].length, slot, otherCaptures)) {
-        return true;
-      }
-    }
+    if (markers.test(text)) return true;
   }
   return false;
 }
@@ -257,7 +230,7 @@ function capturesAreAmbiguous(text, captures, otherCaptures, slot) {
  *     same ring candidate direction;
  *   - every capture of its single value is negated in its own clause; or
  *   - a capture is followed, later in the utterance, by a correction marker
- *     or a contrasting "but" that does not introduce another slot's value.
+ *     or a contrasting "but".
  * Repeats of one value are not ambiguous, and a field-first versus value-first
  * disagreement is left to today's smaller-gap arbitration (A-4, PLAN-W1b).
  *
@@ -269,11 +242,8 @@ export function findAmbiguousNamedCapture(text, slots) {
   if (typeof text !== 'string' || !text || !Array.isArray(slots)) return null;
   const bySlot = slots.map((slot) => ({ slot, groups: captureSpansFor(slot, text) }));
   for (const { slot, groups } of bySlot) {
-    const otherCaptures = bySlot
-      .filter((entry) => entry.slot !== slot)
-      .flatMap((entry) => entry.groups.flat());
     for (const captures of groups) {
-      if (capturesAreAmbiguous(text, captures, otherCaptures, slot)) {
+      if (capturesAreAmbiguous(text, captures)) {
         return {
           field: slot.field,
           values: [...new Set(captures.map((c) => String(c.value)))],
