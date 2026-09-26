@@ -84,12 +84,7 @@ function valueCombinations(fields, filled) {
 
 describe('Decision 17 — property (1): the segment split is byte-identical when nothing is omitted', () => {
   test('OCPD composes exactly today’s finishMessage over every value combination', () => {
-    const fields = [
-      'ocpd_bs_en',
-      'ocpd_type',
-      'ocpd_rating_a',
-      'ocpd_breaking_capacity_ka',
-    ];
+    const fields = ['ocpd_bs_en', 'ocpd_type', 'ocpd_rating_a', 'ocpd_breaking_capacity_ka'];
     const filled = {
       ocpd_bs_en: 'BS EN 60898',
       ocpd_type: 'B',
@@ -355,7 +350,9 @@ describe('Decision 17 — property (2): exactly-once across the turn boundary', 
     });
     expect(session.dialogueScriptState?.schemaName).toBe('insulation_resistance');
 
-    for (const text of ['live earth 299', '500 volts']) {
+    // PLAN-W1 M2a — "live to earth" routes by name; the older "live earth
+    // 299" relied on step 8 taking a number out of a longer phrase.
+    for (const text of ['live to earth 299', '500 volts']) {
       processInsulationResistanceTurn({
         ws,
         session,

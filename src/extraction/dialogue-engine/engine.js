@@ -32,6 +32,7 @@ import {
 } from './helpers/circuit-resolution.js';
 import {
   extractNamedFieldValues,
+  findAmbiguousNamedCapture,
   nextMissingSlot,
   countFilledForCancel,
   maskCircuitSpans,
@@ -112,6 +113,7 @@ import { recordValueCorrection, consumeValueCorrection } from './helpers/value-c
 // confirmation branch's 5h idle rule (never consume a dictated reading into
 // the miss counter). Leaf module (imports only node:module), no cycle.
 import { detectStructuredReading } from '../stage6-pending-value.js';
+import { matchSoleValueReply } from '../sole-value-reply.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -425,6 +427,28 @@ export function processDialogueTurn(ctx) {
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
+        // PLAN-W1 M2d (Decision 7) — an utterance whose named capture is
+        // ambiguous (two values for one slot, a negated value, or a value
+        // followed by a correction marker) belongs to the model. One gate,
+        // before runActivePath, so it takes precedence over that function's
+        // own exits: each of them ends in a model turn or announces a script
+        // outcome, and for an ambiguous value the handoff is the outcome.
+        const ambiguous = findAmbiguousNamedCapture(maskCircuitSpans(replyText), schema.slots);
+        if (ambiguous) {
+          return handOffAmbiguousCapture({
+            ws,
+            session,
+            sessionId,
+            schema,
+            state,
+            logger,
+            now,
+            responseEpoch,
+            transcriptText,
+            replyText,
+            ambiguous,
+          });
+        }
         return runActivePath({
           ws,
           session,
@@ -461,6 +485,33 @@ export function processDialogueTurn(ctx) {
         const m = text.match(cbCfg.correctionRe);
         if (m && cbCfg.valueOnlyRe.test(m[1])) {
           const corrected = cbCfg.valueParser(m[1]);
+          const legs = Array.isArray(crumb.legs) ? crumb.legs : [];
+          if (corrected !== null && corrected !== undefined && legs.length >= 2) {
+            // PLAN-W1 M4 (B-110, Decision 7) — the run wrote BOTH legs, so
+            // "No, 250" corrects one of them without saying which. Writing the
+            // last leg was a guess ("L-L 200, L-E 0.5" then "No, 250" wrote
+            // L-E = 250 when the inspector meant L-L). Consume the crumb and
+            // hand the reply to the model with a server-controlled note (no
+            // raw utterance inside the bracket); the model writes or asks, and
+            // a model write is read back once through record_reading.
+            session.dialogueCorrectionBreadcrumb = null; // one-shot
+            const legText = legs
+              .map(
+                (leg) =>
+                  `${cbCfg.fieldLabels?.[leg.field] ?? leg.field} ${speakSentinelValue(leg.value)}`
+              )
+              .join(', ');
+            const note =
+              `[Server note: The assistant just read back ${cbCfg.noteSubject ?? crumbSchema.name} ` +
+              `for circuit ${crumb.circuit_ref}: ${legText}. The user's reply follows. It corrects ` +
+              `one of those ${legs.length === 2 ? 'two ' : ''}readings but does not say which.] `;
+            logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction_ambiguous`, {
+              sessionId,
+              circuit_ref: crumb.circuit_ref,
+              legs: legs.map((leg) => leg.field),
+            });
+            return { handled: true, fallthrough: true, transcriptText: `${note}${text}` };
+          }
           if (corrected !== null && corrected !== undefined) {
             session.dialogueCorrectionBreadcrumb = null; // one-shot
             // Plan D Seam C (2026-07-25, feedback id 100(b)) — this breadcrumb is
@@ -701,6 +752,25 @@ export function processDialogueTurn(ctx) {
       // would block a hypothetical future cross-schema match, so
       // `continue` is the correct verb.
       continue;
+    }
+
+    // PLAN-W1 M2d — no entry for ANY schema when the entering schema's named
+    // capture is ambiguous: nothing is written, and the model gets the
+    // utterance as an ordinary turn. The cross-wrapper veto stops a later
+    // wrapper entering on the same words.
+    {
+      const ambiguous = findAmbiguousNamedCapture(maskCircuitSpans(replyText), schema.slots);
+      if (ambiguous) {
+        session.dialogueEntryGuardVeto = { text: replyText, at: now };
+        logger?.info?.('stage6.script_entry_ambiguous_capture', {
+          sessionId,
+          schema: schema.name,
+          field: ambiguous.field,
+          values: ambiguous.values,
+          textPreview: text.slice(0, 80),
+        });
+        return { handled: false };
+      }
     }
 
     return runEntry({
@@ -1756,6 +1826,68 @@ function renderHandoffNoteText(note) {
  *      now carrying a note. The failed utterance reaches the model in
  *      `transcriptText`; the note never carries it.
  */
+/**
+ * PLAN-W1 M2d — the active-path exit for an ambiguous named capture. Arms the
+ * cross-wrapper entry veto (the same line the entry guard runs), purges a
+ * queued confirmation prompt when the script was awaiting one (as every other
+ * confirmation-abandonment exit does), then hands off: nothing from this reply
+ * is written, earlier captures are read back once, the script clears, and the
+ * model gets the note plus the whole reply.
+ *
+ * KNOWN GAP, accepted by Derek as Decision W-4.1 (2026-09-26; owned by
+ * PLAN-W1c): when the script is awaiting confirmation, the queued "All
+ * correct?" prompt already marked its readings `covered_by = 'confirmation'`,
+ * so the terminal read-back below skips them. If the purge cancels that prompt
+ * BEFORE it played, those readings are never heard. The server has no playback
+ * signal for script prompts. The confirmation-mode cancel exit has the same
+ * race. PLAN-W1c replaces this with a playback-aware purge.
+ */
+function handOffAmbiguousCapture({
+  ws,
+  session,
+  sessionId,
+  schema,
+  state,
+  logger,
+  now,
+  responseEpoch,
+  transcriptText,
+  replyText,
+  ambiguous,
+}) {
+  session.dialogueEntryGuardVeto = { text: replyText, at: now };
+  if (state.awaiting_confirmation === true && schema.confirmation) {
+    sendScriptPurge(ws, schema, sessionId);
+  }
+  const currentSlot = nextMissingSlot(
+    state.values,
+    schema.slots,
+    state.skipped_slots,
+    getDeferredSlots(session, schema.name, state.circuit_ref)
+  );
+  logger?.info?.('stage6.script_ambiguous_capture', {
+    sessionId,
+    schema: schema.name,
+    field: ambiguous.field,
+    values: ambiguous.values,
+  });
+  return terminateWithHandoff({
+    ws,
+    session,
+    sessionId,
+    schema,
+    state,
+    logger,
+    now,
+    responseEpoch,
+    transcriptText,
+    kind: 'ambiguous_capture',
+    askedField: currentSlot?.field ?? null,
+    askedQuestion: currentSlot?.question ?? null,
+    textPreview: String(replyText ?? '').slice(0, 80),
+  });
+}
+
 function terminateWithHandoff({
   ws,
   session,
@@ -2906,10 +3038,23 @@ function runActivePath({
       // Plan D Seam B — the clamped value actually stored, for the log row below.
       let disambiguatedValue = null;
       if (verdict && verdict.field) {
-        // Belt-and-braces: don't overwrite if the inspector somehow
-        // filled the chosen slot in the meantime (rare but possible if
-        // a parallel write landed).
-        if (state.values[verdict.field] == null) {
+        // PLAN-W1 M4 (B-135) — the question can now be asked about a leg that
+        // is already filled, so a filled leg is no longer skipped (that would
+        // be a silent drop):
+        //   - chosen leg empty           → write (unchanged);
+        //   - chosen leg holds another   → overwrite as a dictated correction;
+        //   - chosen leg holds the same  → satisfied-existing, no write.
+        // The finish summary reads each applied operation back once.
+        const chosenSlot = schema.slots.find((sl) => sl.field === verdict.field);
+        const existing = state.values[verdict.field];
+        if (existing != null && valuesCanonicallyEqual(chosenSlot, existing, bare.value)) {
+          const op = markDictated(state, verdict.field, bare.value, {
+            schema,
+            source: 'ir_bare_disambiguation',
+            circuit_ref: state.circuit_ref,
+          });
+          markSatisfiedExisting(op, existing, state.circuit_ref);
+        } else {
           // PLAN A2 §A2.2 — "buffered bare IR at queue-acceptance": the bare
           // value was captured circuit-less/field-less at entry
           // (ambiguous_bare_value); it becomes a known-field dictation only
@@ -5114,9 +5259,23 @@ function runActivePath({
     // grammar can consume: every correct answer would miss and hand off. For
     // the RCBO BS pair this is now the ONLY ingress (neither slot is
     // named-extracted), so the clause is load-bearing.
-    const bareValue = currentSlot.parser(
-      maskCircuitSpans(currentSlot.kind === 'bs_code' || currentSlot.parsesRawReply ? reply : text)
-    );
+    //
+    // PLAN-W1 M2a (Decision 7) — a slot that declares `soleValueGrammar` writes
+    // only when the WHOLE raw reply is one value of that grammar; the parser
+    // then sees only the captured token. The parsers take the first match
+    // anywhere ("give me 2 minutes" → 2 A), so a reply that is not a sole value
+    // yields null here and reaches the step-9b first-miss handoff instead.
+    let bareValue;
+    if (currentSlot.soleValueGrammar) {
+      const sole = matchSoleValueReply(maskCircuitSpans(reply), currentSlot.soleValueGrammar);
+      bareValue = sole ? currentSlot.parser(sole.value) : null;
+    } else {
+      bareValue = currentSlot.parser(
+        maskCircuitSpans(
+          currentSlot.kind === 'bs_code' || currentSlot.parsesRawReply ? reply : text
+        )
+      );
+    }
     // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
     // gate. The OCPD breaking-capacity slot now declares the realistic kA
     // set ([1.5, 3, 4.5, 6, 10, 16, 20, 25, 36, 50, 80] — see
@@ -6074,10 +6233,24 @@ function finishScript({
       }
     }
     if (lastReadingOp) {
+      // PLAN-W1 M4 (B-110) — every reading leg applied for this circuit this
+      // run, with its stored value. With two legs a bare "No, 250" does not
+      // say which one it corrects, so the consumer hands it to the model.
+      const legsByField = new Map();
+      for (const op of operations) {
+        if (
+          op.disposition === 'applied' &&
+          fields.includes(op.field) &&
+          op.effective_circuit_ref === circuit_ref
+        ) {
+          legsByField.set(op.field, op.written_value);
+        }
+      }
       session.dialogueCorrectionBreadcrumb = {
         schemaName: schema.name,
         circuit_ref,
         field: lastReadingOp.field,
+        legs: [...legsByField].map(([field, value]) => ({ field, value })),
         boardId: session.stateSnapshot?.currentBoardId ?? null,
         at: now,
       };
@@ -6964,36 +7137,48 @@ export function tryResumePausedScript({
     circuit_op: matchingOp.op,
   });
 
-  // Disambiguation pre-step for an ambiguous bare value captured at
-  // entry. Three branches:
+  // Disambiguation pre-step for an ambiguous bare value captured at entry.
+  // PLAN-W1 M4 (B-135, Decision 7) — the value is only ever written where the
+  // inspector says it goes. "Equal" is valuesCanonicallyEqual against a filled
+  // leg's stored value.
   //
-  //   (1) Both L-L and L-E are still empty → can't infer which slot the
-  //       bare value belongs to; ask the inspector. State flips into
-  //       `awaiting_disambiguation` mode and the active path's pre-slot
-  //       check (added below) routes the next reply through the
-  //       schema's `disambiguateBareValue`.
-  //   (2) Exactly ONE of L-L/L-E is already filled (existing snapshot
-  //       value or a drained pending_write) → auto-assign the bare
-  //       value to the OTHER slot and continue. No question needed
-  //       because there's only one possible target.
-  //   (3) Both L-L and L-E filled → the bare value is redundant.
-  //       Discard with a log; the script continues to whatever's
-  //       still missing (probably voltage).
+  //   L-L / L-E          | bare equals a filled leg | action
+  //   -------------------|--------------------------|--------------------------
+  //   both empty         | —                        | ask (unchanged)
+  //   one filled         | yes                      | discard: already recorded
+  //   one filled         | no                       | ask (was: auto-assign to
+  //                      |                          | the OTHER leg — a guess)
+  //   both filled        | yes, either leg          | discard: already recorded
+  //   both filled        | no                       | ask (was: silent discard)
+  //
+  // The question follows a successful parse of an understood value with two
+  // possible legs, so it is E3. The answer handler overwrites a filled leg as
+  // a dictated correction.
   //
   // Schema gates: `bareDisambiguationQuestion` + `disambiguateBareValue`
-  // must be functions for branch (1) to fire; otherwise fall through
-  // to the standard askNextOrFinish.
+  // must be functions; otherwise fall through to the standard askNextOrFinish.
   if (
     state.ambiguous_bare_value !== null &&
     typeof schema.bareDisambiguationQuestion === 'function' &&
     typeof schema.disambiguateBareValue === 'function'
   ) {
-    const llFilled = state.values.ir_live_live_mohm != null;
-    const leFilled = state.values.ir_live_earth_mohm != null;
     const bare = state.ambiguous_bare_value;
+    const legSlot = (field) => schema.slots.find((s) => s.field === field);
+    const alreadyRecorded = ['ir_live_live_mohm', 'ir_live_earth_mohm'].find(
+      (field) =>
+        state.values[field] != null &&
+        valuesCanonicallyEqual(legSlot(field), state.values[field], bare.value)
+    );
 
-    if (!llFilled && !leFilled) {
-      // Branch (1): true ambiguity — ask.
+    if (alreadyRecorded) {
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_already_recorded`, {
+        sessionId: session.sessionId,
+        circuit_ref: matchedRef,
+        bare_value: bare.value,
+        field: alreadyRecorded,
+      });
+      state.ambiguous_bare_value = null;
+    } else {
       state.awaiting_disambiguation = bare;
       state.ambiguous_bare_value = null;
       const question = schema.bareDisambiguationQuestion(bare.value);
@@ -7018,63 +7203,6 @@ export function tryResumePausedScript({
       );
       return { resumed: true, circuit_ref: matchedRef };
     }
-
-    if (llFilled !== leFilled) {
-      // Branch (2): exactly one filled — auto-assign the bare value to
-      // the other slot. No user question.
-      const targetField = llFilled ? 'ir_live_earth_mohm' : 'ir_live_live_mohm';
-      // PLAN A2 §A2.2 — "buffered bare IR at queue-acceptance": resolved to a
-      // known field here (the only-empty-slot auto-assign), so this is where
-      // the dictation becomes trackable.
-      const bareOp = markDictated(state, targetField, bare.value, {
-        schema,
-        source: 'ir_bare_auto_assign',
-        circuit_ref: matchedRef,
-      });
-      // Plan D — applyWrite is authoritative: it clamps, writes the clamped
-      // value into BOTH the snapshot and state.values, and records the
-      // correction. The raw `state.values[targetField] = bare.value` that used
-      // to follow was a split-brain generator (snapshot 1.6, local map 16) and
-      // is deleted in favour of the returned effective value.
-      const written = applyWrite(session, schema, matchedRef, targetField, bare.value, now);
-      markWritten(bareOp, written.value, matchedRef);
-      state.ambiguous_bare_value = null;
-      logger?.info?.(`${schema.logEventPrefix}_disambiguation_auto_assigned`, {
-        sessionId: session.sessionId,
-        circuit_ref: matchedRef,
-        bare_value: written.value,
-        target_field: targetField,
-        reason: llFilled ? 'll_already_filled' : 'le_already_filled',
-      });
-      safeSend(
-        ws,
-        buildExtractionPayload(
-          matchedRef,
-          [{ field: targetField, value: written.value }],
-          schema.extractionSource
-        )
-      );
-      askNextOrFinish({
-        ws,
-        session,
-        sessionId: session.sessionId,
-        schema,
-        logger,
-        now,
-        responseEpoch,
-      });
-      return { resumed: true, circuit_ref: matchedRef };
-    }
-
-    // Branch (3): both filled — bare value is redundant. Discard and
-    // proceed.
-    logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded`, {
-      sessionId: session.sessionId,
-      circuit_ref: matchedRef,
-      bare_value: bare.value,
-      reason: 'both_slots_already_filled',
-    });
-    state.ambiguous_bare_value = null;
   }
 
   askNextOrFinish({

@@ -108,61 +108,70 @@ describe('resolveBoardIdAnswer — main keyword (single main)', () => {
   });
 });
 
-describe('resolveBoardIdAnswer — affirmatives (single-main fallback)', () => {
-  test('"It is." resolves to single main board id', () => {
-    // Production smoking gun: session 7113A114, user_text="It is."
-    const v = resolveBoardIdAnswer({
-      userText: 'It is.',
-      contextField: 'feeds_board_id',
-      boards: SINGLE_MAIN,
-    });
-    expect(v).toMatchObject({
-      kind: 'auto_resolve',
-      resolved_board_id: 'main',
-      resolved_via: 'affirmative_single_main',
-    });
-  });
-
+describe('resolveBoardIdAnswer — affirmatives escalate (PLAN-W1 M3, B-46)', () => {
+  // Production case this used to serve: session 7113A114, user_text "It is."
+  // resolved to the only main board. The resolver cannot see the question, so
+  // that was a guess; the model reads its own blocking ask_user question.
   test.each([
-    ['yes', 'main'],
-    ['Yes.', 'main'],
-    ['yeah', 'main'],
-    ['yep', 'main'],
-    ['yup', 'main'],
-    ['correct', 'main'],
-    ["that's right", 'main'],
-    ['yes it is', 'main'],
-    ['yes the main', 'main'],
-    ['yes the main board', 'main'],
-  ])('"%s" → %s (single main)', (userText, expectedId) => {
+    'It is.',
+    'yes',
+    'Yes.',
+    'yeah',
+    'yep',
+    'yup',
+    'correct',
+    'right',
+    "that's right",
+    'yes it is',
+  ])('"%s" → escalate affirmative_board_answer with available_boards (single main)', (userText) => {
     const v = resolveBoardIdAnswer({
       userText,
       contextField: 'feeds_board_id',
       boards: SINGLE_MAIN,
     });
-    expect(v.kind).toBe('auto_resolve');
-    expect(v.resolved_board_id).toBe(expectedId);
+    expect(v).toEqual({
+      kind: 'escalate',
+      parsed_hint: 'affirmative_board_answer',
+      available_boards: expect.any(Array),
+    });
+    expect(v.resolved_board_id).toBeUndefined();
   });
 
-  test('"yes" against a multi-main snapshot escalates (ambiguous)', () => {
+  test.each(['yes the main', 'yes the main board'])(
+    '"%s" names the main board → resolves via main_keyword (single main)',
+    (userText) => {
+      const v = resolveBoardIdAnswer({
+        userText,
+        contextField: 'feeds_board_id',
+        boards: SINGLE_MAIN,
+      });
+      expect(v).toMatchObject({
+        kind: 'auto_resolve',
+        resolved_board_id: 'main',
+        resolved_via: 'main_keyword',
+      });
+    }
+  );
+
+  test('"yes" against a multi-main snapshot escalates with the same hint', () => {
     const v = resolveBoardIdAnswer({
       userText: 'yes',
       contextField: 'feeds_board_id',
       boards: MULTI_MAIN,
     });
     expect(v.kind).toBe('escalate');
-    expect(v.parsed_hint).toBe('affirmative_multiple_mains');
+    expect(v.parsed_hint).toBe('affirmative_board_answer');
     expect(v.available_boards).toHaveLength(2);
   });
 
-  test('"yes" against a no-main snapshot escalates (no target)', () => {
+  test('"yes" against a no-main snapshot escalates with the same hint', () => {
     const v = resolveBoardIdAnswer({
       userText: 'yes',
       contextField: 'feeds_board_id',
       boards: [{ id: 'sub-1', designation: 'X', board_type: 'sub_distribution' }],
     });
     expect(v.kind).toBe('escalate');
-    expect(v.parsed_hint).toBe('affirmative_no_main_board');
+    expect(v.parsed_hint).toBe('affirmative_board_answer');
   });
 
   test('"main" against multi-main snapshot escalates (ambiguous keyword)', () => {
@@ -338,7 +347,7 @@ describe('resolveBoardIdAnswer — defensive shapes', () => {
       boards: [],
     });
     expect(v.kind).toBe('escalate');
-    expect(v.parsed_hint).toBe('affirmative_no_main_board');
+    expect(v.parsed_hint).toBe('affirmative_board_answer');
   });
 
   test('null user text is treated as empty', () => {

@@ -13,11 +13,44 @@
  * — instead of a contentless clarifying prompt. Resolved decision #4.
  */
 
-import {
+import { jest } from '@jest/globals';
+
+// PLAN-W1 M1 — the two-turn #5a garble scenario below drives the REAL harness
+// with a scripted tool loop (the loop calls the real composed dispatcher, so a
+// turn-2 `record_reading` writes and reads back through the ordinary path).
+const runToolLoopSpy = jest.fn();
+jest.unstable_mockModule('../extraction/stage6-dispatcher-ask.js', () => ({
+  createAskDispatcher: jest.fn(() =>
+    Object.assign(async () => ({ tool_use_id: 'a', content: '{}', is_error: false }), {
+      __tag: 'asks',
+    })
+  ),
+  ASK_USER_TIMEOUT_MS: 20000,
+}));
+jest.unstable_mockModule('../extraction/stage6-tool-loop.js', () => ({
+  runToolLoop: runToolLoopSpy,
+  LOOP_CAP: 8,
+  NOOP_DISPATCHER: async () => ({}),
+}));
+jest.unstable_mockModule('../extraction/loaded-barrel-speculator.js', () => ({
+  createSpeculator: jest.fn(() => ({
+    onSnapshotPatch: jest.fn(),
+    onLoopComplete: jest.fn(),
+    onToolUseStreamed: jest.fn(),
+    validateAgainstConfirmations: jest.fn(),
+    abortBySlot: jest.fn(),
+    shutdown: jest.fn(),
+  })),
+}));
+
+const {
   reparseSingleCompleteReading,
   applyOrphanRecoveredReading,
-} from '../extraction/stage6-shadow-harness.js';
-import { ALL_DIALOGUE_SCHEMAS } from '../extraction/dialogue-engine/index.js';
+  runShadowHarness,
+  ORPHAN_PROMPTS,
+} = await import('../extraction/stage6-shadow-harness.js');
+const { ALL_DIALOGUE_SCHEMAS } = await import('../extraction/dialogue-engine/index.js');
+const { activeSessions } = await import('../extraction/active-sessions.js');
 
 describe('reparseSingleCompleteReading', () => {
   test('recovers the "tryptoid" garble as a single complete RCD tuple', () => {
@@ -130,5 +163,134 @@ describe('applyOrphanRecoveredReading', () => {
       turnId: 'turn-11',
     });
     expect(result.confirmations[0].text).toBe('Circuit 2, RCD time 28');
+  });
+});
+
+// PLAN-W1 M1 (W1-5) — the #5a garble class after the re-parse write is gone.
+// Turn 1: a zero-call turn carrying a complete (garbled) reading is NOT
+// written by the server; one orphan line speaks and orphanContext carries the
+// utterance. Turn 2: the model input contains the carried words, and a model
+// `record_reading` writes and reads back exactly once across both turns. This
+// proves the plumbing; whether the LIVE model writes on turn 2 is a live-lane
+// question and is not claimed here.
+describe('PLAN-W1 M1 — two-turn #5a garble handoff (harness level, scripted model)', () => {
+  const SESSION_ID = 'sess-w1-two-turn';
+
+  function makeSession() {
+    return {
+      sessionId: SESSION_ID,
+      systemPrompt: 'sys',
+      toolCallsMode: 'live',
+      certType: 'eicr',
+      turnCount: 0,
+      costTracker: {
+        addSonnetUsage: jest.fn(),
+        recordElevenLabsSpeculativeStarted: jest.fn(() => true),
+        recordElevenLabsSpeculativeTerminal: jest.fn(),
+      },
+      stateSnapshot: {
+        circuits: { 2: { circuit_designation: 'Kitchen sockets' } },
+        pending_readings: [],
+        observations: [],
+        validation_alerts: [],
+      },
+      extractedObservations: [],
+      activeTurnTranscript: null,
+      _snapshot: null,
+      buildSystemBlocks() {
+        return [{ type: 'text', text: this.systemPrompt }];
+      },
+      buildAgenticSystemBlocks() {
+        return this.buildSystemBlocks();
+      },
+    };
+  }
+
+  function loopReturning(calls, seenMessages) {
+    runToolLoopSpy.mockImplementation(async (opts) => {
+      seenMessages.push(opts.messages);
+      const toolCalls = [];
+      for (let i = 0; i < calls.length; i += 1) {
+        const c = calls[i];
+        const env = await opts.dispatcher(
+          { tool_call_id: `toolu_${i}`, name: c.name, input: c.input },
+          opts.ctx
+        );
+        toolCalls.push({ tool_call_id: `toolu_${i}`, name: c.name, input: c.input, result: env });
+      }
+      return {
+        stop_reason: 'end_turn',
+        rounds: 1,
+        tool_calls: toolCalls,
+        aborted: false,
+        messages_final: [],
+        usage: {},
+        terminal_reason: 'end_turn',
+      };
+    });
+  }
+
+  const opts = () => ({
+    logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+    pendingAsks: { __tag: 'pending-asks-registry', size: 0, entries: () => [] },
+    ws: { readyState: 1, OPEN: 1, send: jest.fn() },
+    confirmationsEnabled: true,
+    chimeObserved: true,
+  });
+
+  beforeEach(() => {
+    activeSessions.set(SESSION_ID, {
+      session: { sessionId: SESSION_ID },
+      pendingFastTtsSlots: new Map(),
+      fastPathCorrelationIdByTurn: new Map(),
+      broadcastIntentByTurn: new Map(),
+      voiceLatency: { flags: { loadedBarrel: false } },
+    });
+  });
+  afterEach(() => {
+    activeSessions.delete(SESSION_ID);
+    runToolLoopSpy.mockReset();
+  });
+
+  test('turn 1 hands off (no server write); turn 2 model write reads back exactly once', async () => {
+    const session = makeSession();
+    const seen = [];
+    const garble = 'RCD tryptoid of circuit 2 is 28 ms';
+
+    loopReturning([], seen);
+    const r1 = await runShadowHarness(session, garble, [], opts());
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBeUndefined();
+    expect(r1.extracted_readings ?? []).toHaveLength(0);
+    const r1Lines = (r1.confirmations ?? []).filter((c) => c.text?.trim());
+    expect(r1Lines).toHaveLength(1);
+    expect(ORPHAN_PROMPTS).toContain(r1Lines[0].text);
+    expect(session.orphanContext?.transcript).toBe(garble);
+
+    loopReturning(
+      [
+        {
+          name: 'record_reading',
+          input: {
+            field: 'rcd_time_ms',
+            circuit: 2,
+            value: '28',
+            confidence: 0.9,
+            source_turn_id: 't2',
+          },
+        },
+      ],
+      seen
+    );
+    const r2 = await runShadowHarness(session, 'RCD trip time circuit 2, 28', [], opts());
+    const turn2Input = JSON.stringify(seen[1]);
+    expect(turn2Input).toContain(garble);
+
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBe('28');
+    const readBacks = [...(r1.confirmations ?? []), ...(r2.confirmations ?? [])].filter(
+      (c) => c.field === 'rcd_time_ms' && c.circuit === 2
+    );
+    expect(readBacks).toHaveLength(1);
+    const all = [...(r1.confirmations ?? []), ...(r2.confirmations ?? [])];
+    expect(all.some((c) => /^Already got that/.test(c.text || ''))).toBe(false);
   });
 });

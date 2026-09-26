@@ -1571,8 +1571,10 @@ describe('a board-drift exit purges a dangling confirmation prompt', () => {
       now: 1000,
     });
     // Drive it to the confirmation prompt.
+    // PLAN-W1 M2a — every answer is a sole value; a bare-value slot no
+    // longer takes a number out of a longer phrase ("ends are 0.52").
     for (const [t, at] of [
-      ['ends are 0.52', 2000],
+      ['0.52', 2000],
       ['0.48', 3000],
       ['0.50', 4000],
     ]) {

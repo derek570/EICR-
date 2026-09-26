@@ -39,6 +39,15 @@ import { NUMERIC_READING_FIELDS, canonicaliseNumericReadingField } from './value
 // section below).
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 import { parseOcpdStandard } from './dialogue-engine/parsers/bs-code.js';
+import {
+  matchSoleValueReply,
+  SOLE_VALUE_GRAMMARS,
+  fieldUnitFamily,
+  unitFamilyOf,
+  NOT_APPLICABLE_PHRASES,
+  notApplicableDeviceOf,
+  fieldDevice,
+} from './sole-value-reply.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -1635,7 +1644,8 @@ function designationForRef(circuits, ref) {
  * contained by one designation — and reject the lossy direction here.
  */
 function isWholeReplyDesignationMatch(match, cleaned, circuits) {
-  if (match.kind === 'exact' || match.kind === 'fuzzy') return true;
+  // PLAN-W1 M3 (B-52, Decision W-1.1): a fuzzy verdict is never a write.
+  if (match.kind === 'exact') return true;
   if (match.kind !== 'unique_substring' || match.circuitRefs.length !== 1) return false;
   const designation = designationForRef(circuits, match.circuitRefs[0]);
   return Boolean(designation && designation.includes(cleaned));
@@ -1902,6 +1912,8 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
   }
   const writesByRef = new Map();
   const unresolved = [];
+  // PLAN-W1 M3 (B-52) — circuit refs of every fuzzy span in this reply.
+  const fuzzyRefs = [];
 
   segmentStates.forEach(({ rawExactMatch, attached }, index) => {
     const ordinal = index + 1;
@@ -1978,18 +1990,11 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       quantifier === null ? safeDesignationAnswerMatch(rawMatch, cleaned, circuits) : rawMatch;
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
+    // PLAN-W1 M3 (B-52, W1-26) — a fuzzy span is a candidate for the model,
+    // not a server ask. Its refs are recorded and the WHOLE reply escalates
+    // after the loop.
     if (match.kind === 'fuzzy') {
-      unresolved.push(
-        unresolvedSpan({
-          ordinal,
-          disposition: 'ask',
-          reason: 'fuzzy_match',
-          circuitRefs: refs,
-          requiredCount: quantifier?.expected,
-          pendingWrite,
-          contextBoardId,
-        })
-      );
+      fuzzyRefs.push(...refs);
       return;
     }
 
@@ -2063,6 +2068,22 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       }
     }
   });
+
+  // PLAN-W1 M3 (B-52, Decision W-1.1, W1-26) — a fuzzy span anywhere hands the
+  // WHOLE reply to the model with the candidate as a hint, in place of any
+  // auto_resolve or partial_resolve verdict. Nothing accumulated in
+  // writesByRef is returned, so no sibling write is split from the fuzzy one;
+  // the model writes every span itself. Same shape as the early correction /
+  // negation escalate above.
+  if (fuzzyRefs.length > 0) {
+    return {
+      kind: 'escalate',
+      parsed_hint: `multi_description_fuzzy_designation:${[...new Set(fuzzyRefs)]
+        .sort((a, b) => a - b)
+        .join(',')}`,
+      available_circuits: circuits,
+    };
+  }
 
   if (
     wholeList.quantifier?.kind === 'count' &&
@@ -2601,13 +2622,23 @@ export function resolveCircuitAnswer({
     cleaned,
     availableCircuits ?? []
   );
-  // §C1 — 'fuzzy' is the new conservative Levenshtein verdict (plural/typo
-  // variants of a real designation, strict margin). Treated exactly like the
-  // deterministic matches: the write auto-resolves to that circuit.
-  if (match.kind === 'exact' || match.kind === 'unique_substring' || match.kind === 'fuzzy') {
+  if (match.kind === 'exact' || match.kind === 'unique_substring') {
     return {
       kind: 'auto_resolve',
       writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)],
+    };
+  }
+  // §C1 — 'fuzzy' is the conservative Levenshtein verdict (plural/typo
+  // variants of a real designation, strict margin). PLAN-W1 M3 (B-52,
+  // Decision W-1.1, 2026-09-26): it is a HINT, never a write. It used to
+  // auto-resolve like the deterministic matches ("kitchin" → Kitchen), which
+  // Derek approved on 2026-07-14; Decision 7 supersedes that. The model gets
+  // the candidate and writes or asks.
+  if (match.kind === 'fuzzy') {
+    return {
+      kind: 'escalate',
+      parsed_hint: `fuzzy_designation_candidate:${match.circuitRefs[0]}`,
+      available_circuits: availableCircuits ?? [],
     };
   }
   if (match.kind === 'ambiguous') {
@@ -2767,18 +2798,22 @@ function buildWrite(pendingWrite, circuitRef, contextBoardId = null) {
 // The value-resolve pulls the same trick as the circuit-resolver: deterministic
 // matcher first, escalate when ambiguous. Legitimate reply shapes:
 //
-//   - bare numeric ("0.47", "naught point four seven" — already normalised)
-//   - "is 0.47" / "the value is 0.47"
-//   - corrected ("0.7 no 0.47" — take the LAST numeric, lower confidence)
+//   - bare numeric ("0.47", ".43", "naught point four seven" — already normalised)
+//   - "it's 0.47" / "the value is 0.47" / "Zs is 0.47" (the asked field's label)
 //   - sentinel ("LIM" / "OL" / "infinity" / "discontinuous" — emit ∞ when on
 //     a continuity field; escalate when on a non-continuity field)
 //   - cancel ("skip", "never mind") — same set as the circuit resolver
 //
-// Anything more complex (multiple distinct numerics for ONE field, free-form
-// sentences) escalates back to Sonnet with a parsed_hint. Conservative-by-
-// default — misrouting a number is a worse failure than one extra turn.
+// PLAN-W1 M2b (Decision 7): each shape must be the WHOLE reply
+// (sole-value-reply.js). Anything else — two numerics, a correction, a unit
+// from another field, free-form sentences — escalates back to the model with a
+// parsed_hint. Conservative by default: misrouting a number is a worse failure
+// than one extra turn.
 
-const NUMERIC_PATTERN = /-?\d+(?:\.\d+)?/g;
+// PLAN-W1 M2b (A-2) — leading-dot arm: Deepgram renders "point four three"
+// as ".43", which the old pattern read as 43. Used only to list numerics in an
+// escalation hint now; a write needs a sole-value reply (see below).
+const NUMERIC_PATTERN = /-?(?:\d+(?:\.\d+)?|\.\d+)/g;
 const DISCONTINUOUS_PHRASES = [
   'discontinuous',
   'disconnected',
@@ -2893,83 +2928,64 @@ export function resolveValueAnswer({
     return { kind: 'cancel' };
   }
 
-  // "Limitation" sentinel (word-boundaried) — a continuity "limitation" reply
-  // writes the STRING "LIM", never ∞ and never a silent drop. Checked BEFORE
-  // the discontinuous branch so "limb"/"lim" can no longer fall through to ∞.
-  // Field report 2026-06-24 #2: "Limb." silently wrote ring_r1_ohm = ∞.
-  // P3 (2026-07-23, feedback id 86) — LIM is a valid reading for EVERY numeric
-  // reading field, not just the continuity ones. Previously this branch was
-  // gated on CONTINUITY_FIELDS, so a LIM reply for e.g. measured_zs_ohm (a
-  // non-continuity numeric field) fell through to terminalApology instead of
-  // writing. Broaden the LIM branch to accept every alias-normalised
-  // NUMERIC_READING_FIELDS member (rcd_trip_time → rcd_time_ms etc.); the
-  // discontinuous/open/∞ branch below stays continuity-only (CONTINUITY_FIELDS
-  // is a strict subset of NUMERIC_READING_FIELDS, so this only ADDS).
-  if (LIM_RE.test(lower)) {
-    if (NUMERIC_READING_FIELDS.has(canonicaliseNumericReadingField(contextField))) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites('LIM', 0.9),
-      };
+  // PLAN-W1 M2b (Decision 7; B-48, B-49, A-2) — a value reply writes ONLY
+  // when the WHOLE reply is one value of the asked field. The old checks read
+  // the reply anywhere: "It's not LIM, it's 0.4" wrote LIM, "I'll have to open
+  // it up" wrote ∞, "Give me 2 seconds" wrote 2, and "0.47, not 0.7" wrote the
+  // LAST numeric, 0.7. Anything that is not a sole value escalates, and the
+  // dispatcher hands the reply to the model as `value_escalated` with the hint.
+  const sole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.reading, { contextField });
+  if (sole) {
+    // W1-2 — an explicit unit must belong to the asked field's unit family; a
+    // field with no family suffix accepts no explicit unit at all.
+    if (sole.unit) {
+      const fieldFamily = fieldUnitFamily(contextField);
+      if (fieldFamily === null || unitFamilyOf(sole.unit) !== fieldFamily) {
+        return { kind: 'escalate', parsed_hint: `unit_mismatch:${sole.unit.toLowerCase()}` };
+      }
     }
-    return {
-      kind: 'escalate',
-      parsed_hint: 'lim_on_non_numeric_reading_field',
-    };
+    // "Limitation" sentinel — a STRING "LIM", never ∞ (field report 2026-06-24
+    // #2: "Limb." once wrote ring_r1_ohm = ∞). P3 (2026-07-23, feedback id 86):
+    // valid for EVERY alias-normalised numeric reading field.
+    if (LIM_RE.test(sole.value)) {
+      if (NUMERIC_READING_FIELDS.has(canonicaliseNumericReadingField(contextField))) {
+        return { kind: 'auto_resolve', writes: buildWrites('LIM', 0.9) };
+      }
+      return { kind: 'escalate', parsed_hint: 'lim_on_non_numeric_reading_field' };
+    }
+    // Discontinuous / open-circuit sentinel — ∞ per the prompt contract, on the
+    // continuity fields only.
+    if (DISCONTINUOUS_RE.test(sole.value) || /^open\s+ring$/i.test(sole.value)) {
+      if (CONTINUITY_FIELDS.includes(contextField)) {
+        return { kind: 'auto_resolve', writes: buildWrites('∞', 0.9) };
+      }
+      return { kind: 'escalate', parsed_hint: 'discontinuous_on_non_continuity_field' };
+    }
+    return { kind: 'auto_resolve', writes: buildWrites(normaliseLeadingDot(sole.value), 0.9) };
   }
 
-  // Discontinuous / open-circuit sentinel — emit ∞ per the prompt contract
-  // (line 58 of sonnet_agentic_system.md). Only valid for ring continuity /
-  // r2 / r1+r2 fields; others escalate. Word-boundaried (DISCONTINUOUS_RE) so
-  // "ol"/"open" never bite mid-word.
-  if (DISCONTINUOUS_RE.test(lower)) {
-    if (CONTINUITY_FIELDS.includes(contextField)) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites('∞', 0.9),
-      };
-    }
-    return {
-      kind: 'escalate',
-      parsed_hint: 'discontinuous_on_non_continuity_field',
-    };
-  }
-
-  // Numeric extraction — find every numeric in the reply.
-  const matches = text.match(NUMERIC_PATTERN);
-  if (!matches || matches.length === 0) {
-    return { kind: 'escalate', parsed_hint: 'no_numeric_in_reply' };
-  }
-  // De-dup consecutive identicals ("0.47 0.47" → ["0.47"]). Distinct
-  // numerics across the reply are NOT collapsed — that's an over-spec for a
-  // single-field ask and we'd rather escalate.
+  // Not a sole value. The hint tells the model why.
+  const matches = text.match(NUMERIC_PATTERN) ?? [];
   const distinctNumerics = [];
   for (const m of matches) {
-    if (distinctNumerics[distinctNumerics.length - 1] !== m) {
-      distinctNumerics.push(m);
-    }
+    const n = normaliseLeadingDot(m);
+    if (!distinctNumerics.includes(n)) distinctNumerics.push(n);
   }
   if (distinctNumerics.length > 1) {
-    // "0.7 no 0.47" / "actually 0.47" — correction marker between
-    // numerics → take the last. Anything else escalates.
-    const correctionMarker = /\b(no|not|actually|sorry|wait|cancel that|i meant|scratch that)\b/i;
-    if (correctionMarker.test(text)) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites(distinctNumerics[distinctNumerics.length - 1], 0.85),
-      };
-    }
-    return {
-      kind: 'escalate',
-      parsed_hint: `multiple_numerics:${distinctNumerics.join(',')}`,
-    };
+    return { kind: 'escalate', parsed_hint: `multiple_numerics:${distinctNumerics.join(',')}` };
   }
+  if (distinctNumerics.length === 0 && !LIM_RE.test(lower) && !DISCONTINUOUS_RE.test(lower)) {
+    return { kind: 'escalate', parsed_hint: 'no_numeric_in_reply' };
+  }
+  return { kind: 'escalate', parsed_hint: 'reply_not_value_only' };
+}
 
-  // Single numeric — write it.
-  return {
-    kind: 'auto_resolve',
-    writes: buildWrites(distinctNumerics[0], 0.9),
-  };
+/** ".43" → "0.43", "-.5" → "-0.5"; anything else unchanged. */
+function normaliseLeadingDot(value) {
+  if (typeof value !== 'string') return value;
+  if (value.startsWith('.')) return `0${value}`;
+  if (value.startsWith('-.')) return `-0${value.slice(1)}`;
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -3060,6 +3076,11 @@ const MAIN_KEYWORD_PHRASES = new Set([
   'mains',
   'the mains',
   'the main one',
+  // PLAN-W1 M3 (B-46) — these two NAME the main board after the "yes", so
+  // they resolve here rather than reaching the affirmative step, which now
+  // always escalates.
+  'yes the main',
+  'yes the main board',
 ]);
 
 /**
@@ -3198,30 +3219,17 @@ export function resolveBoardIdAnswer({ userText, contextField, boards }) {
     }
   }
 
-  // 3) Affirmative reply — only confident with exactly one main board.
-  //    Pre-condition: the model phrased the ask as a yes/no on the main
-  //    ("Is the parent the main board?") and the user assented. We can't
-  //    verify the question shape here, so we use the boards[] as the
-  //    proxy: a job with exactly one main has only one valid affirmative
-  //    target.
+  // 3) Affirmative reply — PLAN-W1 M3 (Decision 7, B-46): always escalates.
+  //    It used to resolve to the only main board, on the assumption that the
+  //    model had asked a yes/no about the main. This resolver cannot see the
+  //    question, so that was a guess: "Is it fed from the garage board or the
+  //    main?" → "yes" wrote the main board. The model can see its own
+  //    blocking question in the same tool loop and resolves it; no candidate
+  //    board is named here, because any candidate would be the same guess.
   if (AFFIRMATIVE_PHRASES.includes(stripped)) {
-    const mains = Array.isArray(boards)
-      ? boards.filter((b) => b && (b.board_type === 'main' || !b.board_type))
-      : [];
-    if (mains.length === 1 && typeof mains[0].id === 'string') {
-      return {
-        kind: 'auto_resolve',
-        resolved_board_id: mains[0].id,
-        resolved_via: 'affirmative_single_main',
-        board: mains[0],
-        available_boards: summariseBoards(boards),
-      };
-    }
-    // Otherwise escalate — "yes" against a multi-main snapshot is
-    // structurally ambiguous.
     return {
       kind: 'escalate',
-      parsed_hint: mains.length === 0 ? 'affirmative_no_main_board' : 'affirmative_multiple_mains',
+      parsed_hint: 'affirmative_board_answer',
       available_boards: summariseBoards(boards),
     };
   }
@@ -3311,16 +3319,11 @@ function summariseBoards(boards) {
 // matcher serves all of them. "no rcd" stays in the list because it's a
 // natural inspector phrase even when the field being asked about isn't
 // rcd_bs_en — a permissive synonym is cheaper than a per-field overlay.
-const NA_PHRASES = [
-  'n/a',
-  'na',
-  'not applicable',
-  'none',
-  'no rcd',
-  'no rcd fitted',
-  'no ocpd',
-  'no spd',
-];
+//
+// PLAN-W1 M2c — the list now lives, device-tagged, in sole-value-reply.js
+// (NOT_APPLICABLE_PHRASES); this is its phrase column, used to spot an N/A
+// phrase inside a reply that is not a sole value.
+const NA_PHRASES = NOT_APPLICABLE_PHRASES.map((p) => p.phrase);
 
 /**
  * Levenshtein distance between two strings (substitution / insertion /
@@ -3481,6 +3484,10 @@ export function resolveOcpdStandardAnswer({
  *   { kind: 'did_you_mean', received, suggestions: [...], valid_options: [...] }
  *   { kind: 'invalid_value', received, valid_options: [...] }
  *   { kind: 'no_value_context' }   — fall through (field not select, no options, etc.)
+ *   { kind: 'escalate', parsed_hint } — PLAN-W1 M2c: the reply is not a sole
+ *     N/A phrase or BS code; the dispatcher hands it to the model as
+ *     `value_escalated` (hints `na_other_device`, `reply_not_value_only`,
+ *     `multiple_numerics:<list>`)
  *
  * Pure function — no side effects, no I/O. Caller (dispatcher) decides
  * how to surface each verdict in the tool_result body.
@@ -3564,15 +3571,30 @@ export function resolveEnumAnswer({
   }
   const lower = text.toLowerCase();
 
-  // N/A short-circuit. Any of NA_PHRASES as a contained whole-word match.
-  const naMatch = NA_PHRASES.some((p) =>
-    new RegExp(`\\b${p.replace(/\//g, '\\/')}\\b`).test(lower)
-  );
-  if (naMatch && field.options.includes('N/A')) {
-    return {
-      kind: 'auto_resolve',
-      writes: buildWrites('N/A', 0.95),
-    };
+  // N/A position. PLAN-W1 M2c (Decision 7, B-55; W1-3, W1-9): an N/A phrase
+  // writes N/A only as the WHOLE reply and only when it names this field's
+  // device or no device. It used to match anywhere, so "none of that 61008
+  // stuff, it's 61009" and "there's no RCD on this one, it's a 61009" wrote
+  // N/A, and "no ocpd" wrote N/A into an RCD field.
+  const naSole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.notApplicable);
+  if (naSole) {
+    const device = notApplicableDeviceOf(naSole.value);
+    if (device !== 'any' && device !== fieldDevice(contextField)) {
+      return { kind: 'escalate', parsed_hint: 'na_other_device' };
+    }
+    if (field.options.includes('N/A')) {
+      return {
+        kind: 'auto_resolve',
+        writes: buildWrites('N/A', 0.95),
+      };
+    }
+  } else {
+    const naAnywhere = NA_PHRASES.some((p) =>
+      new RegExp(`\\b${p.replace(/\//g, '\\/')}\\b`).test(lower)
+    );
+    if (naAnywhere) {
+      return { kind: 'escalate', parsed_hint: 'reply_not_value_only' };
+    }
   }
 
   // §3.4 (2026-07-30, feedback id 103) — ref_method A–G / 100–103 answer
@@ -3734,15 +3756,30 @@ export function resolveEnumAnswer({
   // "BS 60898" → "60898", "BS 88-2" → "88-2", "60947-3" → "60947-3".
   // The trailing alternation `|\d+` is a fallback for cases where the
   // first token is just digits with no hyphen.
-  const digitMatch = text.match(/\d[\d-]*\d|\d+/);
-  if (!digitMatch) {
+  //
+  // PLAN-W1 M2c — the candidate is taken only from a reply that is ONE BS code
+  // (optionally led by "BS"/"BS EN"). The first digit run anywhere used to
+  // decide: "not 61008, 61009" wrote BS EN 61008.
+  const digitRuns = text.match(/\d[\d-]*\d|\d+/g);
+  if (!digitRuns) {
     return {
       kind: 'invalid_value',
       received: text,
       valid_options: field.options,
     };
   }
-  const candidate = digitMatch[0];
+  const bsSole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.bsCode);
+  if (!bsSole) {
+    const distinctRuns = [...new Set(digitRuns)];
+    return {
+      kind: 'escalate',
+      parsed_hint:
+        distinctRuns.length > 1
+          ? `multiple_numerics:${distinctRuns.join(',')}`
+          : 'reply_not_value_only',
+    };
+  }
+  const candidate = bsSole.value;
   const candidateDigits = normaliseBsEnDigits(candidate);
 
   // Exact match against any option (compared on the digit form so

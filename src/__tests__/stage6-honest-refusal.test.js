@@ -630,7 +630,7 @@ describe('§5.4 — unknown-tool: both envelope routes', () => {
     expect(orphanRows(opts.logger)).toHaveLength(0);
   });
 
-  test('object-form route, recovery-success variant: a structurally complete reading in the transcript is STILL recovered and read back; the refusal drains additively beside it', async () => {
+  test('object-form route, complete reading in the transcript (PLAN-W1 M1, B-88): NO server re-parse write; the refusal is the only audible line', async () => {
     const session = makeSession({ circuits: { 5: { circuit_designation: 'Shower' } } });
     loopDispatching([{ name: 'ask_user', input: { question: 'hm?' }, id: 'toolu_uk3' }]);
     const opts = baseOpts({ pendingAsks: null });
@@ -642,14 +642,12 @@ describe('§5.4 — unknown-tool: both envelope routes', () => {
     );
 
     const speakers = audibleConfs(result);
-    // The recovered reading's read-back AND the refusal notice both speak.
-    expect(speakers.length).toBeGreaterThanOrEqual(2);
-    expect(speakers.some((c) => B_STAGED_POOLS.unknown_tool.map((f) => f()).includes(c.text))).toBe(
-      true
-    );
-    // The reading landed (branch 1: recovery runs FIRST, regardless of coverage).
-    expect(session.stateSnapshot.circuits[5].rcd_time_ms).toBeDefined();
-    // No generic prompt of any family.
+    // PLAN-W1 M1 — a reading the model's tools rejected is never written by
+    // a fallback. The spoken refusal stands, alone.
+    expect(speakers).toHaveLength(1);
+    expect(B_STAGED_POOLS.unknown_tool.map((f) => f())).toContain(speakers[0].text);
+    expect(session.stateSnapshot.circuits[5].rcd_time_ms).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
     assertNoGenericApologies(result, opts.logger);
   });
 
@@ -685,6 +683,37 @@ describe('§5.5 — recoverable errors stage NOTHING (fail-audible pin)', () => 
     expect(mandatoryRows(opts.logger)).toHaveLength(0);
     expect(orphanRows(opts.logger)).toHaveLength(1);
     expect(orphanRows(opts.logger)[0][1]).toMatchObject({ cause: 'all_rejected' });
+  });
+});
+
+describe('PLAN-W1 M1 (B-88) — a rejected record_reading is never written by the re-parse net', () => {
+  test('record_reading for a missing circuit 3 (circuit_not_found): no bucket, no reading, one rejected line, orphanContext carries the utterance', async () => {
+    const session = makeSession({ circuits: { 1: { circuit_designation: 'Lights' } } });
+    const utterance = 'RCD trip time circuit 3 is 25 milliseconds';
+    loopDispatching([
+      {
+        name: 'record_reading',
+        input: {
+          field: 'rcd_time_ms',
+          circuit: 3,
+          value: '25',
+          confidence: 0.95,
+          source_turn_id: 't1',
+        },
+        id: 'toolu_cnf',
+      },
+    ]);
+    const opts = baseOpts();
+    const result = await runShadowHarness(session, utterance, [], opts);
+
+    expect(session.stateSnapshot.circuits[3]).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    const speakers = audibleConfs(result);
+    expect(speakers).toHaveLength(1);
+    expect(REJECTED_SET.has(speakers[0].text)).toBe(true);
+    expect(orphanRows(opts.logger)).toHaveLength(1);
+    expect(orphanRows(opts.logger)[0][1]).toMatchObject({ cause: 'all_rejected' });
+    expect(session.orphanContext?.transcript).toBe(utterance);
   });
 });
 
@@ -1306,7 +1335,7 @@ describe('PLAN-2D — structural and unroutable reading refusals', () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe('Codex cycle-1 — recovery × partial coverage, board-scoped provenance, discriminator matrix, all direct terminals', () => {
-  test('branch 1 with PARTIAL coverage: a recovered reading speaks AND the covered refusal drains additively; no generic prompt', async () => {
+  test('PARTIAL coverage with a complete reading in the transcript (PLAN-W1 M1, B-88): NO re-parse write; covered notice stamped non-draining; one generic rejected line', async () => {
     const session = makeSession({ circuits: { 5: { circuit_designation: 'Shower' } } });
     loopDispatching([
       clearReadingCall('circuit_ref', 5, 'toolu_pcov'),
@@ -1320,18 +1349,21 @@ describe('Codex cycle-1 — recovery × partial coverage, board-scoped provenanc
       opts
     );
 
-    // The recovered write landed and was read back…
-    expect(session.stateSnapshot.circuits[5].rcd_time_ms).toBeDefined();
+    // PLAN-W1 M1 — no server re-parse write for a turn whose calls were all rejected.
+    expect(session.stateSnapshot.circuits[5].rcd_time_ms).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
     const speakers = audibleConfs(result);
-    expect(speakers.length).toBeGreaterThanOrEqual(2);
-    // …the covered refusal was NOT drain:false-stamped (recovery ran first)…
+    // The partial-coverage rule: covered notices go drain:false and ONE
+    // generic `rejected` line speaks for the whole rejected set.
+    expect(speakers).toHaveLength(1);
+    expect(REJECTED_SET.has(speakers[0].text)).toBe(true);
     const refusalPool = bridgePoolTexts(
       'unsupported_clear',
       'Circuit Reference for circuit 5 on board 1'
     );
-    expect(speakers.some((c) => refusalPool.includes(c.text))).toBe(true);
-    // …and no generic prompt of any family fired.
-    assertNoGenericApologies(result, opts.logger);
+    expect(speakers.some((c) => refusalPool.includes(c.text))).toBe(false);
+    expect(orphanRows(opts.logger)).toHaveLength(1);
+    expect(orphanRows(opts.logger)[0][1]).toMatchObject({ cause: 'all_rejected' });
   });
 
   test('untrusted discriminators stage NOTHING (fail-audible): a malformed circuit keeps today’s generic A3 wording, never a covered refusal', async () => {

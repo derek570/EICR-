@@ -125,7 +125,6 @@ pattern — setting them `false` is the rollback lever.
 | `VOICE_PRE_LLM_GATE` | ON | `src/extraction/sonnet-stream.js:84` — pre-LLM transcript gate |
 | `VOICE_REGEX_PRE_APPLY` | ON | `eicr-extraction-session.js:2585` |
 | `VOICE_ORPHAN_PROMPT` | ON | `src/extraction/stage6-shadow-harness.js:280` |
-| `IR_ORPHAN_APPLY_COMPLETE` | ON | `stage6-shadow-harness.js:291` |
 | `VOICE_MID_STREAM_FILTER` | OFF (`=== 'true'`) | `stage6-shadow-harness.js:1242` — deliberately disabled 2026-06 (`57f44498`: values were lost when speculator emits didn't reach iOS). Do not re-enable casually |
 | `CHITCHAT_COUNT_MISSING_CONTEXT` | ON | `src/extraction/chitchat-pause.js:97` |
 | `CHITCHAT_MISSING_CONTEXT_THRESHOLD` | numeric, parsed at `chitchat-pause.js:91` | chitchat pause tuning |

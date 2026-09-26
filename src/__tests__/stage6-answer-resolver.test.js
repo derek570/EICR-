@@ -600,14 +600,19 @@ describe('resolveCircuitAnswer — §C1 conservative fuzzy designation match', (
     expect(r.writes[0].circuit).toBe(1);
   });
 
-  test('one-typo variant matches ("upstars lights")', () => {
+  // PLAN-W1 M3 (B-52, Decision W-1.1): the fuzzy verdict is a hint for the
+  // model, never a write. It used to auto-resolve to circuit 1.
+  test('one-typo variant ("upstars lights") escalates with the candidate as a hint', () => {
     const r = resolveCircuitAnswer({
       userText: 'upstars lights',
       pendingWrite: SAMPLE_PENDING,
       availableCircuits: CIRCUITS,
     });
-    expect(r.kind).toBe('auto_resolve');
-    expect(r.writes[0].circuit).toBe(1);
+    expect(r).toEqual({
+      kind: 'escalate',
+      parsed_hint: 'fuzzy_designation_candidate:1',
+      available_circuits: CIRCUITS,
+    });
   });
 
   test('NEGATIVE: unrelated short labels never cross-match (EV vs EM vs AC)', () => {
@@ -1339,42 +1344,38 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes).toBeUndefined();
   });
 
-  test('whole-reply C1 fuzzy still resolves one circuit', () => {
+  // PLAN-W1 M3 (B-52, W1-37): a single-target reply takes the scalar path,
+  // where fuzzy is now a hint. It used to auto-resolve to circuit 5.
+  test('whole-reply C1 fuzzy escalates with the candidate as a hint', () => {
     const verdict = resolveMulti('upstars lights');
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 5 })]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'fuzzy_designation_candidate:5',
+    });
+    expect(verdict.writes).toBeUndefined();
   });
 
-  test('a near-spelling in a quantified span never fans out', () => {
+  // PLAN-W1 M3 (B-52, W1-26): a fuzzy span hands the WHOLE reply to the
+  // model; no sibling write is split from it and no server ask is built.
+  // These used to return partial_resolve with a fuzzy_match ask.
+  test('a near-spelling in a quantified span never fans out: the whole reply escalates', () => {
     const verdict = resolveMulti('2 upstars lights circuits and the smoke alarm');
-    expect(verdict.kind).toBe('partial_resolve');
-    expect(verdict.writes).toEqual([expect.objectContaining({ circuit: 3 })]);
-    expect(verdict.unresolved).toEqual([
-      expect.objectContaining({
-        identity: 5,
-        span_kind: 'circuit_ref',
-        disposition: 'ask',
-        reason: 'fuzzy_match',
-        candidates: [5],
-      }),
-    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_fuzzy_designation:5',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
   });
 
-  test('a quantified fuzzy ask preserves the spoken clarification capacity', () => {
+  test('a quantified fuzzy span escalates the whole reply', () => {
     const verdict = resolveMulti('2 upstars lights circuits');
     expect(verdict).toMatchObject({
-      kind: 'partial_resolve',
-      writes: [],
-      unresolved: [
-        expect.objectContaining({
-          segment_ordinal: 1,
-          disposition: 'ask',
-          reason: 'fuzzy_match',
-          candidates: [5],
-          required_count: 2,
-        }),
-      ],
+      kind: 'escalate',
+      parsed_hint: 'multi_description_fuzzy_designation:5',
     });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
   });
 
   test.each(['2 upstairs light circuits', 'two upstairs light circuits'])(
@@ -1759,22 +1760,16 @@ describe('resolveCircuitAnswer — PLAN-2B multi-description fan-out', () => {
     expect(verdict.writes).toBeUndefined();
   });
 
-  test('mixed fuzzy and no-match retains ask/notice dispositions independently', () => {
+  // PLAN-W1 M3 (B-52, W1-26): the fuzzy span escalates the whole reply, the
+  // no-match span with it. This used to keep a fuzzy_match ask plus a notice.
+  test('mixed fuzzy and no-match escalates the whole reply with the fuzzy candidate', () => {
     const verdict = resolveMulti('upstars lights and the attic circuit');
-    expect(verdict.kind).toBe('partial_resolve');
-    expect(verdict.writes).toEqual([]);
-    expect(verdict.unresolved).toEqual([
-      expect.objectContaining({
-        disposition: 'ask',
-        reason: 'fuzzy_match',
-        identity: 5,
-      }),
-      expect.objectContaining({
-        disposition: 'notice',
-        reason: 'no_match',
-        identity: 2,
-      }),
-    ]);
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_fuzzy_designation:5',
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
   });
 
   test.each([
@@ -2406,5 +2401,70 @@ describe('group 3 — decline vocabulary across every CANCEL_PHRASES family (id 
     // target-bearing correction for TWO_CIRCUITS — filler must not consume
     // the pending clarification.
     expect(isMultiDescriptionAnswerText(CONTINUATION, TWO_CIRCUITS)).toBe(false);
+  });
+});
+
+// PLAN-W1 M3 (B-52, Decision W-1.1) — the fuzzy designation verdict never
+// writes. Red proofs for the audit repros and the multi-description shape.
+describe('PLAN-W1 M3 — fuzzy designation is a hint, never a write', () => {
+  const ROOMS = [
+    { circuit_ref: 1, circuit_designation: 'Kitchen' },
+    { circuit_ref: 2, circuit_designation: 'Bathrooms' },
+    { circuit_ref: 3, circuit_designation: 'Cooker' },
+    { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+  ];
+  const resolve = (userText) =>
+    resolveCircuitAnswer({ userText, pendingWrite: SAMPLE_PENDING, availableCircuits: ROOMS });
+
+  test.each([
+    ['kitchin', 1],
+    ['bathroms', 2],
+  ])('"%s" escalates fuzzy_designation_candidate:%s (main wrote it)', (reply, ref) => {
+    expect(resolve(reply)).toEqual({
+      kind: 'escalate',
+      parsed_hint: `fuzzy_designation_candidate:${ref}`,
+      available_circuits: ROOMS,
+    });
+  });
+
+  // W1-26. The plan's string was "0.4 for the kitchin and the cooker"; its
+  // "0.4 for" prefix makes that span a no-match notice on main, so it never
+  // reached the fuzzy path. This string is the shape the plan describes: on
+  // main it returns partial_resolve with a fuzzy_match ask and the Cooker write.
+  test('W1-26: "the kitchin and the cooker" escalates the whole reply, no writes, no ask', () => {
+    const verdict = resolve('the kitchin and the cooker');
+    expect(verdict).toMatchObject({
+      kind: 'escalate',
+      parsed_hint: 'multi_description_fuzzy_designation:1',
+      available_circuits: ROOMS,
+    });
+    expect(verdict.writes).toBeUndefined();
+    expect(verdict.unresolved).toBeUndefined();
+  });
+
+  test.each([
+    ['the bathroom', 2],
+    ['upstairs light', 4],
+  ])('control: "%s" still auto-resolves by substring to %s', (reply, ref) => {
+    const verdict = resolve(reply);
+    expect(verdict.kind).toBe('auto_resolve');
+    expect(verdict.writes[0].circuit).toBe(ref);
+  });
+
+  // Acceptance 6 (W1-12): no auto_resolve verdict carries a write to a fuzzy
+  // candidate, through resolveCircuitAnswer (which reaches the internal
+  // multi-description resolver) and through resolveMultiDescriptionFollowup.
+  test('acceptance 6: no auto_resolve verdict writes a fuzzy candidate', () => {
+    for (const reply of ['kitchin', 'bathroms', 'kitchin and bathroms']) {
+      expect(resolve(reply).kind).not.toBe('auto_resolve');
+    }
+    for (const reply of ['kitchin', 'bathroms', 'kitchin and bathroms']) {
+      const v = resolveMultiDescriptionFollowup({
+        userText: reply,
+        pendingWrite: SAMPLE_PENDING,
+        availableCircuits: ROOMS,
+      });
+      expect(v?.kind).not.toBe('auto_resolve');
+    }
   });
 });

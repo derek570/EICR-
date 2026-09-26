@@ -12,6 +12,7 @@
  * corpus and the existing 100-test ring suite.
  */
 
+import { SOLE_VALUE_GRAMMARS } from '../../sole-value-reply.js';
 import { parseOhms } from '../parsers/ohms.js';
 import {
   RING_FIELDS,
@@ -80,6 +81,8 @@ function ringCandidates(wordAlternation) {
 const slots = [
   {
     field: 'ring_r1_ohm',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.ohms,
     label: 'lives',
     question: 'What are the lives?',
     parser: parseOhms,
@@ -94,6 +97,8 @@ const slots = [
   },
   {
     field: 'ring_rn_ohm',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.ohms,
     label: 'neutrals',
     question: 'What are the neutrals?',
     parser: parseOhms,
@@ -102,6 +107,8 @@ const slots = [
   },
   {
     field: 'ring_r2_ohm',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.ohms,
     label: 'CPC',
     question: "What's the CPC?",
     parser: parseOhms,

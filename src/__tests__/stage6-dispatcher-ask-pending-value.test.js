@@ -390,6 +390,45 @@ describe('§A4 Codex r3-#1/#3 — shape-2 reachability + pre-emit broker failure
     );
   });
 
+  test('PLAN-W1 M2b: a brokered VALUE answer that is not a sole value → terminal apology + stage6.pvr_value_not_sole, NO write', async () => {
+    // Interim cost Derek accepted (Decision W-1.2): where main wrote the first
+    // number of "26 I think", the chain now apologises until B-60..B-63 land.
+    const session = buildSession({ activeTurnTranscript: 'something garbled entirely' });
+    const pendingAsks = createPendingAsksRegistry();
+    const ws = makeWs();
+    const logger = noopLogger();
+    const autoResolveWrite = jest.fn().mockResolvedValue({ ok: true });
+    const dispatcher = createAskDispatcher(session, logger, 't', pendingAsks, ws, {
+      autoResolveWrite,
+    });
+    const p = dispatcher(
+      {
+        tool_call_id: 'toolu_w1_pvr',
+        name: 'ask_user',
+        input: noneAsk({ question: 'For circuit 2, what was that reading for?' }),
+      },
+      {}
+    );
+    await tick();
+    pendingAsks.resolve('toolu_w1_pvr', { answered: true, user_text: 'RCD trip time' });
+    await tick();
+    const started = ws.sent.filter(
+      (f) => f.type === 'ask_user_started' && String(f.tool_call_id).startsWith('pvr-')
+    );
+    expect(started).toHaveLength(1);
+    pendingAsks.resolve(started[0].tool_call_id, { answered: true, user_text: '26 I think' });
+    const env = await p;
+    expect(JSON.parse(env.content).match_status).toBe('pending_value_failed');
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+    const rows = logger.info.mock.calls.filter(([ev]) => ev === 'stage6.pvr_value_not_sole');
+    expect(rows).toHaveLength(1);
+    expect(rows[0][1]).toMatchObject({
+      field: 'rcd_time_ms',
+      circuit: 2,
+      parsed_hint: 'reply_not_value_only',
+    });
+  });
+
   test('r5-#1 shape (4): ELIGIBLE ask, NULL capture, unrecognisable reply → terminal apology, never the legacy resolver', async () => {
     // Transcript has no numeric (capture correctly declined) and the reply
     // resolves no field name. Before r5-#1 the engagement guard returned

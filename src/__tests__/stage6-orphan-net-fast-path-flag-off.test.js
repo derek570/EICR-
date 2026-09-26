@@ -19,8 +19,7 @@
  *
  * Separate file because ORPHAN_PROMPT_ENABLED is a module-load constant —
  * the env var must be set BEFORE the harness module is imported (same
- * pattern as stage6-honest-refusal-orphan-off.test.js and
- * stage6-orphan-net-fast-path-duplicate-flag-off.test.js).
+ * pattern as stage6-honest-refusal-orphan-off.test.js).
  */
 
 import { jest } from '@jest/globals';
@@ -263,4 +262,43 @@ test('(d) control — a genuinely broken/empty turn with NO fast-ledger involvem
   );
   expect(applyRow).toBeUndefined();
   expect(session.orphanContext == null).toBe(true);
+});
+
+// PLAN-W1 M1 (W1-34) — with VOICE_ORPHAN_PROMPT=false, D3 keeps main's
+// behaviour exactly for a zero-call turn that carries a non-duplicate complete
+// reading: no write (main gates the re-parse write on the flag too), no
+// audible entry, and D3's own suppression row — for `failed` and
+// `pending_unrecorded` correlations alike. The Decision W-3 interim exception
+// never fires with the flag off.
+describe.each([
+  ['failed', (cid) => fastIdentity.markFastAttemptFailed(SESSION_ID, cid)],
+  ['pending_unrecorded', () => {}],
+])('(e) PLAN-W1 flag-off preservation — %s correlation + non-duplicate tuple', (kind, arm) => {
+  test('no write, nothing audible (no marker-② line), one D3 suppression row', async () => {
+    const cid = `cid-w1-flagoff-${kind}`;
+    arm(cid);
+    const session = makeSession({ 2: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ regexFastCorrelationId: cid, chimeObserved: true });
+    const result = await runShadowHarness(
+      session,
+      'RCD trip time for circuit 2 is 24 ms',
+      [],
+      opts
+    );
+
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    const audible = [
+      ...(result.confirmations ?? []),
+      ...(session.pendingVoicePrompts ?? []),
+    ].filter((c) => typeof c?.text === 'string' && c.text.trim().length > 0);
+    expect(audible).toHaveLength(0);
+    const d3Rows = opts.logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+    );
+    expect(d3Rows).toHaveLength(1);
+    expect(
+      opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_apply_complete')
+    ).toBeUndefined();
+  });
 });

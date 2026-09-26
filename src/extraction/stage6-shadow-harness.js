@@ -716,16 +716,13 @@ export const CATCHALL_AUDIBILITY_PROMPTS = Object.freeze([
 // without a code change if it over-asks on numeric chitchat in the field.
 const ORPHAN_PROMPT_ENABLED = process.env.VOICE_ORPHAN_PROMPT !== 'false';
 
-// #5a apply-complete guard — field report 2026-06-24 #4/#5. When the orphan
-// net is about to fire on a turn that produced NOTHING but the transcript
-// plainly carries a structurally-complete reading (the garble class — e.g. a
-// Deepgram mishearing the dialogue-engine deterministic trigger missed), apply
-// it instead of emitting a contentless clarifying prompt. Default ON; set
-// IR_ORPHAN_APPLY_COMPLETE=false to fall back to the prompt without a redeploy
-// (the flag is allowlisted in scripts/audit-env-var-source.sh and persisted to
-// ecs/task-def-backend.json — infra-from-source). This is a SEPARATE flag from
-// VOICE_ORPHAN_PROMPT; do NOT conflate them.
-const ORPHAN_APPLY_COMPLETE_ENABLED = process.env.IR_ORPHAN_APPLY_COMPLETE !== 'false';
+// #5a apply-complete guard — field report 2026-06-24 #4/#5. PLAN-W1 M1
+// (Decision 7, 2026-09-26) deleted its env kill switch and its
+// write for every case but one: a zero-call turn whose fast-path clip is still
+// `pending_unrecorded` keeps the re-parse write + one read-back as the Decision
+// W-3 interim exception, owned by PLAN-W1c. Everywhere else a complete reading
+// the model declined or had rejected is announced and carried to the next model
+// turn in `orphanContext`, never written by a server guess.
 
 // Dialogue-engine schema SLOT field name → Stage 6 canonical extraction field
 // name. extractNamedFieldValues returns the slot field (e.g. RCD uses the wire
@@ -793,6 +790,9 @@ export function reparseSingleCompleteReading(transcriptText, schemas) {
  * reading (canonical field name → validateAndCorrectFields rewrites it), and
  * push a content-bearing spoken read-back (audio-first invariant #1 — the
  * inspector verifies by ear). Returns the pushed reading.
+ *
+ * PLAN-W1 M1: its only caller is the Decision W-3 interim exception (a
+ * zero-call turn with a `pending_unrecorded` fast clip). PLAN-W1c replaces it.
  */
 export function applyOrphanRecoveredReading({ session, result, tuple, turnId }) {
   const stage6Field = ORPHAN_SLOT_TO_STAGE6_FIELD[tuple.slotField] ?? tuple.slotField;
@@ -4254,75 +4254,41 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
         const orphanContentEligible =
           producedNothing && !isAnswerTurn && (carriesValue || carriesObservation || chimeFired);
         const orphanEmissionEligible = ORPHAN_PROMPT_ENABLED && orphanContentEligible;
-        if (partialCoveragePending && !orphanEmissionEligible) {
+        // PLAN-W1 M1 — the stamp used to be DEFERRED on an eligible
+        // all-rejected turn so a re-parse-recovered reading could drain beside
+        // the covered refusals (branch 1). That recovery write is gone, so
+        // stamp immediately whenever partial coverage is pending; the
+        // observable result matches main's no-recovery path.
+        if (partialCoveragePending) {
           stampCoveredNoticesNonDraining();
           partialCoveragePending = false;
         }
         // allRejected keeps the exact pre-G1 gate (orphanEmissionEligible,
         // i.e. flag-dependent) — that whole branch is the untouched legacy
-        // coverage-arbitration + #5a recovery path (stage6-honest-refusal-
+        // coverage-arbitration path (stage6-honest-refusal-
         // orphan-off.test.js pins this). Only the non-allRejected class
         // (B3's home) is freed from the flag.
         if (allRejected ? orphanEmissionEligible : orphanContentEligible) {
-          // #5a apply-complete guard (PR #68) — before emitting a contentless
-          // clarifying prompt, try a deterministic re-parse of transcriptText
-          // (result is EMPTY here by definition of producedNothing). If it yields
-          // EXACTLY one complete (field, circuit, value), apply + read it back
-          // instead of orphaning it. This removes BOTH #4's contentless local-apply
-          // fallback and #5's next-turn duplicate at the source. Runs for the
-          // all-rejected case too — recovering a real reading beats any prompt.
+          // #5a re-parse (PR #68), narrowed by PLAN-W1 M1 (Decision 7). The
+          // re-parse of transcriptText (result is EMPTY here by definition of
+          // producedNothing) no longer WRITES what it finds, with one interim
+          // exception (Decision W-3, below). It still feeds B3.2's read-only
+          // duplicate check, and it chooses "speak" over "silence" in D3.
+          //
+          // allRejected turns never re-parse: a reading the model's tools
+          // rejected is never written by a fallback, and the spoken refusal
+          // (or the generic `rejected` line) stands (B-88).
           let recovered = null;
           let exactDuplicateTuple = null;
-          // Codex diff-review F4 (2026-08-13): the ORIGINAL pre-Plan-B
-          // shape (`git show fa3905b1:...stage6-shadow-harness.js`) ran the
-          // re-parse + `applyOrphanRecoveredReading` for BOTH allRejected
-          // and zero-tool-call turns, unconditionally on
-          // ORPHAN_APPLY_COMPLETE_ENABLED, with NO duplicate check at all.
-          // The first cut of B3.2 (a) gated the read-only duplicate CHECK
-          // behind that same OLDER, unrelated mutation-fallback flag — so
-          // turning it off silently disabled B3.2's re-speak too, though the
-          // plan never makes B3 conditional on it — and (b) let the check
-          // run (and set `exactDuplicateTuple`, skipping the write) even
-          // when `allRejected` is true, while `zeroToolCallOutcome` a few
-          // lines below is unconditionally null under `allRejected` — so an
-          // allRejected turn whose reparse happened to match a stored value
-          // fell through to neither the original recovery path nor B3.2,
-          // silently changing untouched allRejected behaviour.
-          //
-          // Fix: allRejected keeps the ORIGINAL shape verbatim (no duplicate
-          // check, ever — B3 is explicitly scoped to the non-allRejected,
-          // zero-tool-call class only). The non-allRejected class runs the
-          // duplicate check UNCONDITIONALLY (never flag-gated); the flag now
-          // gates only the WRITE (`applyOrphanRecoveredReading`) once a
-          // non-duplicate tuple is confirmed.
-          if (allRejected) {
-            if (ORPHAN_APPLY_COMPLETE_ENABLED) {
-              const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
-              if (tuple) {
-                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
-                log.info?.('stage6.orphan_apply_complete', {
-                  sessionId: session.sessionId,
-                  turnId,
-                  field: recovered.field,
-                  circuit: recovered.circuit,
-                  value: recovered.value,
-                  textPreview: String(transcriptText || '').slice(0, 80),
-                });
-              }
-            }
-          } else {
-            // Plan B B3.2 (feedback ids 118/119) — before applying the
-            // re-parsed tuple as a NEW reading, check whether it's actually
-            // an EXACT duplicate of what's already stored (the "leg 3"
-            // false-apology class: a re-dictation of an already-applied-and-
-            // confirmed value that this deterministic re-parse WOULD
-            // otherwise silently re-write and read back with ordinary
-            // wording). Checking BEFORE the write — not after, in the
-            // `!recovered` branch below — matters: `applyOrphanRecoveredReading`
-            // always returns a truthy reading object, so `recovered` would
-            // already be non-null by the time any post-hoc check ran, and the
-            // apology-choice branch below would never be reached for this
-            // tuple at all.
+          // A complete, non-duplicate reading the re-parse found and did NOT
+          // write (B-89). D3 speaks the generic orphan line for it instead of
+          // staying silent, so the reading is announced and carried forward.
+          let unwrittenCompleteTuple = null;
+          if (!allRejected) {
+            // Plan B B3.2 (feedback ids 118/119) — before anything else, check
+            // whether the re-parsed tuple is an EXACT duplicate of what's
+            // already stored (the "leg 3" false-apology class: a re-dictation
+            // of an already-applied-and-confirmed value).
             const tuple = reparseSingleCompleteReading(transcriptText, ALL_DIALOGUE_SCHEMAS);
             if (tuple) {
               const dup = findExactDuplicateAgainstSnapshot({ session, tuple });
@@ -4336,26 +4302,36 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   value: dup.value,
                   textPreview: String(transcriptText || '').slice(0, 80),
                 });
-              } else if (ORPHAN_PROMPT_ENABLED && ORPHAN_APPLY_COMPLETE_ENABLED) {
-                // G1: the #5a apply-complete WRITE for a genuinely NEW
-                // (non-duplicate) reading predates Plan B and was already
-                // nested inside the ORPHAN_PROMPT_ENABLED-gated block
-                // pre-Plan-B (git show fa3905b1 — same nesting). B3 only
-                // narrows the flag OUT of the duplicate check and the
-                // fast-ledger chain above/below; this write keeps its
-                // original flag dependency so a flag-off session behaves
-                // byte-identically for the "new reading, no ledger, no
-                // duplicate" case (silence — the final catch-all apology a
-                // few lines down is flag-gated too), not "widened".
-                recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
-                log.info?.('stage6.orphan_apply_complete', {
-                  sessionId: session.sessionId,
-                  turnId,
-                  field: recovered.field,
-                  circuit: recovered.circuit,
-                  value: recovered.value,
-                  textPreview: String(transcriptText || '').slice(0, 80),
-                });
+              } else {
+                // Decision W-3 (Derek, 2026-09-26 08:35 BST) — interim
+                // exception owned by PLAN-W1c. When any of this turn's
+                // fast-path correlations resolves `pending_unrecorded` (the
+                // WS-before-HTTP race: a fast clip may still be in flight),
+                // keep main's re-parse write and its single read-back. Only
+                // iOS sends `regex_fast_correlation_id`, so only iOS reaches
+                // this. Same gate as main (`ORPHAN_PROMPT_ENABLED`), so a
+                // flag-off session keeps main's no-write behaviour.
+                const turnFastOutcomes = resolveFastLedgerOutcomeForTurn(
+                  entry?.fastPathCorrelationIdByTurn?.get(turnId),
+                  session.sessionId
+                );
+                const fastClipUnrecorded =
+                  Array.isArray(turnFastOutcomes) &&
+                  turnFastOutcomes.some((o) => o.kind === 'pending_unrecorded');
+                if (ORPHAN_PROMPT_ENABLED && fastClipUnrecorded) {
+                  recovered = applyOrphanRecoveredReading({ session, result, tuple, turnId });
+                  log.info?.('stage6.orphan_apply_complete', {
+                    sessionId: session.sessionId,
+                    turnId,
+                    field: recovered.field,
+                    circuit: recovered.circuit,
+                    value: recovered.value,
+                    interim_w3_reparse_write: true,
+                    textPreview: String(transcriptText || '').slice(0, 80),
+                  });
+                } else {
+                  unwrittenCompleteTuple = tuple;
+                }
               }
             }
           }
@@ -4388,7 +4364,7 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
           // this same helper otherwise) — kept as a real branch rather than
           // assumed away so this helper stays a byte-identical extraction of
           // the pre-C2 code, not a rewrite.
-          const emitGenericOrphanPrompt = async (cause) => {
+          const emitGenericOrphanPrompt = async (cause, extraLogFields = {}) => {
             // PLAN-B (B-131) — the script's terminal read-back was actually
             // spoken this turn (a PLAN-A handoff after a captured value), so
             // this net has nothing to add: the inspector heard the outcome.
@@ -4445,29 +4421,21 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
               rounds: toolLoopOut.rounds,
               cause,
               author: modelLine ? 'model' : 'canned',
+              ...extraLogFields,
               textPreview: String(transcriptText || '').slice(0, 80),
             });
           };
-          // Codex diff-review cycle 1 — the DEFERRED branch-3 stamp: only a
-          // turn whose recovery FAILED hands the whole rejected set to A3's
-          // generic line; a recovered turn keeps its covered refusals
-          // draining additively beside the read-back (branch 1).
-          if (!recovered && partialCoveragePending) {
-            stampCoveredNoticesNonDraining();
-          }
           if (!recovered && allRejected && rejectedSetFullyCovered) {
-            // Plan B §3.3 branch 2 — recovery failed but EVERY rejected call
-            // is covered by a dispatcher-authored refusal notice: the
-            // refusals drain at net-0 and ARE the turn's audible output.
-            // Suppress the generic REJECTED_PROMPTS *and the entire orphan
-            // branch* — no session.orphanContext (round-16: carrying the
-            // honestly-refused transcript forward would reinject it into
-            // the NEXT turn as words that "weren't understood" and tell the
-            // model to retry, recreating the exact loop this plan kills)
-            // and no stage6.orphan_prompt_emitted row. Recovery (branch 1)
-            // already ran above — a structurally complete reading emitted
-            // through a refused call was written + read back, and the
-            // refusal notices still drain additively beside it.
+            // Plan B §3.3 branch 2 — EVERY rejected call is covered by a
+            // dispatcher-authored refusal notice: the refusals drain at net-0
+            // and ARE the turn's audible output. Suppress the generic
+            // REJECTED_PROMPTS *and the entire orphan branch* — no
+            // session.orphanContext (round-16: carrying the honestly-refused
+            // transcript forward would reinject it into the NEXT turn as
+            // words that "weren't understood" and tell the model to retry,
+            // recreating the exact loop this plan kills) and no
+            // stage6.orphan_prompt_emitted row. PLAN-W1 M1: there is no
+            // re-parse write on this path any more (B-88).
             log.info?.('stage6.rejected_prompt_suppressed_by_refusals', {
               sessionId: session.sessionId,
               turnId,
@@ -4567,7 +4535,23 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
             // silently swallowing a turn nothing was ever attempted for.
             if (zeroToolCallOutcome.hadUnaddressedFailure) {
               const attemptedThisTurn = entry?.fastPathCorrelationIdByTurn?.get(turnId);
-              if (attemptedThisTurn instanceof Set && attemptedThisTurn.size > 0) {
+              if (
+                attemptedThisTurn instanceof Set &&
+                attemptedThisTurn.size > 0 &&
+                ORPHAN_PROMPT_ENABLED &&
+                unwrittenCompleteTuple !== null
+              ) {
+                // PLAN-W1 M1 (W1-4) — the transcript carries a complete reading
+                // that nothing wrote. With the flag on, every unaddressed
+                // correlation here is `failed` (any `pending_unrecorded` one
+                // took the Decision W-3 exception above), and a failed attempt
+                // is dead, so no clip can follow this line. Speak the generic
+                // orphan line and carry the words forward instead of D3's
+                // silence; the catch-all latch is NOT set (the line is audible).
+                await emitGenericOrphanPrompt('fast_ledger_unaddressed_failure', {
+                  unwritten_complete_reading: true,
+                });
+              } else if (attemptedThisTurn instanceof Set && attemptedThisTurn.size > 0) {
                 // Codex diff-review cycle 4 (E1) — D3's deliberate silence
                 // (a correlation was attempted but resolves to nothing
                 // usable, and the fast-TTS HTTP POST may still be in
@@ -4624,7 +4608,8 @@ async function runLiveMode(session, transcriptText, regexResults, options, log) 
                   ? 'observation_no_tool_calls'
                   : carriesValue
                     ? 'zero_tool_calls'
-                    : 'chimed_noop_no_content'
+                    : 'chimed_noop_no_content',
+              unwrittenCompleteTuple !== null ? { unwritten_complete_reading: true } : {}
             );
           }
         }

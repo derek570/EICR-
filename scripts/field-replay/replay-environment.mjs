@@ -86,7 +86,6 @@ export const PINNED_FROM_TASK_DEF = Object.freeze([
  *  apply (each of these has a module default that production runs on). */
 export const DELETED_SO_DEFAULTS_APPLY = Object.freeze([
   'VOICE_ORPHAN_PROMPT',
-  'IR_ORPHAN_APPLY_COMPLETE',
   'VOICE_MID_STREAM_FILTER',
   'VOICE_REGEX_PRE_APPLY',
   'VOICE_PRE_LLM_GATE',

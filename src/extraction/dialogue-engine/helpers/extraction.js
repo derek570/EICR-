@@ -102,6 +102,159 @@ export function extractNamedFieldValues(text, slots) {
 }
 
 /**
+ * PLAN-W1 M2d (Decision 7, review W1-16/W1-17) — the correction words of an
+ * in-breath self-correction ("25 milliseconds, no, 28"). Owned here, exported
+ * for any consumer; the value resolver's old local copy was deleted with the
+ * branch that used it (M2b).
+ */
+export const CORRECTION_MARKER_RE =
+  /\b(?:no|not|actually|sorry|wait|cancel\s+that|i\s+meant|scratch\s+that)\b/i;
+
+// PLAN-W1 review cycle 1 (Codex BLOCKER, the plan's A-1 repro) — "but"
+// introduces a contrasting value: "the main switch is type AC but this one is
+// A". The capture before it may be the value the inspector set aside, so it
+// counts as a retraction, like the correction markers.
+const CONTRAST_MARKER_RE = /\bbut\b/i;
+
+// A value directly preceded, within its own clause, by a negation: "the
+// rating isn't 20 amps".
+const NEGATION_BEFORE_VALUE_RE = /\b(?:not|isn['’]t|wasn['’]t|never)\s+(?:an?\s+)?$/i;
+
+// Clause boundaries, as `namedExtractorClauseVeto` splits them: a full stop
+// splits only when it is not a decimal point.
+const CLAUSE_BOUNDARY_RE = /[,;?!]|\.(?!\d)/g;
+
+function clauseStartBefore(text, index) {
+  let start = 0;
+  CLAUSE_BOUNDARY_RE.lastIndex = 0;
+  let m;
+  while ((m = CLAUSE_BOUNDARY_RE.exec(text)) !== null) {
+    if (m.index >= index) break;
+    start = m.index + 1;
+  }
+  return start;
+}
+
+function globalIndexed(regex) {
+  const flags = new Set(regex.flags.split(''));
+  flags.add('g');
+  flags.add('d');
+  return new RegExp(regex.source, [...flags].join(''));
+}
+
+// Every capture of one regex over `text` (offset `base` into the utterance),
+// parsed and allowed-value gated exactly as extractNamedFieldValues does.
+function collectCaptures(regex, text, base, slot, pickGroup) {
+  const out = [];
+  const re = globalIndexed(regex);
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m[0] === '') re.lastIndex += 1;
+    const group = pickGroup(m);
+    if (group === null) continue;
+    const raw = m[group];
+    const val = slot.parser(raw);
+    if (val === null || val === undefined) continue;
+    if (Array.isArray(slot.allowedValues) && !slot.allowedValues.includes(val)) continue;
+    const [start, end] = m.indices[group];
+    out.push({ value: val, start: base + start, end: base + end });
+  }
+  return out;
+}
+
+function captureSpansFor(slot, text) {
+  if (Array.isArray(slot.namedExtractorCandidates) && slot.namedExtractorCandidates.length > 0) {
+    // Ring legs: one capture list per candidate direction, judged separately.
+    return slot.namedExtractorCandidates.map((cand) =>
+      collectCaptures(cand.regex, text, 0, slot, (m) =>
+        m[cand.valueGroup] === undefined ? null : cand.valueGroup
+      )
+    );
+  }
+  if (!(slot.namedExtractor instanceof RegExp)) return [];
+  // The first non-null capture group, as extractNamedFieldValues reads it.
+  const pickFirstGroup = (m) => [1, 2, 3].find((g) => m[g] !== undefined) ?? null;
+  if (!(slot.namedExtractorClauseVeto instanceof RegExp)) {
+    return [collectCaptures(slot.namedExtractor, text, 0, slot, pickFirstGroup)];
+  }
+  const captures = [];
+  let offset = 0;
+  for (const piece of text.split(/([,;?!]|\.(?!\d))/)) {
+    const isDelimiter = /^(?:[,;?!]|\.)$/.test(piece);
+    if (!isDelimiter && !slot.namedExtractorClauseVeto.test(piece)) {
+      captures.push(...collectCaptures(slot.namedExtractor, piece, offset, slot, pickFirstGroup));
+    }
+    offset += piece.length;
+  }
+  return [captures];
+}
+
+function capturesAreAmbiguous(text, captures) {
+  if (captures.length === 0) return false;
+  const distinct = new Set(captures.map((c) => String(c.value)));
+  if (distinct.size >= 2) return true;
+  // One value: every capture of it negated in its own clause.
+  if (
+    captures.every((c) =>
+      NEGATION_BEFORE_VALUE_RE.test(text.slice(clauseStartBefore(text, c.start), c.start))
+    )
+  ) {
+    return true;
+  }
+  // One value, later retracted: a correction marker or a contrasting "but"
+  // after a capture ("trip time 25 ms, no, 28"; "the main switch is type AC
+  // but this one is A"). ANY such marker hands the reply to the model.
+  //
+  // EP review cycles 1-3 (2026-09-26): an earlier version tried to decide
+  // whether a marker introduced ANOTHER slot's value ("type B, actually BS
+  // 3871") and so did not retract. Three consecutive review rounds each found
+  // a reply that heuristic attributed wrongly — two of them wrote a value the
+  // inspector had set aside. The attribution is deleted: a false handoff costs
+  // one model turn, which Decision 7 accepts; a wrong attribution reaches the
+  // certificate.
+  const markers = new RegExp(`${CORRECTION_MARKER_RE.source}|${CONTRAST_MARKER_RE.source}`, 'gi');
+  for (const c of captures) {
+    markers.lastIndex = c.end;
+    if (markers.test(text)) return true;
+  }
+  return false;
+}
+
+/**
+ * PLAN-W1 M2d — the first slot whose named capture in `text` is ambiguous, or
+ * null. `extractNamedFieldValues` keeps ONE capture per slot (the first, or the
+ * smaller-gap ring candidate), so an in-breath correction was written as the
+ * value it corrected: "old breaker was 20 amps, new one is 32 amps" → 20,
+ * "lives 0.5 no lives 0.6" → 0.5. A slot is ambiguous when:
+ *   - two or more DISTINCT parsed values come from the same regex, or from the
+ *     same ring candidate direction;
+ *   - every capture of its single value is negated in its own clause; or
+ *   - a capture is followed, later in the utterance, by a correction marker
+ *     or a contrasting "but".
+ * Repeats of one value are not ambiguous, and a field-first versus value-first
+ * disagreement is left to today's smaller-gap arbitration (A-4, PLAN-W1b).
+ *
+ * @param {string} text  the masked raw reply
+ * @param {Array} slots  the schema's slots
+ * @returns {{field: string, values: Array<string>}|null}
+ */
+export function findAmbiguousNamedCapture(text, slots) {
+  if (typeof text !== 'string' || !text || !Array.isArray(slots)) return null;
+  const bySlot = slots.map((slot) => ({ slot, groups: captureSpansFor(slot, text) }));
+  for (const { slot, groups } of bySlot) {
+    for (const captures of groups) {
+      if (capturesAreAmbiguous(text, captures)) {
+        return {
+          field: slot.field,
+          values: [...new Set(captures.map((c) => String(c.value)))],
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Mask `circuit N` spans out of a reply so a circuit ref can never be
  * captured as a reading value by the named extractors. Length-preserving
  * so proximity windows in the extractors stay honest. Canonical shared

@@ -26,6 +26,7 @@
  * standard (never attributes it) and the turn goes to the model instead.
  */
 
+import { SOLE_VALUE_GRAMMARS } from '../../sole-value-reply.js';
 import {
   BS_STANDARD_MENTION_PATTERN,
   parseOcpdStandard,
@@ -70,6 +71,8 @@ const slots = [
   },
   {
     field: 'ocpd_rating_a',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.amps,
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
@@ -80,6 +83,8 @@ const slots = [
   },
   {
     field: 'ocpd_breaking_capacity_ka',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.kiloamps,
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,
@@ -115,6 +120,8 @@ const slots = [
   },
   {
     field: 'rcd_type',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.rcdType,
     label: 'RCD type',
     question: 'What RCD type? AC, A, F, or B?',
     parser: parseRcdType,
@@ -153,6 +160,8 @@ const slots = [
   },
   {
     field: 'rcd_operating_current_ma',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.milliamps,
     label: 'RCD operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,

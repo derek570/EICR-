@@ -845,7 +845,9 @@ describe('PLAN A2 — provenance ledger & terminal read-backs (feedback id 117)'
       session,
       sessionId: SESSION_ID,
       // 62423, not 60898: the strict RCD parser refuses an MCB standard.
-      transcriptText: 'Type AC, actually BS EN 62423',
+      // PLAN-W1 M2d: without "actually" — a correction marker after the type
+      // capture now hands the whole reply to the model (EP review cycle 3).
+      transcriptText: 'Type AC, BS EN 62423',
       now: 3000,
     });
     processProtectiveDeviceTurn({

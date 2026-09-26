@@ -70,6 +70,7 @@ const {
   unmergeFastPathCorrelationIds,
   resolveZeroToolCallDuplicateOutcome,
   CATCHALL_AUDIBILITY_PROMPTS,
+  ORPHAN_PROMPTS,
 } = await import('../extraction/stage6-shadow-harness.js');
 const { activeSessions } = await import('../extraction/active-sessions.js');
 const fastIdentity = await import('../extraction/fast-path-accepted-identity.js');
@@ -1565,12 +1566,13 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
 
   // Codex diff-review F4 (2026-08-13) — an allRejected turn whose transcript
   // happens to reparse to a value already matching the stored snapshot must
-  // go through the ORIGINAL pre-Plan-B recovery path (apply + ordinary
-  // read-back), NEVER B3.2's "Already got" wording — B3.2 is deliberately
+  // NEVER get B3.2's "Already got" wording. PLAN-W1 M1 (2026-09-26) removed
+  // the original recovery write it used to take instead (B-88), so the turn
+  // gets the generic `rejected` line — B3.2 is deliberately
   // scoped to the non-allRejected, zero-tool-call class only (see
   // resolveZeroToolCallDuplicateOutcome's doc comment and its caller, which
   // only invokes it when `!allRejected`).
-  test('allRejected + reparse tuple matches an already-stored value → ORIGINAL recovery (write + ordinary read-back), never B3.2 "Already got"', async () => {
+  test('allRejected + reparse tuple matches an already-stored value → no re-parse write (PLAN-W1 M1), never B3.2 "Already got"', async () => {
     const session = makeSession({ 2: { rcd_time_ms: '24' } });
     runToolLoopSpy.mockImplementationOnce(async () => ({
       stop_reason: 'end_turn',
@@ -1598,23 +1600,23 @@ describe('B3.1/B3.3 — fast-attempt ledger precedence at the same seam', () => 
       /^Already got that —/.test(c.text || '')
     );
     expect(dupConfs).toHaveLength(0);
-    // The ORIGINAL recovery path ran: a reading was pushed and an ordinary
-    // (non-"Already got") confirmation speaks it.
-    expect(result.extracted_readings ?? []).toHaveLength(1);
-    expect(result.extracted_readings[0]).toMatchObject({
-      field: 'rcd_time_ms',
-      circuit: 2,
-      value: '24',
-    });
+    // PLAN-W1 M1 (B-88) — an all-rejected turn is never written by the
+    // re-parse net: no reading pushed, no read-back, no apply row. The
+    // generic `rejected` line speaks instead.
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBe('24');
     const ordinaryConf = (result.confirmations ?? []).find(
       (c) => c.field === 'rcd_time_ms' && c.circuit === 2
     );
-    expect(ordinaryConf).toBeDefined();
-    expect(ordinaryConf.text).not.toMatch(/^Already got/);
+    expect(ordinaryConf).toBeUndefined();
     const recoveredRow = opts.logger.info.mock.calls.find(
       ([ev]) => ev === 'stage6.orphan_apply_complete'
     );
-    expect(recoveredRow).toBeDefined();
+    expect(recoveredRow).toBeUndefined();
+    const orphanRow = opts.logger.info.mock.calls.find(
+      ([ev]) => ev === 'stage6.orphan_prompt_emitted'
+    );
+    expect(orphanRow?.[1]).toMatchObject({ cause: 'all_rejected' });
     // B3.2's duplicate-detection log row must NEVER fire for an allRejected
     // turn — the read-only check is scoped OUT of this class entirely.
     const dupRow = opts.logger.info.mock.calls.find(
@@ -1857,5 +1859,97 @@ describe('Codex diff-review cycle 4 (E3) — the clamp correction reaches BOTH e
     // confirmation of its own, but critically it did not SPLIT the group
     // into two spoken lines either.
     expect(outcome.confirmations[0].fast_correlation_id).toBe('cid-e3-pending');
+  });
+});
+
+// PLAN-W1 M1 (B-89, no-widening guard) and the Decision W-3 interim exception.
+// A zero-call turn whose transcript re-parses to a complete, non-duplicate
+// reading is no longer written by the server, EXCEPT while a fast-path clip
+// for this turn is still `pending_unrecorded` (the WS-before-HTTP race). That
+// narrow case keeps main's re-parse write + one read-back until PLAN-W1c.
+describe('PLAN-W1 M1 — zero-call re-parse write removed; Decision W-3 interim exception', () => {
+  const ORPHAN_SET = new Set(ORPHAN_PROMPTS);
+  const TRANSCRIPT = 'RCD trip time for circuit 2 is 24 ms';
+  const audible = (result, session) =>
+    [...(result.confirmations ?? []), ...(session.pendingVoicePrompts ?? [])].filter(
+      (c) => typeof c?.text === 'string' && c.text.trim().length > 0
+    );
+
+  test('failed correlation + non-duplicate tuple: no write, exactly one orphan line (no marker-② extra), orphanContext carries the utterance', async () => {
+    fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-w1-failed');
+    const session = makeSession({ 2: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-w1-failed', chimeObserved: true });
+    const result = await runShadowHarness(session, TRANSCRIPT, [], opts);
+
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    const lines = audible(result, session);
+    expect(lines).toHaveLength(1);
+    expect(ORPHAN_SET.has(lines[0].text)).toBe(true);
+    const orphanRows = opts.logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.orphan_prompt_emitted'
+    );
+    expect(orphanRows).toHaveLength(1);
+    expect(orphanRows[0][1]).toMatchObject({ unwritten_complete_reading: true });
+    expect(session.orphanContext?.transcript).toBe(TRANSCRIPT);
+    expect(
+      opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_apply_complete')
+    ).toBeUndefined();
+    expect(
+      opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+      )
+    ).toBeUndefined();
+  });
+
+  test('control — failed correlation + digit-bearing transcript with no tuple: D3 silence unchanged', async () => {
+    fastIdentity.markFastAttemptFailed(SESSION_ID, 'cid-w1-failed-ctl');
+    const session = makeSession({ 2: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-w1-failed-ctl', chimeObserved: true });
+    const result = await runShadowHarness(session, 'EFC is 0.86.', [], opts);
+
+    expect(audible(result, session)).toHaveLength(0);
+    expect(
+      opts.logger.info.mock.calls.find(
+        ([ev]) => ev === 'stage6.fast_ledger_unaddressed_failure_suppressed'
+      )
+    ).toBeDefined();
+    expect(
+      opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted')
+    ).toBeUndefined();
+  });
+
+  test('no ledger + non-duplicate tuple (B-89): no write, one orphan line, orphanContext carries the utterance', async () => {
+    const session = makeSession({ 2: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ chimeObserved: true });
+    const result = await runShadowHarness(session, TRANSCRIPT, [], opts);
+
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBeUndefined();
+    expect(result.extracted_readings ?? []).toHaveLength(0);
+    const lines = audible(result, session);
+    expect(lines).toHaveLength(1);
+    expect(ORPHAN_SET.has(lines[0].text)).toBe(true);
+    expect(session.orphanContext?.transcript).toBe(TRANSCRIPT);
+  });
+
+  test('Decision W-3 interim exception — pending_unrecorded correlation + non-duplicate tuple: written and read back exactly once, no orphan line, logged', async () => {
+    // No ledger record at all for this cid: the WS-before-HTTP race.
+    const session = makeSession({ 2: { circuit_designation: 'Sockets' } });
+    const opts = baseOpts({ regexFastCorrelationId: 'cid-w1-unrecorded', chimeObserved: true });
+    const result = await runShadowHarness(session, TRANSCRIPT, [], opts);
+
+    expect(session.stateSnapshot.circuits[2].rcd_time_ms).toBe('24');
+    expect(result.extracted_readings ?? []).toHaveLength(1);
+    const lines = audible(result, session);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ field: 'rcd_time_ms', circuit: 2 });
+    expect(
+      opts.logger.info.mock.calls.find(([ev]) => ev === 'stage6.orphan_prompt_emitted')
+    ).toBeUndefined();
+    const applyRows = opts.logger.info.mock.calls.filter(
+      ([ev]) => ev === 'stage6.orphan_apply_complete'
+    );
+    expect(applyRows).toHaveLength(1);
+    expect(applyRows[0][1]).toMatchObject({ interim_w3_reparse_write: true });
   });
 });

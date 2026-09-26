@@ -1938,16 +1938,33 @@ async function buildResolvedBody({
         ...(enumVerdict.suggestions ? { suggestions: enumVerdict.suggestions } : {}),
       };
     }
+    // PLAN-W1 M2c — the enum reply is not a sole N/A phrase or BS code. It
+    // goes to the model as a value escalation, and the value resolver must
+    // NOT run on it: it would re-read "not 61008, 61009" as numbers.
+    if (enumVerdict.kind === 'escalate') {
+      logger?.info?.('stage6.ask_user_enum_resolution_escalated', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        field: contextField,
+        circuit: contextCircuit,
+        parsed_hint: enumVerdict.parsed_hint,
+      });
+      valueEscalation = { parsed_hint: enumVerdict.parsed_hint ?? null };
+    }
     // `no_value_context` — fall through to value-resolver as before.
 
-    const valueVerdict = resolveValueAnswer({
-      userText: outcome.user_text,
-      contextField,
-      contextCircuit,
-      contextCircuits,
-      sourceTurnId: turnId,
-      contextBoardId,
-    });
+    const valueVerdict =
+      enumVerdict.kind === 'escalate'
+        ? { kind: 'enum_escalated' }
+        : resolveValueAnswer({
+            userText: outcome.user_text,
+            contextField,
+            contextCircuit,
+            contextCircuits,
+            sourceTurnId: turnId,
+            contextBoardId,
+          });
     if (valueVerdict.kind === 'auto_resolve') {
       const dispatched = [];
       for (const write of valueVerdict.writes) {
@@ -3903,6 +3920,16 @@ async function runPendingValueChain(args) {
           continue;
         }
         if (verdict.kind === 'cancel') return movedOn('cancelled');
+        // PLAN-W1 M2b — the interim cost Derek accepted (Decision W-1.2): a
+        // reply that is not a sole value gets the canned apology where main
+        // wrote a first-number guess, until the backend asks plan (B-60 to
+        // B-63) hands it to the model. Logged so the rate is measurable.
+        logger?.info?.('stage6.pvr_value_not_sole', {
+          sessionId,
+          field: fieldKey,
+          circuit,
+          parsed_hint: verdict.parsed_hint ?? null,
+        });
         return terminalApology();
       }
       // No circuit yet — capture the numeric and loop (shape 3 handles scope).
