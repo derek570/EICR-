@@ -181,7 +181,7 @@ export function extractPendingValue({ transcript, question }) {
 // the canonical labels the fixtures exercise). Keys are normalised (lower,
 // no punctuation). Extend only with field evidence — no broad fuzzy matching
 // (parity-program §3E).
-const FIELD_NAME_ALIASES = new Map([
+export const FIELD_NAME_ALIASES = new Map([
   ['rcd trip time', 'rcd_time_ms'],
   ['rcd time', 'rcd_time_ms'],
   ['trip time', 'rcd_time_ms'],

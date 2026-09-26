@@ -112,6 +112,7 @@ import { recordValueCorrection, consumeValueCorrection } from './helpers/value-c
 // confirmation branch's 5h idle rule (never consume a dictated reading into
 // the miss counter). Leaf module (imports only node:module), no cycle.
 import { detectStructuredReading } from '../stage6-pending-value.js';
+import { matchSoleValueReply } from '../sole-value-reply.js';
 
 /**
  * Process one transcript turn against all registered schemas. Walks the
@@ -5114,9 +5115,23 @@ function runActivePath({
     // grammar can consume: every correct answer would miss and hand off. For
     // the RCBO BS pair this is now the ONLY ingress (neither slot is
     // named-extracted), so the clause is load-bearing.
-    const bareValue = currentSlot.parser(
-      maskCircuitSpans(currentSlot.kind === 'bs_code' || currentSlot.parsesRawReply ? reply : text)
-    );
+    //
+    // PLAN-W1 M2a (Decision 7) — a slot that declares `soleValueGrammar` writes
+    // only when the WHOLE raw reply is one value of that grammar; the parser
+    // then sees only the captured token. The parsers take the first match
+    // anywhere ("give me 2 minutes" → 2 A), so a reply that is not a sole value
+    // yields null here and reaches the step-9b first-miss handoff instead.
+    let bareValue;
+    if (currentSlot.soleValueGrammar) {
+      const sole = matchSoleValueReply(maskCircuitSpans(reply), currentSlot.soleValueGrammar);
+      bareValue = sole ? currentSlot.parser(sole.value) : null;
+    } else {
+      bareValue = currentSlot.parser(
+        maskCircuitSpans(
+          currentSlot.kind === 'bs_code' || currentSlot.parsesRawReply ? reply : text
+        )
+      );
+    }
     // 2026-05-04 (field test 07635782 follow-up): per-slot allowed-value
     // gate. The OCPD breaking-capacity slot now declares the realistic kA
     // set ([1.5, 3, 4.5, 6, 10, 16, 20, 25, 36, 50, 80] — see

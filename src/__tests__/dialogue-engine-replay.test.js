@@ -217,13 +217,36 @@ describe('replay — ring continuity', () => {
     const transcripts = [
       { text: 'Ring continuity is lives are 0.75.', now: 1000 },
       { text: 'downstairs sockets', now: 2000 },
-      { text: 'Note tools are 0.75.', now: 3000 }, // garbled "neutrals" → bare value fallback
-      { text: 'Earths 0.78.', now: 4000 },
     ];
     const initialCircuits = { 1: { circuit_designation: 'downstairs sockets' } };
     const engineRun = runScenario(engineRing, transcripts, initialCircuits);
     const legacyRun = runScenario(legacyRing, transcripts, initialCircuits);
     expectIdentical(engineRun, legacyRun);
+  });
+
+  // The garbled-neutrals half of 74201B27 is ENGINE-ONLY, for the same reason
+  // as the B107472D miss half above. PLAN-W1 M2a (Decision 7): step 8 writes
+  // only when the WHOLE raw reply is one value. "Note tools are 0.75." is not,
+  // so the engine hands off where the frozen legacy script's anywhere-scan
+  // wrote Rn = 0.75. That is a DELIBERATE divergence; the grammar is not
+  // loosened to restore parity. The model gets the question and the reply.
+  test('74201B27 garbled-neutrals half: "Note tools are 0.75." hands off instead of a bare-value write — engine only', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 1: { circuit_designation: 'downstairs sockets' } });
+    const run = (text, now) =>
+      engineRing({ ws, session, sessionId: SESSION_ID, transcriptText: text, logger: null, now });
+
+    run('Ring continuity is lives are 0.75.', 1000);
+    run('downstairs sockets', 2000);
+    expect(ws.sent.at(-1).context_field).toBe('ring_rn_ohm');
+
+    const out = run('Note tools are 0.75.', 3000);
+
+    expect(out).toMatchObject({ handled: true, fallthrough: true });
+    expect(out.serverNote.asked_field).toBe('ring_rn_ohm');
+    expect(session.stateSnapshot.circuits[1].ring_rn_ohm).toBeUndefined();
+    expect(ws.sent.filter((m) => m.context_field === 'ring_rn_ohm')).toHaveLength(1);
+    expect(session.dialogueScriptState).toBeNull();
   });
 
   test('361A638D: bare ring entry → value-only turns queue → designation resolves', () => {

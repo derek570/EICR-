@@ -18,6 +18,7 @@
  * be left blank.
  */
 
+import { SOLE_VALUE_GRAMMARS } from '../../sole-value-reply.js';
 import { BS_STANDARD_NAMED_EXTRACTOR, parseOcpdStandard } from '../parsers/bs-code.js';
 import {
   OCPD_TYPE_CLAUSE_VETO,
@@ -83,6 +84,8 @@ const slots = [
   },
   {
     field: 'ocpd_rating_a',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.amps,
     label: 'rating',
     question: 'What rating in amps?',
     parser: parseAmps,
@@ -97,6 +100,8 @@ const slots = [
   },
   {
     field: 'ocpd_breaking_capacity_ka',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.kiloamps,
     label: 'breaking capacity',
     question: "What's the breaking capacity in kA?",
     parser: parseKa,

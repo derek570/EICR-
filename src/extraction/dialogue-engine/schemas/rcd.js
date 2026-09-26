@@ -23,6 +23,7 @@
  * branch for the implementation.
  */
 
+import { SOLE_VALUE_GRAMMARS } from '../../sole-value-reply.js';
 import { BS_STANDARD_NAMED_EXTRACTOR, parseRcdBsCode } from '../parsers/bs-code.js';
 import { parseRcdType } from '../parsers/rcd-type.js';
 import { parseMa } from '../parsers/ma.js';
@@ -114,6 +115,8 @@ const slots = [
   },
   {
     field: 'rcd_type',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.rcdType,
     label: 'type',
     question: 'What RCD type? AC, A, F, or B?',
     parser: parseRcdType,
@@ -131,6 +134,8 @@ const slots = [
   {
     // P3 — LIM alternation so "operating current is a limitation" captures LIM.
     field: 'rcd_operating_current_ma',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.milliamps,
     label: 'operating current',
     question: "What's the operating current in mA?",
     parser: parseMa,

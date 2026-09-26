@@ -14,6 +14,7 @@
  * byte-identically to the legacy script.
  */
 
+import { SOLE_VALUE_GRAMMARS } from '../../sole-value-reply.js';
 import {
   parseMegaohms,
   parseBareMegaohmsWithUnit,
@@ -54,6 +55,8 @@ const IR_VALUE_ONLY_RE =
 const slots = [
   {
     field: 'ir_live_live_mohm',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.megaohms,
     label: 'live-to-live',
     question: "What's the live-to-live?",
     parser: parseMegaohms,
@@ -130,6 +133,8 @@ const slots = [
   },
   {
     field: 'ir_live_earth_mohm',
+    // PLAN-W1 M2a — step 8 writes only when the WHOLE raw reply is one value.
+    soleValueGrammar: SOLE_VALUE_GRAMMARS.megaohms,
     label: 'live-to-earth',
     question: "What's the live-to-earth?",
     parser: parseMegaohms,
@@ -531,7 +536,10 @@ export const insulationResistanceSchema = {
     terminator: '.',
     segments: [
       { field: 'ir_live_live_mohm', render: (values) => `L-L ${values.ir_live_live_mohm ?? '?'}` },
-      { field: 'ir_live_earth_mohm', render: (values) => `L-E ${values.ir_live_earth_mohm ?? '?'}` },
+      {
+        field: 'ir_live_earth_mohm',
+        render: (values) => `L-E ${values.ir_live_earth_mohm ?? '?'}`,
+      },
       {
         field: VOLTAGE_FIELD,
         render: (values) => (values[VOLTAGE_FIELD] ? `voltage ${values[VOLTAGE_FIELD]}` : null),
