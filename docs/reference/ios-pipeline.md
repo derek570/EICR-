@@ -572,9 +572,14 @@ Web's table is `routeApplyFieldCommand` in `web/src/lib/recording/apply-field-ro
 Rows 5 and 6 grant a gate-only authority: it feeds only the client's transcript gate,
 never `client_command`, the regex summary or Stage 6 routing. Row 6 needs it because a
 recognised command can have no digit and only a weak trigger (*"cable n/a for all"*),
-which the gate would otherwise drop in silence. iOS never parses those fields locally,
-so the same digitless utterance still reaches iOS's gate with no authority; that
-pre-existing gap is recorded on the parity-ledger row.
+which the gate would otherwise drop in silence. iOS never parses those seven fields
+locally, so it recognises their command shapes separately
+(`ApplyFieldIntent.forwardOnlyField`) only to grant the same gate-only authority
+(Decision W-5, Derek, 2026-09-26). The backend's pre-LLM gate admits the same shapes as
+`has_forwarded_apply_field` whatever `VOICE_AGENTIC_ANSWERS` says
+(`isForwardedApplyFieldCommand` in `src/extraction/pre-llm-gate.js`, Decision W-5b);
+its alias table is pinned to web's by a source-parity test. Rows 4 and 5 still rest on
+`VOICE_AGENTIC_ANSWERS`, as PLAN-CD's hand-off does.
 
 **Why the regex is bypassed.** A declined final skips the whole regex layer: no
 freshness admit, no match, no regex write or hint and, on iOS, no fast-path candidate
