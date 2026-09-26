@@ -190,21 +190,37 @@ function captureSpansFor(slot, text) {
   return [captures];
 }
 
-// A correction marker belongs to ANOTHER slot when the first value after it
-// lies inside that slot's capture: "type B, actually BS 3871" corrects the BS
-// standard, not the type. Otherwise — an unlabelled value ("no, 28") or no
-// value at all ("no issues") — it retracts the capture before it.
-function markerAttributedElsewhere(text, markerEnd, otherCaptures) {
+// A correction or contrast marker belongs to ANOTHER slot when that slot's
+// capture is the next thing after it AND nothing between the marker and that
+// capture reads as a value of the captured slot itself: "type B, actually BS
+// 3871" corrects the BS standard, not the type. Anything else retracts the
+// capture before the marker — an unlabelled value of the same slot ("no, 28";
+// "…type AC but this one is A, BS EN 61008", where "A" is an RCD type), or no
+// value at all ("no issues").
+//
+// Review cycle 2: the first version looked only for the first DIGIT after the
+// marker, so a non-numeric competing value ("A") slipped past it to a later
+// sibling capture. The captured slot's own parser now judges each word.
+function markerAttributedElsewhere(text, markerEnd, slot, otherCaptures) {
   const next = otherCaptures
     .filter((c) => c.start >= markerEnd)
     .reduce((best, c) => (best === null || c.start < best.start ? c : best), null);
   if (next === null) return false;
-  const digit = /\d/.exec(text.slice(markerEnd));
-  const firstDigit = digit ? markerEnd + digit.index : null;
-  return firstDigit === null || firstDigit >= next.start;
+  const between = text.slice(markerEnd, next.start);
+  for (const word of between.split(/[^A-Za-z0-9.>∞]+/)) {
+    if (!word) continue;
+    let parsed = null;
+    try {
+      parsed = slot.parser(word);
+    } catch {
+      parsed = null;
+    }
+    if (parsed !== null && parsed !== undefined) return false;
+  }
+  return true;
 }
 
-function capturesAreAmbiguous(text, captures, otherCaptures) {
+function capturesAreAmbiguous(text, captures, otherCaptures, slot) {
   if (captures.length === 0) return false;
   const distinct = new Set(captures.map((c) => String(c.value)));
   if (distinct.size >= 2) return true;
@@ -223,7 +239,9 @@ function capturesAreAmbiguous(text, captures, otherCaptures) {
     markers.lastIndex = c.end;
     let m;
     while ((m = markers.exec(text)) !== null) {
-      if (!markerAttributedElsewhere(text, m.index + m[0].length, otherCaptures)) return true;
+      if (!markerAttributedElsewhere(text, m.index + m[0].length, slot, otherCaptures)) {
+        return true;
+      }
     }
   }
   return false;
@@ -255,7 +273,7 @@ export function findAmbiguousNamedCapture(text, slots) {
       .filter((entry) => entry.slot !== slot)
       .flatMap((entry) => entry.groups.flat());
     for (const captures of groups) {
-      if (capturesAreAmbiguous(text, captures, otherCaptures)) {
+      if (capturesAreAmbiguous(text, captures, otherCaptures, slot)) {
         return {
           field: slot.field,
           values: [...new Set(captures.map((c) => String(c.value)))],
