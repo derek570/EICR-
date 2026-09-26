@@ -39,6 +39,12 @@ import { NUMERIC_READING_FIELDS, canonicaliseNumericReadingField } from './value
 // section below).
 import { canonicaliseCircuitDesignation } from './designation-canonicaliser.js';
 import { parseOcpdStandard } from './dialogue-engine/parsers/bs-code.js';
+import {
+  matchSoleValueReply,
+  SOLE_VALUE_GRAMMARS,
+  fieldUnitFamily,
+  unitFamilyOf,
+} from './sole-value-reply.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
 // stage6-tool-schemas.js (lines 33-42) — under this project's ES-modules +
@@ -2767,18 +2773,22 @@ function buildWrite(pendingWrite, circuitRef, contextBoardId = null) {
 // The value-resolve pulls the same trick as the circuit-resolver: deterministic
 // matcher first, escalate when ambiguous. Legitimate reply shapes:
 //
-//   - bare numeric ("0.47", "naught point four seven" — already normalised)
-//   - "is 0.47" / "the value is 0.47"
-//   - corrected ("0.7 no 0.47" — take the LAST numeric, lower confidence)
+//   - bare numeric ("0.47", ".43", "naught point four seven" — already normalised)
+//   - "it's 0.47" / "the value is 0.47" / "Zs is 0.47" (the asked field's label)
 //   - sentinel ("LIM" / "OL" / "infinity" / "discontinuous" — emit ∞ when on
 //     a continuity field; escalate when on a non-continuity field)
 //   - cancel ("skip", "never mind") — same set as the circuit resolver
 //
-// Anything more complex (multiple distinct numerics for ONE field, free-form
-// sentences) escalates back to Sonnet with a parsed_hint. Conservative-by-
-// default — misrouting a number is a worse failure than one extra turn.
+// PLAN-W1 M2b (Decision 7): each shape must be the WHOLE reply
+// (sole-value-reply.js). Anything else — two numerics, a correction, a unit
+// from another field, free-form sentences — escalates back to the model with a
+// parsed_hint. Conservative by default: misrouting a number is a worse failure
+// than one extra turn.
 
-const NUMERIC_PATTERN = /-?\d+(?:\.\d+)?/g;
+// PLAN-W1 M2b (A-2) — leading-dot arm: Deepgram renders "point four three"
+// as ".43", which the old pattern read as 43. Used only to list numerics in an
+// escalation hint now; a write needs a sole-value reply (see below).
+const NUMERIC_PATTERN = /-?(?:\d+(?:\.\d+)?|\.\d+)/g;
 const DISCONTINUOUS_PHRASES = [
   'discontinuous',
   'disconnected',
@@ -2893,83 +2903,64 @@ export function resolveValueAnswer({
     return { kind: 'cancel' };
   }
 
-  // "Limitation" sentinel (word-boundaried) — a continuity "limitation" reply
-  // writes the STRING "LIM", never ∞ and never a silent drop. Checked BEFORE
-  // the discontinuous branch so "limb"/"lim" can no longer fall through to ∞.
-  // Field report 2026-06-24 #2: "Limb." silently wrote ring_r1_ohm = ∞.
-  // P3 (2026-07-23, feedback id 86) — LIM is a valid reading for EVERY numeric
-  // reading field, not just the continuity ones. Previously this branch was
-  // gated on CONTINUITY_FIELDS, so a LIM reply for e.g. measured_zs_ohm (a
-  // non-continuity numeric field) fell through to terminalApology instead of
-  // writing. Broaden the LIM branch to accept every alias-normalised
-  // NUMERIC_READING_FIELDS member (rcd_trip_time → rcd_time_ms etc.); the
-  // discontinuous/open/∞ branch below stays continuity-only (CONTINUITY_FIELDS
-  // is a strict subset of NUMERIC_READING_FIELDS, so this only ADDS).
-  if (LIM_RE.test(lower)) {
-    if (NUMERIC_READING_FIELDS.has(canonicaliseNumericReadingField(contextField))) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites('LIM', 0.9),
-      };
+  // PLAN-W1 M2b (Decision 7; B-48, B-49, A-2) — a value reply writes ONLY
+  // when the WHOLE reply is one value of the asked field. The old checks read
+  // the reply anywhere: "It's not LIM, it's 0.4" wrote LIM, "I'll have to open
+  // it up" wrote ∞, "Give me 2 seconds" wrote 2, and "0.47, not 0.7" wrote the
+  // LAST numeric, 0.7. Anything that is not a sole value escalates, and the
+  // dispatcher hands the reply to the model as `value_escalated` with the hint.
+  const sole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.reading, { contextField });
+  if (sole) {
+    // W1-2 — an explicit unit must belong to the asked field's unit family; a
+    // field with no family suffix accepts no explicit unit at all.
+    if (sole.unit) {
+      const fieldFamily = fieldUnitFamily(contextField);
+      if (fieldFamily === null || unitFamilyOf(sole.unit) !== fieldFamily) {
+        return { kind: 'escalate', parsed_hint: `unit_mismatch:${sole.unit.toLowerCase()}` };
+      }
     }
-    return {
-      kind: 'escalate',
-      parsed_hint: 'lim_on_non_numeric_reading_field',
-    };
+    // "Limitation" sentinel — a STRING "LIM", never ∞ (field report 2026-06-24
+    // #2: "Limb." once wrote ring_r1_ohm = ∞). P3 (2026-07-23, feedback id 86):
+    // valid for EVERY alias-normalised numeric reading field.
+    if (LIM_RE.test(sole.value)) {
+      if (NUMERIC_READING_FIELDS.has(canonicaliseNumericReadingField(contextField))) {
+        return { kind: 'auto_resolve', writes: buildWrites('LIM', 0.9) };
+      }
+      return { kind: 'escalate', parsed_hint: 'lim_on_non_numeric_reading_field' };
+    }
+    // Discontinuous / open-circuit sentinel — ∞ per the prompt contract, on the
+    // continuity fields only.
+    if (DISCONTINUOUS_RE.test(sole.value) || /^open\s+ring$/i.test(sole.value)) {
+      if (CONTINUITY_FIELDS.includes(contextField)) {
+        return { kind: 'auto_resolve', writes: buildWrites('∞', 0.9) };
+      }
+      return { kind: 'escalate', parsed_hint: 'discontinuous_on_non_continuity_field' };
+    }
+    return { kind: 'auto_resolve', writes: buildWrites(normaliseLeadingDot(sole.value), 0.9) };
   }
 
-  // Discontinuous / open-circuit sentinel — emit ∞ per the prompt contract
-  // (line 58 of sonnet_agentic_system.md). Only valid for ring continuity /
-  // r2 / r1+r2 fields; others escalate. Word-boundaried (DISCONTINUOUS_RE) so
-  // "ol"/"open" never bite mid-word.
-  if (DISCONTINUOUS_RE.test(lower)) {
-    if (CONTINUITY_FIELDS.includes(contextField)) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites('∞', 0.9),
-      };
-    }
-    return {
-      kind: 'escalate',
-      parsed_hint: 'discontinuous_on_non_continuity_field',
-    };
-  }
-
-  // Numeric extraction — find every numeric in the reply.
-  const matches = text.match(NUMERIC_PATTERN);
-  if (!matches || matches.length === 0) {
-    return { kind: 'escalate', parsed_hint: 'no_numeric_in_reply' };
-  }
-  // De-dup consecutive identicals ("0.47 0.47" → ["0.47"]). Distinct
-  // numerics across the reply are NOT collapsed — that's an over-spec for a
-  // single-field ask and we'd rather escalate.
+  // Not a sole value. The hint tells the model why.
+  const matches = text.match(NUMERIC_PATTERN) ?? [];
   const distinctNumerics = [];
   for (const m of matches) {
-    if (distinctNumerics[distinctNumerics.length - 1] !== m) {
-      distinctNumerics.push(m);
-    }
+    const n = normaliseLeadingDot(m);
+    if (!distinctNumerics.includes(n)) distinctNumerics.push(n);
   }
   if (distinctNumerics.length > 1) {
-    // "0.7 no 0.47" / "actually 0.47" — correction marker between
-    // numerics → take the last. Anything else escalates.
-    const correctionMarker = /\b(no|not|actually|sorry|wait|cancel that|i meant|scratch that)\b/i;
-    if (correctionMarker.test(text)) {
-      return {
-        kind: 'auto_resolve',
-        writes: buildWrites(distinctNumerics[distinctNumerics.length - 1], 0.85),
-      };
-    }
-    return {
-      kind: 'escalate',
-      parsed_hint: `multiple_numerics:${distinctNumerics.join(',')}`,
-    };
+    return { kind: 'escalate', parsed_hint: `multiple_numerics:${distinctNumerics.join(',')}` };
   }
+  if (distinctNumerics.length === 0 && !LIM_RE.test(lower) && !DISCONTINUOUS_RE.test(lower)) {
+    return { kind: 'escalate', parsed_hint: 'no_numeric_in_reply' };
+  }
+  return { kind: 'escalate', parsed_hint: 'reply_not_value_only' };
+}
 
-  // Single numeric — write it.
-  return {
-    kind: 'auto_resolve',
-    writes: buildWrites(distinctNumerics[0], 0.9),
-  };
+/** ".43" → "0.43", "-.5" → "-0.5"; anything else unchanged. */
+function normaliseLeadingDot(value) {
+  if (typeof value !== 'string') return value;
+  if (value.startsWith('.')) return `0${value}`;
+  if (value.startsWith('-.')) return `-0${value.slice(1)}`;
+  return value;
 }
 
 // ---------------------------------------------------------------------------

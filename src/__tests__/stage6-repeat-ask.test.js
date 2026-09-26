@@ -152,6 +152,25 @@ describe('classifyAskReply — the plan classifier table', () => {
         parsed_hint: 'multiple_numerics:0.21,0.47',
       },
     ],
+    // PLAN-W1 M2b — the two new sole-value hints.
+    [
+      'reply_not_value_only',
+      {
+        answered: true,
+        untrusted_user_text: '0.47 I think',
+        match_status: 'value_escalated',
+        parsed_hint: 'reply_not_value_only',
+      },
+    ],
+    [
+      'unit_mismatch:milliseconds',
+      {
+        answered: true,
+        untrusted_user_text: '25 milliseconds',
+        match_status: 'value_escalated',
+        parsed_hint: 'unit_mismatch:milliseconds',
+      },
+    ],
   ])('%s counts as unusable', (_label, body) => {
     const verdict = classifyAskReply({
       input,

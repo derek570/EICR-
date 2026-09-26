@@ -77,19 +77,18 @@ describe('resolveValueAnswer — happy path', () => {
     expect(verdict.writes[0].circuit).toBe(3);
   });
 
-  test('"0.7 no 0.47" correction pattern — takes the LAST numeric (lower confidence)', () => {
+  test('"0.7 no 0.47" correction pattern — escalates to the model (PLAN-W1 M2b)', () => {
     // Verbatim from session 08469BFC: user said "lives are 0.7 no. No.",
-    // then "0.47". Inside the correction pattern the resolver picks the
-    // last value AND lowers confidence to 0.85 to surface the rephrase.
+    // then "0.47". The resolver used to take the LAST numeric; "0.47, not
+    // 0.7" then wrote 0.7. Decision 7: two numerics are not a sole value, so
+    // the model reads the reply and writes or asks.
     const verdict = resolveValueAnswer({
       userText: '0.7 no 0.47',
       contextField: 'ring_r1_ohm',
       contextCircuit: 6,
       sourceTurnId: 'turn-12',
     });
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('0.47');
-    expect(verdict.writes[0].confidence).toBe(0.85);
+    expect(verdict).toEqual({ kind: 'escalate', parsed_hint: 'multiple_numerics:0.7,0.47' });
   });
 
   test('integer answer ("32") for OCPD rating → auto-resolved', () => {
@@ -356,7 +355,7 @@ describe('multi-circuit value resolve (session C0C21546 2026-06-04)', () => {
     expect(verdict.writes.every((w) => w.confidence === 0.9)).toBe(true);
   });
 
-  test('corrected reply "0.7 no 0.47" with contextCircuits [3,4] fans out two writes at 0.85', () => {
+  test('corrected reply "0.7 no 0.47" with contextCircuits [3,4] escalates (PLAN-W1 M2b)', () => {
     const verdict = resolveValueAnswer({
       userText: '0.7 no 0.47',
       contextField: 'measured_zs_ohm',
@@ -364,10 +363,7 @@ describe('multi-circuit value resolve (session C0C21546 2026-06-04)', () => {
       contextCircuits: [3, 4],
       sourceTurnId: 'turn-x',
     });
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes).toHaveLength(2);
-    expect(verdict.writes.every((w) => w.value === '0.47')).toBe(true);
-    expect(verdict.writes.every((w) => w.confidence === 0.85)).toBe(true);
+    expect(verdict).toEqual({ kind: 'escalate', parsed_hint: 'multiple_numerics:0.7,0.47' });
   });
 
   test('contextCircuits length-1 with no contextCircuit → no_value_context (validator normally blocks, resolver defends)', () => {
@@ -416,5 +412,73 @@ describe('non-circuit context-field guard (value resolver, multi-circuit fan-out
       sourceTurnId: 't',
     });
     expect(verdict.kind).toBe('no_value_context');
+  });
+});
+
+// PLAN-W1 M2b (B-48, B-49, A-2) — a value reply writes only when the WHOLE
+// reply is one value of the asked field. Every red proof below wrote on main.
+describe('PLAN-W1 M2b — sole-value replies only', () => {
+  const resolve = (userText, contextField = 'r1_r2_ohm') =>
+    resolveValueAnswer({ userText, contextField, contextCircuit: 5, sourceTurnId: 't' });
+
+  test.each([
+    ['0.47, not 0.7', 'measured_zs_ohm', 'multiple_numerics:0.47,0.7'],
+    ["It's not LIM, it's 0.4", 'measured_zs_ohm', 'reply_not_value_only'],
+    ["I'll have to open it up", 'r1_r2_ohm', 'reply_not_value_only'],
+    ['Give me 2 seconds', 'measured_zs_ohm', 'reply_not_value_only'],
+  ])('red proof: "%s" (%s) escalates %s', (reply, field, hint) => {
+    expect(resolve(reply, field)).toEqual({ kind: 'escalate', parsed_hint: hint });
+  });
+
+  test('red proof A-2: ".43" writes 0.43, not 43', () => {
+    const v = resolve('.43', 'ring_r1_ohm');
+    expect(v.kind).toBe('auto_resolve');
+    expect(v.writes[0].value).toBe('0.43');
+  });
+
+  test('"-.5" normalises to -0.5', () => {
+    expect(resolve('-.5', 'measured_zs_ohm').writes[0].value).toBe('-0.5');
+  });
+
+  test.each([
+    ['25 milliseconds', 'measured_zs_ohm', 'unit_mismatch:milliseconds'],
+    ['0.35 ohms', 'rcd_time_ms', 'unit_mismatch:ohms'],
+  ])('red proof W1-2: "%s" for %s escalates %s', (reply, field, hint) => {
+    expect(resolve(reply, field)).toEqual({ kind: 'escalate', parsed_hint: hint });
+  });
+
+  test('the old one → no_numeric_in_reply', () => {
+    expect(resolve('the old one', 'measured_zs_ohm')).toEqual({
+      kind: 'escalate',
+      parsed_hint: 'no_numeric_in_reply',
+    });
+  });
+
+  test.each([
+    ['0.47', 'measured_zs_ohm', '0.47'],
+    ["it's 0.47 ohms", 'measured_zs_ohm', '0.47'],
+    ['25 milliseconds', 'rcd_time_ms', '25'],
+    ['Zs is 0.47', 'measured_zs_ohm', '0.47'],
+    ['LIM', 'measured_zs_ohm', 'LIM'],
+    ['open circuit', 'r2_ohm', '∞'],
+  ])('control: "%s" (%s) auto-resolves %s', (reply, field, value) => {
+    const v = resolve(reply, field);
+    expect(v.kind).toBe('auto_resolve');
+    expect(v.writes[0].value).toBe(value);
+  });
+
+  test('W1-21: a field outside the numeric reading set still writes a bare value, and escalates a unit the grammar does not know', () => {
+    expect(resolve('2.5', 'live_csa_mm2')).toMatchObject({ kind: 'auto_resolve' });
+    expect(resolve('2.5 mm', 'live_csa_mm2')).toEqual({
+      kind: 'escalate',
+      parsed_hint: 'reply_not_value_only',
+    });
+  });
+
+  test('a family-less field escalates any explicit unit', () => {
+    expect(resolve('2.5 ohms', 'live_csa_mm2')).toEqual({
+      kind: 'escalate',
+      parsed_hint: 'unit_mismatch:ohms',
+    });
   });
 });

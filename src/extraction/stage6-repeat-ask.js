@@ -52,7 +52,11 @@ function parseBody(result) {
 function isUnusableValueHint(parsedHint) {
   return (
     parsedHint === 'no_numeric_in_reply' ||
-    (typeof parsedHint === 'string' && parsedHint.startsWith('multiple_numerics:'))
+    // PLAN-W1 M2b — a chatty reply or a unit from another field is as
+    // unusable as no number at all. Information only; it gates nothing.
+    parsedHint === 'reply_not_value_only' ||
+    (typeof parsedHint === 'string' &&
+      (parsedHint.startsWith('multiple_numerics:') || parsedHint.startsWith('unit_mismatch:')))
   );
 }
 

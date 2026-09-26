@@ -3903,6 +3903,16 @@ async function runPendingValueChain(args) {
           continue;
         }
         if (verdict.kind === 'cancel') return movedOn('cancelled');
+        // PLAN-W1 M2b — the interim cost Derek accepted (Decision W-1.2): a
+        // reply that is not a sole value gets the canned apology where main
+        // wrote a first-number guess, until the backend asks plan (B-60 to
+        // B-63) hands it to the model. Logged so the rate is measurable.
+        logger?.info?.('stage6.pvr_value_not_sole', {
+          sessionId,
+          field: fieldKey,
+          circuit,
+          parsed_hint: verdict.parsed_hint ?? null,
+        });
         return terminalApology();
       }
       // No circuit yet — capture the numeric and loop (shape 3 handles scope).
