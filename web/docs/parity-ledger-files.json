@@ -10,7 +10,8 @@
     "recording/dictated-readback-policy",
     "recording/ze-accepted-alias-consistency",
     "circuits/ocpd-bs-en-free-text-client",
-    "circuits/ocpd-type-free-text"
+    "circuits/ocpd-type-free-text",
+    "recording/apply-field-value-contract"
   ],
   "web/src/app/alerts/page.tsx": [
     "dashboard/alertsview",
@@ -589,7 +590,8 @@
     "recording/ze-accepted-alias-consistency",
     "recording/regex-occurrence-freshness",
     "recording/poor-signal-probe",
-    "recording/voice-pause"
+    "recording/voice-pause",
+    "recording/apply-field-value-contract"
   ],
   "web/src/lib/recording/apply-ccu-analysis.ts": [
     "ccu-flow/off-peak-mode",
@@ -794,5 +796,8 @@
   ],
   "config/ocpd-type-suggestions.json": [
     "circuits/ocpd-type-free-text"
+  ],
+  "web/src/lib/recording/apply-field-routing.ts": [
+    "recording/apply-field-value-contract"
   ]
 }
