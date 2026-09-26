@@ -1,0 +1,969 @@
+{
+  "$comment": "PLAN-W2 (Decision 7 wrong-value wave, 2026-09-26) — the apply-field VALUE contract. CROSS-CLIENT CONTRACT: it decides whether a value that a client's LOCAL apply-field parser pulled out of an utterance is ACCEPTED (and what is stored and spoken) or UNRESOLVED (handed to the model, never guessed). It covers the 12 boolean and numeric fields both clients parse locally. Rules, applied to the value residue after the parser strips one leading 'is ', 'to ' or '= ': trim whitespace, strip `leading_trim_pattern` and `trailing_trim_pattern` (edge punctuation `.,;:!?`, keeping a leading decimal point that a digit follows), then lowercase. The trimmed residue, in the parser's case, is also the `heard` text a lag line quotes. NUMERIC: the residue must match `number_pattern`; every whitespace-separated token after the number must be in that field's `units`; stored and spoken are the number capture. BOOLEAN: the residue must hold exactly ONE distinct whitespace-separated token and it must be a `boolean_vocabulary` token; stored is the sigil, spoken is the word. Everything else is unresolved. `labels` and `lag_line` pin the one line a declined command speaks when it cannot be forwarded. web/ tests read this file directly; CertMateUnified keeps a byte-identical copy at Tests/CertMateUnifiedTests/Fixtures/apply-field-value-vectors.json pinned by paired SHA-256 digest constants, and scripts/check-apply-field-value-fixture-sync.sh byte-compares the two as a named pre-TestFlight step in deploy-testflight.sh.",
+  "plan": "PLAN-W2-2026-09-26",
+  "leading_trim_pattern": "^(?:[,;:!?]|\\.(?![0-9]))+",
+  "trailing_trim_pattern": "[.,;:!?]+$",
+  "number_pattern": "^([0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)\\s*(.*)$",
+  "fields": [
+    {
+      "kind": "boolean",
+      "ios_key": "polarity",
+      "web_field": "polarity_confirmed",
+      "units": []
+    },
+    {
+      "kind": "boolean",
+      "ios_key": "rcd_button",
+      "web_field": "rcd_button_confirmed",
+      "units": []
+    },
+    {
+      "kind": "boolean",
+      "ios_key": "afdd_button",
+      "web_field": "afdd_button_confirmed",
+      "units": []
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "rcd_trip_time",
+      "web_field": "rcd_time_ms",
+      "units": [
+        "ms",
+        "msec",
+        "millisecond",
+        "milliseconds"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "ir_test_voltage",
+      "web_field": "ir_test_voltage_v",
+      "units": [
+        "v",
+        "volt",
+        "volts"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "ocpd_rating",
+      "web_field": "ocpd_rating_a",
+      "units": [
+        "a",
+        "amp",
+        "amps",
+        "ampere",
+        "amperes"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "rcd_rating",
+      "web_field": "rcd_rating_a",
+      "units": [
+        "a",
+        "amp",
+        "amps",
+        "ampere",
+        "amperes"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "rcd_operating_current",
+      "web_field": "rcd_operating_current_ma",
+      "units": [
+        "ma",
+        "milliamp",
+        "milliamps"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "disconnect_time",
+      "web_field": "max_disconnect_time_s",
+      "units": [
+        "s",
+        "sec",
+        "secs",
+        "second",
+        "seconds"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "number_of_points",
+      "web_field": "number_of_points",
+      "units": [
+        "point",
+        "points"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "ocpd_breaking_capacity",
+      "web_field": "ocpd_breaking_capacity_ka",
+      "units": [
+        "ka",
+        "k",
+        "kiloamp",
+        "kiloamps"
+      ]
+    },
+    {
+      "kind": "numeric",
+      "ios_key": "ocpd_max_zs",
+      "web_field": "ocpd_max_zs_ohm",
+      "units": [
+        "ω",
+        "ohm",
+        "ohms"
+      ]
+    }
+  ],
+  "boolean_vocabulary": [
+    {
+      "token": "ok",
+      "stored": "✓",
+      "spoken": "ok"
+    },
+    {
+      "token": "correct",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "token": "confirmed",
+      "stored": "✓",
+      "spoken": "confirmed"
+    },
+    {
+      "token": "yes",
+      "stored": "✓",
+      "spoken": "yes"
+    },
+    {
+      "token": "true",
+      "stored": "✓",
+      "spoken": "true"
+    },
+    {
+      "token": "pass",
+      "stored": "✓",
+      "spoken": "pass"
+    },
+    {
+      "token": "✓",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "token": "✔",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "token": "1",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "token": "worked",
+      "stored": "✓",
+      "spoken": "worked"
+    },
+    {
+      "token": "works",
+      "stored": "✓",
+      "spoken": "works"
+    },
+    {
+      "token": "operated",
+      "stored": "✓",
+      "spoken": "operated"
+    },
+    {
+      "token": "operates",
+      "stored": "✓",
+      "spoken": "operates"
+    },
+    {
+      "token": "okay",
+      "stored": "✓",
+      "spoken": "okay"
+    },
+    {
+      "token": "passed",
+      "stored": "✓",
+      "spoken": "passed"
+    },
+    {
+      "token": "fail",
+      "stored": "✗",
+      "spoken": "fail"
+    },
+    {
+      "token": "failed",
+      "stored": "✗",
+      "spoken": "failed"
+    }
+  ],
+  "labels": [
+    {
+      "ios_key": "rcd_trip_time",
+      "web_field": "rcd_time_ms",
+      "label": "RCD trip time"
+    },
+    {
+      "ios_key": "ir_test_voltage",
+      "web_field": "ir_test_voltage_v",
+      "label": "insulation test voltage"
+    },
+    {
+      "ios_key": "rcd_button",
+      "web_field": "rcd_button_confirmed",
+      "label": "RCD test button"
+    },
+    {
+      "ios_key": "afdd_button",
+      "web_field": "afdd_button_confirmed",
+      "label": "AFDD test button"
+    },
+    {
+      "ios_key": "polarity",
+      "web_field": "polarity_confirmed",
+      "label": "polarity"
+    },
+    {
+      "ios_key": "wiring_type",
+      "web_field": "wiring_type",
+      "label": "wiring type"
+    },
+    {
+      "ios_key": "ref_method",
+      "web_field": "ref_method",
+      "label": "reference method"
+    },
+    {
+      "ios_key": "disconnect_time",
+      "web_field": "max_disconnect_time_s",
+      "label": "disconnection time"
+    },
+    {
+      "ios_key": "ocpd_type",
+      "web_field": "ocpd_type",
+      "label": "OCPD type"
+    },
+    {
+      "ios_key": "ocpd_rating",
+      "web_field": "ocpd_rating_a",
+      "label": "OCPD rating"
+    },
+    {
+      "ios_key": "ocpd_bs_en",
+      "web_field": "ocpd_bs_en",
+      "label": "OCPD BS EN"
+    },
+    {
+      "ios_key": "ocpd_breaking_capacity",
+      "web_field": "ocpd_breaking_capacity_ka",
+      "label": "OCPD breaking capacity"
+    },
+    {
+      "ios_key": "ocpd_max_zs",
+      "web_field": "ocpd_max_zs_ohm",
+      "label": "OCPD maximum Zs"
+    },
+    {
+      "ios_key": "rcd_type",
+      "web_field": "rcd_type",
+      "label": "RCD type"
+    },
+    {
+      "ios_key": "rcd_rating",
+      "web_field": "rcd_rating_a",
+      "label": "RCD rating"
+    },
+    {
+      "ios_key": "rcd_bs_en",
+      "web_field": "rcd_bs_en",
+      "label": "RCD BS EN"
+    },
+    {
+      "ios_key": "rcd_operating_current",
+      "web_field": "rcd_operating_current_ma",
+      "label": "RCD operating current"
+    },
+    {
+      "ios_key": "number_of_points",
+      "web_field": "number_of_points",
+      "label": "number of points"
+    }
+  ],
+  "lag_line": {
+    "template": "I couldn't record {label} '{heard}'. {tail}",
+    "tails": {
+      "ask": "Answer the question first, then say it again.",
+      "capture": "Finish the feedback first, then say it again.",
+      "session": "I'm not connected. Say it again in a moment."
+    }
+  },
+  "value_vectors": [
+    {
+      "field": "polarity",
+      "raw": "correct",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "field": "polarity",
+      "raw": "correct correct",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "field": "polarity",
+      "raw": "Correct.",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "field": "polarity",
+      "raw": "pass",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "pass"
+    },
+    {
+      "field": "polarity",
+      "raw": "passed",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "passed"
+    },
+    {
+      "field": "polarity",
+      "raw": "okay",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "okay"
+    },
+    {
+      "field": "polarity",
+      "raw": "ok",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "ok"
+    },
+    {
+      "field": "polarity",
+      "raw": "yes",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "yes"
+    },
+    {
+      "field": "polarity",
+      "raw": "✓",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "field": "polarity",
+      "raw": "1",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "field": "polarity",
+      "raw": "fail",
+      "outcome": "accepted",
+      "stored": "✗",
+      "spoken": "fail"
+    },
+    {
+      "field": "polarity",
+      "raw": "failed",
+      "outcome": "accepted",
+      "stored": "✗",
+      "spoken": "failed"
+    },
+    {
+      "field": "polarity",
+      "raw": "not correct",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "n a",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "n/a",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "all correct",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "incorrect",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "reversed",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "no",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "polarity",
+      "raw": "correct fail",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_button",
+      "raw": "worked",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "worked"
+    },
+    {
+      "field": "rcd_button",
+      "raw": "works",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "works"
+    },
+    {
+      "field": "rcd_button",
+      "raw": "operated",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "operated"
+    },
+    {
+      "field": "rcd_button",
+      "raw": "not tested",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "afdd_button",
+      "raw": "operates",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "operates"
+    },
+    {
+      "field": "afdd_button",
+      "raw": "confirmed",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "confirmed"
+    },
+    {
+      "field": "afdd_button",
+      "raw": "n/a",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25 ms",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25ms",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25 milliseconds",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25.5 msec",
+      "outcome": "accepted",
+      "stored": "25.5",
+      "spoken": "25.5"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25 to 30",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "greater than 300",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "about 25",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25 plus",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "ms 25",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "ir_test_voltage",
+      "raw": "250 volts",
+      "outcome": "accepted",
+      "stored": "250",
+      "spoken": "250"
+    },
+    {
+      "field": "ir_test_voltage",
+      "raw": "500 v",
+      "outcome": "accepted",
+      "stored": "500",
+      "spoken": "500"
+    },
+    {
+      "field": "ir_test_voltage",
+      "raw": "500",
+      "outcome": "accepted",
+      "stored": "500",
+      "spoken": "500"
+    },
+    {
+      "field": "ir_test_voltage",
+      "raw": "1,000",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "ocpd_rating",
+      "raw": "32",
+      "outcome": "accepted",
+      "stored": "32",
+      "spoken": "32"
+    },
+    {
+      "field": "ocpd_rating",
+      "raw": "32 amps",
+      "outcome": "accepted",
+      "stored": "32",
+      "spoken": "32"
+    },
+    {
+      "field": "ocpd_rating",
+      "raw": "32 a",
+      "outcome": "accepted",
+      "stored": "32",
+      "spoken": "32"
+    },
+    {
+      "field": "ocpd_rating",
+      "raw": "b 32",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "ocpd_rating",
+      "raw": "32 b",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_rating",
+      "raw": "40 amps",
+      "outcome": "accepted",
+      "stored": "40",
+      "spoken": "40"
+    },
+    {
+      "field": "rcd_rating",
+      "raw": "30 ma",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_operating_current",
+      "raw": "30 ma",
+      "outcome": "accepted",
+      "stored": "30",
+      "spoken": "30"
+    },
+    {
+      "field": "rcd_operating_current",
+      "raw": "30ma",
+      "outcome": "accepted",
+      "stored": "30",
+      "spoken": "30"
+    },
+    {
+      "field": "rcd_operating_current",
+      "raw": "30 milliamps",
+      "outcome": "accepted",
+      "stored": "30",
+      "spoken": "30"
+    },
+    {
+      "field": "rcd_operating_current",
+      "raw": "30 m",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "rcd_operating_current",
+      "raw": "30 or 100",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": "0.4",
+      "outcome": "accepted",
+      "stored": "0.4",
+      "spoken": "0.4"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": ".4",
+      "outcome": "accepted",
+      "stored": ".4",
+      "spoken": ".4"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": "0.4.",
+      "outcome": "accepted",
+      "stored": "0.4",
+      "spoken": "0.4"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": "25.",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "rcd_trip_time",
+      "raw": ", 25",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": "0.4 seconds",
+      "outcome": "accepted",
+      "stored": "0.4",
+      "spoken": "0.4"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": "5 s",
+      "outcome": "accepted",
+      "stored": "5",
+      "spoken": "5"
+    },
+    {
+      "field": "disconnect_time",
+      "raw": "0.4 or 5",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "number_of_points",
+      "raw": "6",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "field": "number_of_points",
+      "raw": "6 points",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "field": "number_of_points",
+      "raw": "6 plus 2 spurs",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "number_of_points",
+      "raw": "6 plus 2",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "ocpd_breaking_capacity",
+      "raw": "6 ka",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "field": "ocpd_breaking_capacity",
+      "raw": "6ka",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "field": "ocpd_breaking_capacity",
+      "raw": "6 k",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "field": "ocpd_breaking_capacity",
+      "raw": "10 kiloamps",
+      "outcome": "accepted",
+      "stored": "10",
+      "spoken": "10"
+    },
+    {
+      "field": "ocpd_breaking_capacity",
+      "raw": "6 or 10",
+      "outcome": "unresolved"
+    },
+    {
+      "field": "ocpd_max_zs",
+      "raw": "1.37",
+      "outcome": "accepted",
+      "stored": "1.37",
+      "spoken": "1.37"
+    },
+    {
+      "field": "ocpd_max_zs",
+      "raw": "1.37 ω",
+      "outcome": "accepted",
+      "stored": "1.37",
+      "spoken": "1.37"
+    },
+    {
+      "field": "ocpd_max_zs",
+      "raw": "1.37 ohms",
+      "outcome": "accepted",
+      "stored": "1.37",
+      "spoken": "1.37"
+    },
+    {
+      "field": "ocpd_max_zs",
+      "raw": "1.37 or 2.73",
+      "outcome": "unresolved"
+    }
+  ],
+  "utterance_vectors": [
+    {
+      "utterance": "set polarity to pass for circuits 1 to 4",
+      "field": "polarity",
+      "heard": "pass",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "pass"
+    },
+    {
+      "utterance": "polarity not correct for circuit 3",
+      "field": "polarity",
+      "heard": "not correct",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "polarity correct for circuit 3",
+      "field": "polarity",
+      "heard": "correct",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "correct"
+    },
+    {
+      "utterance": "polarity failed for circuit 3",
+      "field": "polarity",
+      "heard": "failed",
+      "outcome": "accepted",
+      "stored": "✗",
+      "spoken": "failed"
+    },
+    {
+      "utterance": "polarity n a for circuit 3",
+      "field": "polarity",
+      "heard": "n a",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "polarity n/a for circuit 3",
+      "field": "polarity",
+      "heard": "n/a",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "polarity all correct for all circuits",
+      "field": "polarity",
+      "heard": "all correct",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "rcd test button worked for all circuits",
+      "field": "rcd_button",
+      "heard": "worked",
+      "outcome": "accepted",
+      "stored": "✓",
+      "spoken": "worked"
+    },
+    {
+      "utterance": "rcd test button not tested for circuit 3",
+      "field": "rcd_button",
+      "heard": "not tested",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "rcd trip time 25 ms for circuit 3",
+      "field": "rcd_trip_time",
+      "heard": "25 ms",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "utterance": "rcd trip time 25 to 30 for circuit 3",
+      "field": "rcd_trip_time",
+      "heard": "25 to 30",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "rcd trip time greater than 300 for circuit 3",
+      "field": "rcd_trip_time",
+      "heard": "greater than 300",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "rcd trip time for all circuits is 25 ms",
+      "field": "rcd_trip_time",
+      "heard": "25 ms",
+      "outcome": "accepted",
+      "stored": "25",
+      "spoken": "25"
+    },
+    {
+      "utterance": "rcd operating current 30 ma for all circuits",
+      "field": "rcd_operating_current",
+      "heard": "30 ma",
+      "outcome": "accepted",
+      "stored": "30",
+      "spoken": "30"
+    },
+    {
+      "utterance": "rcd rating 30 ma for circuit 3",
+      "field": "rcd_rating",
+      "heard": "30 ma",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "breaking capacity 6 ka for all circuits",
+      "field": "ocpd_breaking_capacity",
+      "heard": "6 ka",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "utterance": "disconnect time 0.4 seconds for circuit 2",
+      "field": "disconnect_time",
+      "heard": "0.4 seconds",
+      "outcome": "accepted",
+      "stored": "0.4",
+      "spoken": "0.4"
+    },
+    {
+      "utterance": "number of points for circuit 4 is 6 plus 2 spurs",
+      "field": "number_of_points",
+      "heard": "6 plus 2 spurs",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "number of points 6 for circuit 4",
+      "field": "number_of_points",
+      "heard": "6",
+      "outcome": "accepted",
+      "stored": "6",
+      "spoken": "6"
+    },
+    {
+      "utterance": "ocpd rating b 32 for circuit 3",
+      "field": "ocpd_rating",
+      "heard": "b 32",
+      "outcome": "unresolved"
+    },
+    {
+      "utterance": "test voltage 500 volts for all circuits",
+      "field": "ir_test_voltage",
+      "heard": "500 volts",
+      "outcome": "accepted",
+      "stored": "500",
+      "spoken": "500"
+    },
+    {
+      "utterance": "ocpd max zs 1.37 ohms for circuit 2",
+      "field": "ocpd_max_zs",
+      "heard": "1.37 ohms",
+      "outcome": "accepted",
+      "stored": "1.37",
+      "spoken": "1.37"
+    }
+  ],
+  "lag_line_vectors": [
+    {
+      "field": "polarity",
+      "heard": "not correct",
+      "tail": "ask",
+      "text": "I couldn't record polarity 'not correct'. Answer the question first, then say it again."
+    },
+    {
+      "field": "number_of_points",
+      "heard": "6 plus 2 spurs",
+      "tail": "ask",
+      "text": "I couldn't record number of points '6 plus 2 spurs'. Answer the question first, then say it again."
+    },
+    {
+      "field": "rcd_trip_time",
+      "heard": "25",
+      "tail": "capture",
+      "text": "I couldn't record RCD trip time '25'. Finish the feedback first, then say it again."
+    },
+    {
+      "field": "disconnect_time",
+      "heard": "0.4",
+      "tail": "session",
+      "text": "I couldn't record disconnection time '0.4'. I'm not connected. Say it again in a moment."
+    },
+    {
+      "field": "wiring_type",
+      "heard": "a",
+      "tail": "capture",
+      "text": "I couldn't record wiring type 'a'. Finish the feedback first, then say it again."
+    }
+  ]
+}
