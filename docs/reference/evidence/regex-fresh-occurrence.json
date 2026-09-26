@@ -22,7 +22,7 @@
       "scripts/evidence/build-regex-fresh-occurrence-evidence.mjs": "22f51b6061beb7d3d75edc41d1798c304f514d572cb16d29cf449b2d5a6ebe6e",
       "src/extraction/sonnet-stream.js": "4d40f649aa130869d1d2086e7fd2cfb105dd660569d1ef498167bbc7c87a87e8",
       "web/src/lib/job-context.tsx": "983b9bc1c271d711af6354b1470f2635eeb99c65d03a65cdc12586ecccfc3323",
-      "web/src/lib/recording-context.tsx": "305670275e203f4a2c926c062b88c90042adabffaf80c5c38ac42708ace1277a",
+      "web/src/lib/recording-context.tsx": "f43dd0855e6235eded27afb3678260e2152a4730c082e5b5bd27b0a1fede313f",
       "web/src/lib/recording/apply-extraction.ts": "61b017779e2956a4f95d287e35654933aa3ab7ee7b6dc6d00dedcce4dab9af44",
       "web/src/lib/recording/apply-regex-match.ts": "de20c80b2d332b502f97ea92b3b36a8d7429874809fafc0c5e729d09bc83e4b4",
       "web/src/lib/recording/deepgram-service.ts": "1bc6a0d1a0bf7cb97a4e066f3a51adccd6f21b545ea156fa6ccae74c20b1bbe8",
@@ -34,7 +34,7 @@
       "web/src/lib/recording/regex-fresh-occurrence.ts": "033f1c6a53324593ec5a374c850c2962782091e227bdd7af87befc9f469d7dc0",
       "web/src/lib/recording/regex-match-result.ts": "132f52a97a38a78fb5686ecb10eeea4fa9c23ef8c92ef9e4c34c2ba7a2dd72ce",
       "web/src/lib/recording/sonnet-session.ts": "6d517d986c05972f4ba936d24aa58f5c5bb49a9bbc9965321fed4257ed710c6f",
-      "web/src/lib/recording/test-services.ts": "198b9d1c1af35f4f5b28d0d6be0890566f29e41c2235335f0af53a8bea155aa1",
+      "web/src/lib/recording/test-services.ts": "d417dc960c69a059908d82ced13cd42c5b9145e4608f2d143e04cfda80082402",
       "web/src/lib/recording/transcript-field-matcher.ts": "6d9c6639fe775a98e24ff651b65ea971a7da42eaadff19300b3ce859fb8b1289",
       "web/src/lib/recording/tts.ts": "16e3b6f7f5f83c67cdf29009d44fd96440ab2d7dd356f4768a9a7651f3bdb1b4",
       "web/src/lib/recording/voiced-activity.ts": "58e5261ea695a2be8df415ac5741bab018a42f257add0cd2ec7cd7b20ec2fdad"
@@ -4117,6 +4117,15 @@
       "date": "2026-09-26",
       "files": [
         "sources: web/src/lib/recording-context.tsx"
+      ],
+      "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
+    },
+    {
+      "plan": "PLAN-W2 review cycle 1",
+      "date": "2026-09-26",
+      "files": [
+        "sources: web/src/lib/recording-context.tsx",
+        "sources: web/src/lib/recording/test-services.ts"
       ],
       "note": "Digests re-pinned to the checkout. Every recorded run result above is still A02D's and was measured against the bytes this plan changed, not against these."
     }
