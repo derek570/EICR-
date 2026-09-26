@@ -34,6 +34,11 @@ export {
   voiceCommandTargetsDesignation,
   DEVICE_ATTRIBUTE_FIELDS,
   NO_ZE_RESPONSE,
+  resolveApplyFieldValue,
+  buildApplyFieldLagLine,
+  APPLY_FIELD_VALUE_CONTRACT_FIELDS,
+  LOCAL_APPLY_FORWARDED_FIELDS,
+  __applyFieldValueContractForTests,
 } from './voice-commands';
 export type {
   VoiceCommand,
@@ -43,6 +48,7 @@ export type {
   VoiceCommandScope,
   ClientCommandMarker,
   CalculateSkipReason,
+  ApplyFieldLagTail,
 } from './voice-commands';
 export {
   GUARDED_CLOSED_ENUM_FIELDS,

@@ -533,6 +533,83 @@ widening those patterns reopens the decision.
 
 ---
 
+## Local apply-field values: accept exactly or hand to the model (PLAN-W2, Decision 7 wrong-value wave)
+
+> Added 2026-09-26. Web + iOS, plus the backend OCPD type parser (B-138). No wire change.
+
+**What changed.** Both clients parse some commands locally, such as *"RCD trip time 25 ms
+for all circuits"*. They used to guess when the value was unclear. iOS kept the first
+word of a boolean (*"polarity not correct"* stored `not`) and the first digit run of a
+number (*"6 plus 2 spurs"* stored `6`). Web ran unit strippers over every value
+(`30 mA` stored `30 m`) and stored truthy words verbatim. A local parser now accepts a
+value only when the shared contract accepts it; otherwise the model owns the turn
+(Decision 7).
+
+**The contract.** `config/apply-field-value-vectors.json` covers the 12 boolean and
+numeric fields both clients parse locally. A numeric value is a bare number followed
+only by that field's unit tokens. A boolean value is exactly one distinct token from
+the vocabulary; it stores `✓` or `✗` and the read-back speaks the dictated word, never
+the sigil. The implementations are `ApplyFieldIntent.resolveValue` (iOS) and
+`resolveApplyFieldValue` (web). For the pre-TestFlight guard, see
+[deploy-testflight.md](deploy-testflight.md).
+
+**The routing table.** A recognised apply-field command runs locally only on a job with
+0–1 boards, with an accepted value and, on web, a field that isn't a measured reading
+or cable size. Every other command is declined and takes the first matching row:
+
+| # | Condition | What happens |
+|---|---|---|
+| 1 | Feedback capture open | One lag line, capture tail. Nothing written or forwarded. |
+| 2 | Web only: no Sonnet session | One lag line, session tail. Nothing written or forwarded. |
+| 3 | Unresolved value, 0–1 boards, backend ask live | One lag line, ask tail (Decision 15). Nothing forwarded. |
+| 4 | Unresolved value, 0–1 boards | Forwarded as an ordinary transcript with PLAN-CD's local CD1 authority. |
+| 5 | 2 or more boards | Forwarded through the ordinary routing, even with an ask open (Decision W-1.4). |
+| 6 | Web only: a measured reading or cable size, 0–1 boards | Forwarded with gate-only authority, as row 5. |
+
+The lag line is `I couldn't record {label} '{heard}'. {tail}`, pinned in the fixture.
+Web's table is `routeApplyFieldCommand` in `web/src/lib/recording/apply-field-routing.ts`.
+
+Rows 5 and 6 grant a gate-only authority: it feeds only the client's transcript gate,
+never `client_command`, the regex summary or Stage 6 routing. Row 6 needs it because a
+recognised command can have no digit and only a weak trigger (*"cable n/a for all"*),
+which the gate would otherwise drop in silence. iOS never parses those seven fields
+locally, so it recognises their command shapes separately
+(`ApplyFieldIntent.forwardOnlyField`) only to grant the same gate-only authority
+(Decision W-5, Derek, 2026-09-26). The backend's pre-LLM gate admits the same shapes as
+`has_forwarded_apply_field` whatever `VOICE_AGENTIC_ANSWERS` says
+(`isForwardedApplyFieldCommand` in `src/extraction/pre-llm-gate.js`, Decision W-5b);
+its alias table is pinned to web's by a source-parity test. Rows 4 and 5 still rest on
+`VOICE_AGENTIC_ANSWERS`, as PLAN-CD's hand-off does.
+
+**Why the regex is bypassed.** A declined final skips the whole regex layer: no
+freshness admit, no match, no regex write or hint and, on iOS, no fast-path candidate
+and no legacy alert grammar. Today these utterances were consumed by the local command
+and never reached the regex, so the bypass keeps that exposure at none. Without it,
+web's regex would write what the command declined: `RCD_TIME_PATTERN` takes `25` from
+*"RCD trip time 25 to 30 for circuit 3"*. A command with text after its scope
+(*"… for circuit 3 and 4"*) isn't a command on either client; web bypasses its regex
+for that final too.
+
+**Two related iOS fixes.** The board matcher (`WorkOnBoardIntent.matchBoard`) now
+needs every phrase token in the board's designation, instead of any three shared
+characters (*"garden"* no longer switches to *"Garage"*). A no-match forwards the
+utterance with gate authority. The legacy alert grammar
+(`AlertManager.processTranscriptForResponse`) resolves nothing when a reply carries
+both polarities (*"No, that's not right"*); the reply goes to the model with its
+context.
+
+**OCPD type (B-138).** The three twins of `canonicaliseOcpdType` no longer join a
+curve letter and a rating into a spelled code. *"C, 32"*, *"C 32"* and *"B 6"* stay
+as said, so the OCPD script's type slot misses and hands the turn to the model.
+
+**Key files:** `packages/shared-utils/src/voice-commands.ts`,
+`web/src/lib/recording/apply-field-routing.ts`, `web/src/lib/recording-context.tsx`,
+`src/extraction/dialogue-engine/parsers/mcb-type.js`, CertMateUnified
+`Sources/Recording/{VoiceCommandExecutor,DeepgramRecordingViewModel,WorkOnBoardIntent,AlertManager}.swift`,
+`Sources/Utilities/OcpdType.swift`.
+
+---
+
 ## Observation apply identity (P7 — server-id keying, marker ④)
 
 > Added 2026-07-24 (feedback id 82, session 36731498). Client-only (iOS `applySonnetObservations` + web `applyObservations`); **zero backend change**.

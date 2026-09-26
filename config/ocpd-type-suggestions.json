@@ -499,6 +499,46 @@
       "input": "",
       "canonical": "",
       "script": null
+    },
+    {
+      "input": "C, 32",
+      "canonical": "C, 32",
+      "script": null
+    },
+    {
+      "input": "C 32",
+      "canonical": "C 32",
+      "script": null
+    },
+    {
+      "input": "B 16",
+      "canonical": "B 16",
+      "script": null
+    },
+    {
+      "input": "type C 32",
+      "canonical": "C 32",
+      "script": null
+    },
+    {
+      "input": "B 6",
+      "canonical": "B 6",
+      "script": null
+    },
+    {
+      "input": "C 6",
+      "canonical": "C 6",
+      "script": null
+    },
+    {
+      "input": "type C 6",
+      "canonical": "C 6",
+      "script": null
+    },
+    {
+      "input": "c 1",
+      "canonical": "c 1",
+      "script": null
     }
   ],
   "advisory_vectors": [

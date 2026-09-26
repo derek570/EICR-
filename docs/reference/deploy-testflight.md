@@ -169,6 +169,22 @@ archive succeeds and before upload, it also checks that the archived
 and the script never runs `xcodegen`, so a file missing from the committed
 `project.pbxproj` would otherwise be silently absent from the build.
 
+PLAN-W2 (2026-09-26) adds the apply-field value contract check:
+
+```bash
+IOS_REPO_ROOT=/path/to/CertMateUnified \
+  scripts/check-apply-field-value-fixture-sync.sh
+```
+
+It byte-compares `config/apply-field-value-vectors.json` with the XCTest copy under
+`Tests/CertMateUnifiedTests/Fixtures/`. The fixture decides, identically on both
+clients, whether a value a local apply-field command parsed is accepted and what is
+stored and spoken, or handed to the model. It also pins the one lag line a declined
+command speaks. Vitest and XCTest pin the same SHA-256 digest. The file is generated
+by `scripts/generate-apply-field-value-vectors.py`; never hand-edit it. A missing file
+or a differing byte fails closed, and a missing script exits 1 with
+"(PLAN-W2 mandatory preflight)". `deploy-testflight.sh` runs this as a named preflight.
+
 ## App Store Connect credentials
 
 | Field | Value |

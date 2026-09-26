@@ -38,6 +38,8 @@
 //   9. OBSERVATION_PATTERN match             → forward (HAS_OBSERVATION_PREFIX)
 //  10. hasStrongTrigger                      → forward (HAS_STRONG_TRIGGER)
 //  11. hasWeakTrigger                        → forward (HAS_WEAK_TRIGGER) [2026-05-29]
+//      (a recognised W2.7 apply-field command forwards earlier, after the
+//      A01P marker, as HAS_FORWARDED_APPLY_FIELD — PLAN-W2 Decision W-5b)
 //  12. else                                  → block   (LOW_CONTENT)
 //
 // 2026-05-31 — BYPASS_DIALOGUE_SCRIPT_ACTIVE. The dialogue engine's
@@ -402,6 +404,14 @@ export const GATE_REASONS = Object.freeze({
   // VOICE_AGENTIC_ANSWERS is off and silently lost. The marker is a forward
   // reason only: never a write, never a regex hint, never shown to the model.
   HAS_RECOGNISED_COMMAND: 'has_recognised_command',
+  // PLAN-W2 (Decision W-5b, Derek, 2026-09-26) — a recognised apply-field
+  // command for one of the seven measured-reading / cable-size fields, which
+  // both clients forward instead of applying locally. A digitless value
+  // ("cable n/a for all") has only a weak trigger and too few content words,
+  // so without this it is dropped as LOW_CONTENT whenever
+  // VOICE_AGENTIC_ANSWERS is off — after the client has already chimed. A
+  // forward reason only: never a write, never a hint, never shown to the model.
+  HAS_FORWARDED_APPLY_FIELD: 'has_forwarded_apply_field',
   // PLAN-backend-final.md Phase 5.1 (2026-06-04) — explicit forward
   // authority for inspector complaints / negations. 3 of session
   // 60754E4D's 6 voiced frustrations dropped to LOW_CONTENT under the
@@ -524,6 +534,72 @@ export function isRecognisedClientCommand(marker) {
   return typeof marker === 'string' && RECOGNISED_CLIENT_COMMANDS.has(marker);
 }
 
+/**
+ * PLAN-W2 (Decision W-5b) — the field aliases of the seven apply-field fields
+ * both clients FORWARD rather than apply locally (web
+ * `LOCAL_APPLY_FORWARDED_FIELDS`; iOS has no local alias for them). Keys are
+ * the web `CIRCUIT_FIELD_ALIASES` phrases for those fields, byte for byte:
+ * `pre-llm-gate-w2-forwarded-apply-field.test.js` compares this table with the
+ * TypeScript source so the two cannot drift.
+ */
+export const FORWARDED_APPLY_FIELD_ALIASES = Object.freeze({
+  'cable size': 'live_csa_mm2',
+  cable: 'live_csa_mm2',
+  'live csa': 'live_csa_mm2',
+  'cpc size': 'cpc_csa_mm2',
+  'cpc csa': 'cpc_csa_mm2',
+  cpc: 'cpc_csa_mm2',
+  zs: 'measured_zs_ohm',
+  'measured zs': 'measured_zs_ohm',
+  'zed s': 'measured_zs_ohm',
+  r1r2: 'r1_r2_ohm',
+  'r1 r2': 'r1_r2_ohm',
+  'r1 plus r2': 'r1_r2_ohm',
+  'r one plus r two': 'r1_r2_ohm',
+  'r 1 plus r 2': 'r1_r2_ohm',
+  r2: 'r2_ohm',
+  'ir live earth': 'ir_live_earth_mohm',
+  'ir live-earth': 'ir_live_earth_mohm',
+  'insulation resistance live earth': 'ir_live_earth_mohm',
+  'insulation resistance live-earth': 'ir_live_earth_mohm',
+  'insulation resistance l e': 'ir_live_earth_mohm',
+  'ir live live': 'ir_live_live_mohm',
+  'ir live-live': 'ir_live_live_mohm',
+  'insulation resistance live live': 'ir_live_live_mohm',
+  'insulation resistance live-live': 'ir_live_live_mohm',
+  'insulation resistance l l': 'ir_live_live_mohm',
+});
+
+const FORWARDED_APPLY_FIELD_ALIAS_ALTERNATION = Object.keys(FORWARDED_APPLY_FIELD_ALIASES)
+  .sort((a, b) => b.length - a.length || a.localeCompare(b))
+  .map((a) => a.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&'))
+  .join('|');
+const APPLY_FIELD_SCOPE = String.raw`for\s+(?:all(?:\s+circuits)?|circuits?\s+\d+(?:\s+to\s+\d+)?)`;
+// The two shapes web's parser recognises: "<field> <value> for <scope>" and
+// "<field> for <scope> is <value>", with an optional leading "set ".
+const FORWARDED_APPLY_FIELD_VALUE_FIRST = new RegExp(
+  String.raw`^(?:set\s+)?(?:${FORWARDED_APPLY_FIELD_ALIAS_ALTERNATION})\s+(\S.*?)\s+${APPLY_FIELD_SCOPE}$`,
+  'i'
+);
+const FORWARDED_APPLY_FIELD_SCOPE_FIRST = new RegExp(
+  String.raw`^(?:set\s+)?(?:${FORWARDED_APPLY_FIELD_ALIAS_ALTERNATION})\s+${APPLY_FIELD_SCOPE}\s+is\s+\S.*$`,
+  'i'
+);
+
+/**
+ * PLAN-W2 (Decision W-5b) — true when `text` is a recognised apply-field
+ * command for one of the seven forwarded fields. Trailing sentence punctuation
+ * is ignored, as web's parser ignores it.
+ */
+export function isForwardedApplyFieldCommand(text) {
+  if (typeof text !== 'string') return false;
+  const t = text
+    .trim()
+    .replace(/[.,!?]+$/, '')
+    .trim();
+  return FORWARDED_APPLY_FIELD_VALUE_FIRST.test(t) || FORWARDED_APPLY_FIELD_SCOPE_FIRST.test(t);
+}
+
 export function shouldForwardToSonnet(text, opts = {}) {
   const {
     regexResults,
@@ -565,6 +641,13 @@ export function shouldForwardToSonnet(text, opts = {}) {
   // empty transcript through. See GATE_REASONS.HAS_RECOGNISED_COMMAND.
   if (isRecognisedClientCommand(clientCommand)) {
     return { forward: true, reason: GATE_REASONS.HAS_RECOGNISED_COMMAND };
+  }
+  // PLAN-W2 (Decision W-5b) — a recognised forwarded apply-field command is
+  // admitted whatever VOICE_AGENTIC_ANSWERS says. Independent of the flag,
+  // like the A01P marker above, but carried by the text itself: the clients
+  // send no marker for it (Decision 13).
+  if (isForwardedApplyFieldCommand(trimmed)) {
+    return { forward: true, reason: GATE_REASONS.HAS_FORWARDED_APPLY_FIELD };
   }
   // PLAN-backend-final.md Phase 5.1 — complaint / negation BEFORE
   // HAS_DIGIT (deliberately). Complaints sometimes contain digits
