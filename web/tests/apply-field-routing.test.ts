@@ -80,7 +80,7 @@ describe('routeApplyFieldCommand', () => {
     expect(askLive).not.toHaveBeenCalled();
   });
 
-  it('row 6 — a W2.7 field on 0–1 boards forwards with no authority, ask live or not', () => {
+  it('row 6 — a W2.7 field on 0–1 boards forwards (gate-only authority in the wiring), ask live or not', () => {
     for (const askLive of [() => true, () => false]) {
       expect(routeApplyFieldCommand({ ...base, kind: 'forwarded_field', askLive })).toEqual({
         route: 'forward_field',

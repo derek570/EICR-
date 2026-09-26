@@ -137,8 +137,13 @@ describe('PLAN-W2 — web apply-field routing (Decision 7)', () => {
     vi.unstubAllEnvs();
   });
 
+  let teardownSonnet: (() => void) | null = null;
   async function mount(opts: { twoBoards?: boolean } = {}) {
     const h = buildHarnessServices({ sonnet: 'real-decoder' }) as unknown as Bundle;
+    teardownSonnet = null;
+    h.services.exposeSonnetTeardown = (teardown) => {
+      teardownSonnet = teardown;
+    };
     __setRecordingTestServices(h.services);
     setDiagnosticTap(h.services.diagnosticTap!);
     const apiRef: { current: RecordingApi | null } = { current: null };
@@ -343,6 +348,65 @@ describe('PLAN-W2 — web apply-field routing (Decision 7)', () => {
     expect(circuits(m)).toEqual(before);
     expect(wire(m.sonnet(), 'transcript')).toHaveLength(sentBefore);
     expect(diag(m, 'feedback_capture_continuing')).toHaveLength(continuingBefore);
+  });
+
+  // ── Row 2 / W2-4 — no Sonnet session ───────────────────────────────────
+  // No production path dispatches a final with the session null (it is torn
+  // down only alongside Deepgram, and a buffered final is dropped at teardown),
+  // so the harness nulls it through the `exposeSonnetTeardown` seam while the
+  // fake Deepgram stays live. Without the row, the forward would chime and then
+  // vanish in `sonnetRef.current?.sendTranscript`.
+  it.each([
+    ['RCD trip time 25 for circuit 3', 'RCD trip time', '25'],
+    ['Zs 0.35 for circuit 3', 'Zs', '0.35'],
+  ] as const)(
+    'row 2 — two boards, no session, "%s": one session lag line, no chime, no patch',
+    async (text, label, heard) => {
+      const m = await mount({ twoBoards: true });
+      await act(async () => {
+        teardownSonnet!();
+      });
+      const before = circuits(m);
+      const chimesBefore = m.h.chimes.count;
+      const spokenBefore = played(m.h).length;
+      await final(m.h, text);
+      expect(circuits(m)).toEqual(before);
+      expect(m.h.chimes.count).toBe(chimesBefore);
+      expect(played(m.h).slice(spokenBefore)).toEqual([
+        `I couldn't record ${label} '${heard}'. I'm not connected. Say it again in a moment.`,
+      ]);
+      expect(diag(m, 'pipeline_sonnet_send')).toEqual([]);
+    }
+  );
+
+  it('row 2 — one board, no session, a W2.7 field: the session lag line, no chime, no patch', async () => {
+    const m = await mount();
+    await act(async () => {
+      teardownSonnet!();
+    });
+    const before = circuits(m);
+    await final(m.h, 'IR live earth 200 MΩ for circuit 3');
+    expect(circuits(m)).toEqual(before);
+    expect(m.h.chimes.count).toBe(0);
+    expect(played(m.h)).toEqual([
+      "I couldn't record insulation resistance live-earth '200 mω'. I'm not connected. Say it again in a moment.",
+    ]);
+  });
+
+  // Review cycle 1 (routing BLOCKER) — a recognised W2.7 command with no digit
+  // and only a weak trigger must still reach the model, not be gate-dropped.
+  it('row 6 — "cable n/a for all": forwarded once with gate authority, nothing written, nothing spoken', async () => {
+    const m = await mount();
+    const before = circuits(m);
+    const text = 'cable n/a for all';
+    await final(m.h, text);
+    expectNoLocalWrite(m, before, text);
+    expect(wire(m.sonnet(), 'transcript').map((f) => f.text)).toEqual([text]);
+    expect(m.h.chimes.count).toBe(1);
+    expect(played(m.h)).toEqual([]);
+    const send = diag(m, 'pipeline_sonnet_send').at(-1)!.payload;
+    expect(send.cd1LocalForwardAuthority).toBe(false);
+    expect(send.clientCommand).toBeNull();
   });
 
   // ── Row 6 — W2.7 fields forward as on iOS ──────────────────────────────

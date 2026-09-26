@@ -564,10 +564,17 @@ or cable size. Every other command is declined and takes the first matching row:
 | 3 | Unresolved value, 0–1 boards, backend ask live | One lag line, ask tail (Decision 15). Nothing forwarded. |
 | 4 | Unresolved value, 0–1 boards | Forwarded as an ordinary transcript with PLAN-CD's local CD1 authority. |
 | 5 | 2 or more boards | Forwarded through the ordinary routing, even with an ask open (Decision W-1.4). |
-| 6 | Web only: a measured reading or cable size, 0–1 boards | Forwarded with no local authority, as iOS does. |
+| 6 | Web only: a measured reading or cable size, 0–1 boards | Forwarded with gate-only authority, as row 5. |
 
 The lag line is `I couldn't record {label} '{heard}'. {tail}`, pinned in the fixture.
 Web's table is `routeApplyFieldCommand` in `web/src/lib/recording/apply-field-routing.ts`.
+
+Rows 5 and 6 grant a gate-only authority: it feeds only the client's transcript gate,
+never `client_command`, the regex summary or Stage 6 routing. Row 6 needs it because a
+recognised command can have no digit and only a weak trigger (*"cable n/a for all"*),
+which the gate would otherwise drop in silence. iOS never parses those fields locally,
+so the same digitless utterance still reaches iOS's gate with no authority; that
+pre-existing gap is recorded on the parity-ledger row.
 
 **Why the regex is bypassed.** A declined final skips the whole regex layer: no
 freshness admit, no match, no regex write or hint and, on iOS, no fast-path candidate

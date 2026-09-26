@@ -2322,6 +2322,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     cumulativeTranscriptRef.current.resetText();
     regexShadowRef.current = new Map();
   }, []);
+  // PLAN-W2 (W2-4) — test seam only; see `exposeSonnetTeardown`.
+  React.useEffect(() => {
+    getRecordingTestServices()?.exposeSonnetTeardown?.(teardownSonnet);
+  }, [teardownSonnet]);
 
   const teardownSleep = React.useCallback(() => {
     sleepManagerRef.current?.stop();
@@ -2633,6 +2637,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               cd1LocalForwardAuthority = true;
               regexBypassForLocalCommand = true;
             } else if (routed.route === 'forward_field') {
+              // Gate-only authority too: a digitless value ("cable n/a for
+              // all") has only a weak trigger and would be dropped silently.
+              forwardedLocalCommand = true;
               regexBypassForLocalCommand = true;
             }
             if (boardCount > 1) {

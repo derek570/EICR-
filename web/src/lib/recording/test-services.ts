@@ -132,6 +132,13 @@ export interface RecordingTestServices {
    *  SonnetSessionCallbacks object recording-context builds (typed loosely
    *  to keep this module import-light; cast in the harness). */
   sonnetSessionFactory?: (callbacks: unknown) => SonnetSessionLike;
+  /** PLAN-W2 (W2-4) — receives the provider's `teardownSonnet`, so a harness
+   *  can null the Sonnet session while Deepgram stays live and prove the
+   *  no-session routing row end to end. No production path dispatches a final
+   *  in that state (the session is torn down only alongside Deepgram, and the
+   *  burst buffer is dropped at teardown), which is exactly why the guard needs
+   *  a seam to be tested. Never called in production: the services are null. */
+  exposeSonnetTeardown?: (teardown: () => void) => void;
   /** Replaces `startMicCapture(opts)`. */
   micCaptureFactory?: (opts: MicCaptureOptions) => Promise<MicCaptureHandle>;
   /** Replaces `ensureRuntimeConfigLoaded({force:true})` in start() — lets

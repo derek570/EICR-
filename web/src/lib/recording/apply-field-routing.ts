@@ -14,7 +14,14 @@
  * | 3 | unresolved, 0–1 boards, ask live   | lag line, ask tail (Decision 15)      |
  * | 4 | unresolved, 0–1 boards             | hand-off, CD1 authority               |
  * | 5 | 2+ boards                          | forward, gate-only authority (W-1.4)  |
- * | 6 | W2.7 field, 0–1 boards             | forward, no authority (W-1.3)         |
+ * | 6 | W2.7 field, 0–1 boards             | forward, gate-only authority (W-1.3)  |
+ *
+ * Rows 5 and 6 carry the same gate-only authority (it feeds only this client's
+ * transcript gate, never `client_command`, the regex summary or Stage 6
+ * routing). Row 6 needs it because a recognised command can have no digit and
+ * no strong trigger: "cable n/a for all" has only the weak trigger `cable`, and
+ * without the authority the gate drops it silently, where the local apply used
+ * to write it (review cycle 1). Acceptance 6: the utterance reaches the model.
  *
  * Rows 1 and 2 come first because a forward there is lost: the capture
  * swallows it, and `sonnetRef.current?.sendTranscript` is a no-op on a null
