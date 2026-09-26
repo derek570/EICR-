@@ -184,21 +184,29 @@ describe('applyVoiceCommand — calculate_impedance', () => {
 describe('parseVoiceCommand — apply_field', () => {
   it('parses "RCD test button correct for all circuits"', () => {
     const cmd = parseVoiceCommand('RCD test button correct for all circuits');
+    // PLAN-W2 (W2-N1) — a truthy word stores the tick and reads back the
+    // word; this assertion pinned the verbatim `correct` before.
     expect(cmd).toEqual({
       type: 'apply_field',
       field: 'rcd test button',
-      value: 'correct',
+      value: '✓',
       scope: { kind: 'all' },
+      spokenValue: 'correct',
+      heard: 'correct',
     });
   });
 
   it('parses "polarity pass for circuits 1 to 4" (range)', () => {
     const cmd = parseVoiceCommand('polarity pass for circuits 1 to 4');
+    // PLAN-W2 — the contract stores the sigil directly (was the `PASS`
+    // token the applier mapped later).
     expect(cmd).toEqual({
       type: 'apply_field',
       field: 'polarity',
-      value: 'PASS',
+      value: '✓',
       scope: { kind: 'range', from: 1, to: 4 },
+      spokenValue: 'pass',
+      heard: 'pass',
     });
   });
 
@@ -209,6 +217,8 @@ describe('parseVoiceCommand — apply_field', () => {
       field: 'test voltage',
       value: '250',
       scope: { kind: 'all' },
+      spokenValue: '250',
+      heard: '250 volts',
     });
   });
 });
@@ -756,5 +766,129 @@ describe('[invariant] A01P Codex cycle-2 — mixed-skip zero-write commands name
     const out = applyVoiceCommand(parseVoiceCommand('calculate Zs for all')!, job);
     expect(out.actionOutcome).toBe('applied');
     expect(out.response).toBe('Circuit 2, Zs calculated as 0.65 ohms');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// PLAN-W2 (Decision 7 wrong-value wave) — web's local apply-field parser
+// no longer mangles or guesses a value. Each case below pinned a wrong value
+// on `main` (quoted in the test name); the full vector table is in
+// `apply-field-value-contract.test.ts`.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('PLAN-W2 W2-N1 / I-22 — boolean values', () => {
+  it.each([
+    ['polarity not correct for circuit 3', 'not correct'],
+    ['polarity n/a for circuit 3', 'n/a'],
+  ])('%s is apply_field_unresolved (was stored "not correct" / "n/")', (text, heard) => {
+    expect(parseVoiceCommand(text)).toEqual({
+      type: 'apply_field_unresolved',
+      field: 'polarity_confirmed',
+      heard,
+      scope: { kind: 'single', circuit: 3 },
+    });
+  });
+
+  it('"polarity correct for circuit 3" stores ✓ (was the word "correct")', () => {
+    const cmd = parseVoiceCommand('polarity correct for circuit 3');
+    expect(cmd).toMatchObject({ type: 'apply_field', value: '✓', spokenValue: 'correct' });
+  });
+});
+
+describe('PLAN-W2 W2-N2 / I-23 — numeric values', () => {
+  it.each([
+    ['rcd operating current 30 ma for all circuits', '30'],
+    ['breaking capacity 6 ka for all circuits', '6'],
+    ['disconnect time 0.4 seconds for circuit 2', '0.4'],
+  ])('%s stores %s (was "30 m", "6 k", "0.4 seconds")', (text, stored) => {
+    expect(parseVoiceCommand(text)).toMatchObject({ type: 'apply_field', value: stored });
+  });
+
+  it('"number of points for circuit 4 is 6 plus 2 spurs" is unresolved (was stored verbatim)', () => {
+    expect(parseVoiceCommand('number of points for circuit 4 is 6 plus 2 spurs')).toEqual({
+      type: 'apply_field_unresolved',
+      field: 'number_of_points',
+      heard: '6 plus 2 spurs',
+      scope: { kind: 'single', circuit: 4 },
+    });
+  });
+
+  it('an unresolved value writes nothing and speaks nothing in the applier', () => {
+    const job = jobWithCircuits('0.35', [{ id: 'c1', circuit_ref: '3' }]);
+    const out = applyVoiceCommand(parseVoiceCommand('rcd trip time 25 to 30 for circuit 3')!, job);
+    expect(out.patch).toBeUndefined();
+    expect(out.response).toBe('');
+    expect(out.valueUnresolved).toBe(true);
+  });
+});
+
+describe('PLAN-W2 W2-N3 — measured readings and cable sizes forward (Decision W-1.3)', () => {
+  it.each([
+    ['IR live earth 200 MΩ for all circuits', 'ir_live_earth_mohm', '200 mω', { kind: 'all' }],
+    ['Zs 0.35 for circuit 3', 'measured_zs_ohm', '0.35', { kind: 'single', circuit: 3 }],
+    ['R1 plus R2 0.4 for circuit 3', 'r1_r2_ohm', '0.4', { kind: 'single', circuit: 3 }],
+    ['cable size 2.5 mm² for all circuits', 'live_csa_mm2', '2.5 mm²', { kind: 'all' }],
+  ])('%s → apply_field_forwarded (was a local apply_field)', (text, field, heard, scope) => {
+    expect(parseVoiceCommand(text)).toEqual({ type: 'apply_field_forwarded', field, heard, scope });
+  });
+
+  it('the applier writes nothing and flags the forward', () => {
+    const job = jobWithCircuits('0.35', [{ id: 'c1', circuit_ref: '3' }]);
+    const out = applyVoiceCommand(parseVoiceCommand('Zs 0.35 for circuit 3')!, job);
+    expect(out.patch).toBeUndefined();
+    expect(out.forwardedField).toBe(true);
+  });
+});
+
+describe('PLAN-W2 W2-16 — trailing text after the scope is declined', () => {
+  it.each(['rcd trip time 25 for circuit 3 and 4', 'rcd trip time 25 for circuit 3 is 30'])(
+    '%s → apply_field_trailing_scope_declined',
+    (text) => {
+      expect(parseVoiceCommand(text)).toMatchObject({
+        type: 'apply_field_trailing_scope_declined',
+        field: 'rcd_time_ms',
+      });
+    }
+  );
+
+  it('a scope with only punctuation after it still parses as a command', () => {
+    expect(parseVoiceCommand('rcd trip time 25 for circuit 3.')).toMatchObject({
+      type: 'apply_field',
+      value: '25',
+    });
+  });
+});
+
+describe('PLAN-W2 W2-2 — the boolean read-back speaks the word, never the sigil', () => {
+  const job = (): VoiceCommandJob =>
+    jobWithCircuits('0.35', [
+      { id: 'c1', circuit_ref: '1', circuit_designation: 'Lights' },
+      { id: 'c3', circuit_ref: '3', circuit_designation: 'Sockets' },
+    ]);
+
+  it('"polarity correct for circuit 3" stores ✓ and reads back "correct"', () => {
+    const out = applyVoiceCommand(parseVoiceCommand('polarity correct for circuit 3')!, job());
+    const rows = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows[1].polarity_confirmed).toBe('✓');
+    expect(out.response).toContain('correct');
+    expect(out.response).not.toContain('✓');
+  });
+
+  it('"rcd test button worked for all circuits" reads back "worked"', () => {
+    const out = applyVoiceCommand(
+      parseVoiceCommand('rcd test button worked for all circuits')!,
+      job()
+    );
+    const rows = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows.every((r) => r.rcd_button_confirmed === '✓')).toBe(true);
+    expect(out.response).toContain('worked');
+  });
+
+  it('"polarity failed for circuit 3" stores ✗ and reads back "failed"', () => {
+    const out = applyVoiceCommand(parseVoiceCommand('polarity failed for circuit 3')!, job());
+    const rows = out.patch?.circuits as Array<Record<string, unknown>>;
+    expect(rows[1].polarity_confirmed).toBe('✗');
+    expect(out.response).toContain('failed');
+    expect(out.response).not.toContain('✗');
   });
 });

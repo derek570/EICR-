@@ -55,6 +55,9 @@ describe('parseVoiceCommand — sparePolicy modifiers', () => {
       value: '250',
       scope: { kind: 'all' },
       sparePolicy: 'exclude',
+      // PLAN-W2 — a contract field carries its spoken value and heard residue.
+      spokenValue: '250',
+      heard: '250',
     });
   });
 
@@ -244,8 +247,10 @@ describe('BS/EN field aliases (web previously had none)', () => {
   // which is the ingress this plan is actually about.
   it.each([
     ['ocpd bs en', 'ocpd_bs_en', '60898', 'BS EN 60898'],
-    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', 'sixtyone', 'sixtyone'],
-    ['ocpd max zs', 'ocpd_max_zs_ohm', 'sixtyone', 'sixtyone'],
+    // PLAN-W2 — numeric fields take a number: a word is UNRESOLVED under the
+    // apply-field value contract and goes to the model instead.
+    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', '61', '61'],
+    ['ocpd max zs', 'ocpd_max_zs_ohm', '61', '61'],
     ['rcd bs en', 'rcd_bs_en', '61008', 'BS EN 61008'],
   ])(
     '"%s" maps to circuit field %s and includes spares by default',
@@ -270,12 +275,12 @@ describe('all 8 DEVICE_ATTRIBUTE_FIELDS — write-and-read-back, spares included
   it.each([
     ['ocpd bs en', 'ocpd_bs_en', '60898', 'BS EN 60898'],
     ['ocpd type', 'ocpd_type', 'B', 'B'],
-    ['ocpd rating', 'ocpd_rating_a', 'nineteen', 'nineteen'],
-    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', 'nineteen', 'nineteen'],
-    ['ocpd max zs', 'ocpd_max_zs_ohm', 'nineteen', 'nineteen'],
+    ['ocpd rating', 'ocpd_rating_a', '19', '19'],
+    ['ocpd breaking capacity', 'ocpd_breaking_capacity_ka', '19', '19'],
+    ['ocpd max zs', 'ocpd_max_zs_ohm', '19', '19'],
     ['rcd bs en', 'rcd_bs_en', '61008', 'BS EN 61008'],
     ['rcd type', 'rcd_type', 'AC', 'AC'],
-    ['rcd operating current', 'rcd_operating_current_ma', 'nineteen', 'nineteen'],
+    ['rcd operating current', 'rcd_operating_current_ma', '19', '19'],
   ])(
     '"%s" (%s) writes to every circuit incl. the spare, response names the count',
     (phrase, canonical, spoken, stored) => {

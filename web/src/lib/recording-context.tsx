@@ -211,10 +211,12 @@ import { api } from './api-client';
 import { useJobContext } from './job-context';
 import {
   applyVoiceCommand,
+  buildApplyFieldLagLine,
   clientCommandForCalculate,
   jobBoardCount,
   parseVoiceCommand,
   voiceCommandTargetsDesignation,
+  type ApplyFieldLagTail,
   type ClientCommandMarker,
   type JobZeLike,
   type VoiceCommandJob,
@@ -2539,7 +2541,32 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Sonnet would produce a second, conflicting extraction from
         // the same transcript. Anything the parser doesn't recognise
         // continues to the server-side extraction path.
-        const command = admission.bypassMutation ? null : parseVoiceCommand(text);
+        let command = admission.bypassMutation ? null : parseVoiceCommand(text);
+        // PLAN-W2 (W2.4 item 8, W2.3, W2.7) — the regex bypass for a final
+        // whose recognised apply-field command is DECLINED (not executed
+        // locally). Today every such utterance was consumed by the local
+        // command and never reached the regex block, so skipping the regex
+        // keeps that exposure at none: no freshness admit, no match, no
+        // `applyRegexMatchToJob`, no hints. It never grants gate authority.
+        let regexBypassForLocalCommand = false;
+        // PLAN-W2 — gate-only forward authority for a multi-board apply-field
+        // (routing row 5). Like a forwarded Calculate it feeds ONLY this
+        // client's `hasRegexHit` gate input: never `client_command` (Decision
+        // 13), never the regex summary, and — unlike CD1 — it never strips
+        // Stage 6 routing, so an open ask still receives it (Decision W-1.4).
+        let forwardedLocalCommand = false;
+        if (command && command.type === 'apply_field_trailing_scope_declined') {
+          // Not an apply-field command: exactly a `null` parse, except that
+          // web's regex would otherwise write part of it ("RCD trip time 25
+          // for circuit 3 and 4" → circuit 3 alone), which iOS's parser
+          // refuses too.
+          regexBypassForLocalCommand = true;
+          clientDiagnostic('apply_field_trailing_scope_declined', {
+            field: command.field,
+            textPreview: text.slice(0, 80),
+          });
+          command = null;
+        }
         // A01P (2026-09-08) — a RECOGNISED Calculate executes locally ONLY when
         // the job has at most one board (`boards` absent, empty, or exactly one
         // entry — the same test on iOS) and the parser consumed the whole
@@ -2570,6 +2597,86 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
               clientCommand: forwardedCalculate,
               textPreview: text.slice(0, 80),
             });
+          }
+        }
+        // PLAN-W2 (Decision 7) — the apply-field routing table. A recognised
+        // apply-field command executes locally only when the job has 0–1
+        // boards, the contract ACCEPTED its value, and the field is not a W2.7
+        // measured reading or cable size. Every other one is DECLINED and
+        // takes the first matching row; nothing is written locally, and
+        // nothing is spoken except the one lag line of rows 1–3.
+        //   1  capture open                 → lag line (capture tail)
+        //   2  no Sonnet session            → lag line (session tail)
+        //   3  unresolved, 0–1 boards, ask  → lag line (ask tail; Decision 15)
+        //   4  unresolved, 0–1 boards       → hand-off with CD1 authority
+        //   5  2+ boards                    → forward, gate-only authority,
+        //                                      ordinary routing (Decision W-1.4)
+        //   6  W2.7 field, 0–1 boards       → forward, no authority (as iOS)
+        // A forward during a capture is swallowed by the capture, and a
+        // forward with no session is dropped after the chime, so rows 1–2 run
+        // first; today these commands were executed locally in both cases.
+        if (
+          command &&
+          (command.type === 'apply_field' ||
+            command.type === 'apply_field_unresolved' ||
+            command.type === 'apply_field_forwarded')
+        ) {
+          const boardCount = jobBoardCount(jobRef.current as unknown as JobZeLike);
+          const declined = boardCount > 1 || command.type !== 'apply_field';
+          if (declined) {
+            const capturing = feedbackCaptureRef.current?.isCapturing === true;
+            const session = sonnetRef.current;
+            const heard =
+              command.type === 'apply_field' ? (command.heard ?? command.value) : command.heard;
+            let lagTail: ApplyFieldLagTail | null = null;
+            let route: string;
+            if (capturing) {
+              lagTail = 'capture';
+              route = 'lag_capture';
+            } else if (session == null) {
+              lagTail = 'session';
+              route = 'lag_session';
+            } else if (boardCount > 1) {
+              forwardedLocalCommand = true;
+              regexBypassForLocalCommand = true;
+              route = 'forward_multi_board';
+            } else if (command.type === 'apply_field_unresolved') {
+              if (session.hasUnresolvedBackendAsk()) {
+                lagTail = 'ask';
+                route = 'lag_ask';
+              } else {
+                cd1LocalForwardAuthority = true;
+                regexBypassForLocalCommand = true;
+                route = 'handoff';
+              }
+            } else {
+              regexBypassForLocalCommand = true;
+              route = 'forward_field';
+            }
+            if (boardCount > 1) {
+              clientDiagnostic('apply_field_forwarded', {
+                reason: 'multi_board',
+                boardCount,
+                route,
+                commandType: command.type,
+                textPreview: text.slice(0, 80),
+              });
+            } else {
+              clientDiagnostic('apply_field_value_unresolved_routed', {
+                route,
+                reason: command.type === 'apply_field_forwarded' ? 'forwarded_field' : 'unresolved',
+                field: command.field,
+                textPreview: text.slice(0, 80),
+              });
+            }
+            if (lagTail) {
+              // The lag line is a local command outcome: the protected FIFO,
+              // never the pre-empting direct `speak()` (W2.4 item 7).
+              speakLocalCommandOutcome(buildApplyFieldLagLine(command.field, heard, lagTail));
+              sleepManagerRef.current?.onSpeechActivity();
+              return;
+            }
+            command = null;
           }
         }
         if (command && forwardedCalculate === null) {
@@ -2695,6 +2802,11 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 dedupeKey: queued.dedupeKey,
                 enqueued: queued.enqueued,
               });
+            } else if (command.type === 'apply_field' && outcome.patch) {
+              // PLAN-W2 (W2.4 item 7) — an apply-field read-back takes the
+              // protected local-command FIFO, as Calculate does. The direct
+              // `speak()` pre-empts and flushes read-backs already queued.
+              speakLocalCommandOutcome(outcome.response);
             } else {
               speak(outcome.response);
             }
@@ -2825,7 +2937,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           regexMatcherRef.current &&
           fieldSourceTrackerRef.current &&
           !isAnswerToAsk &&
-          !admission.bypassMutation
+          !admission.bypassMutation &&
+          !regexBypassForLocalCommand
         ) {
           // `text` is already normalised at the top of dispatchFinal; no
           // need to re-run normaliseTranscriptText. The matcher does its
@@ -2949,6 +3062,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 .map((c) => ({ key: c.trackerKey, value: String(c.value) })),
             });
           }
+        } else if (regexMatcherRef.current && regexBypassForLocalCommand) {
+          clientDiagnostic('pipeline_regex_skipped_local_command', {
+            textPreview: text.slice(0, 80),
+          });
         } else if (regexMatcherRef.current && (isAnswerToAsk || admission.bypassMutation)) {
           clientDiagnostic('pipeline_regex_skipped_ask_answer', {
             toolCallIdShort: peekedToolCallId?.slice(0, 12) ?? null,
@@ -2982,7 +3099,10 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
           // after the local re-ask was already withdrawn — a silent drop.
           hasRegexHit: admission.bypassMutation
             ? false
-            : gateRegexHit || forwardedCalculate !== null || cd1LocalForwardAuthority,
+            : gateRegexHit ||
+              forwardedCalculate !== null ||
+              cd1LocalForwardAuthority ||
+              forwardedLocalCommand,
           hasPendingAsk: isAnswerToAsk,
           inResponseTo: peekedPayload != null,
         });

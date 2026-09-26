@@ -466,16 +466,24 @@ describe('[invariant] multi-board forwarding — the parse is discarded, the fin
     expect(r.trace.utterances[0].gate).toBe('blocked');
   });
 
-  it('apply_field on the same two-board job is unchanged: still local, no send, no marker', async () => {
+  // PLAN-W2 (I-24, Decision W-1.4) — this case used to pin the defect: a
+  // two-board apply-field wrote every board's circuits locally. It now copies
+  // Calculate: nothing is written, and the utterance forwards as an ordinary
+  // transcript. Unlike Calculate it carries no `client_command` marker
+  // (Decision 13 forbids widening that union).
+  it('apply_field on the same two-board job forwards like Calculate, with no marker and no local write', async () => {
     const r = await replayScenario(
       scenario('multi-apply-field', [{ at_ms: 0, text: 'wiring type A for all circuits' }], {
         supply: { ze: '0.50' },
         boards: twoBoards,
       })
     );
-    expect(r.trace.totals.sonnetSends).toBe(0);
-    expect(applied(r).some((f) => f.key.includes('wiring_type') && f.value === 'A')).toBe(true);
-    expect(forwarded(r)).toHaveLength(0);
+    expect(r.trace.totals.sonnetSends).toBe(1);
+    expect(applied(r).some((f) => f.key.includes('wiring_type'))).toBe(false);
+    expect(
+      r.trace.utterances[0].events.find((e) => e.kind === 'pipeline_sonnet_send')?.payload
+        .clientCommand
+    ).toBeNull();
   });
 });
 

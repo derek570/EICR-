@@ -148,6 +148,45 @@ export type VoiceCommand =
        *  default; reading fields exclude). Set ONLY when the inspector
        *  explicitly said "including spares" / "excluding spares". */
       sparePolicy?: 'automatic' | 'include' | 'exclude';
+      /** PLAN-W2 — for the three boolean fields of the apply-field value
+       *  contract, the WORD the read-back speaks (`value` holds the sigil). */
+      spokenValue?: string;
+      /** PLAN-W2 — for a contract field, the value residue as parsed, for the
+       *  one lag line a declined command speaks when it cannot be forwarded.
+       *  Absent elsewhere: the cleaned `value` is then what the line quotes. */
+      heard?: string;
+    }
+  | {
+      /** PLAN-W2 (Decision 7) — a recognised apply-field command whose value
+       *  the contract in `config/apply-field-value-vectors.json` cannot accept
+       *  ("polarity not correct", "6 plus 2 spurs"). Nothing is written
+       *  locally; the caller routes it (routing table rows 1–4). `field` is the
+       *  CANONICAL circuit field name. */
+      type: 'apply_field_unresolved';
+      field: string;
+      heard: string;
+      scope: VoiceCommandScope;
+      sparePolicy?: 'automatic' | 'include' | 'exclude';
+    }
+  | {
+      /** PLAN-W2 (Decision W-1.3) — a recognised apply-field command for a
+       *  measured reading or cable size (`LOCAL_APPLY_FORWARDED_FIELDS`). iOS
+       *  never parses these locally; web now forwards them as iOS does.
+       *  `field` is the CANONICAL circuit field name. */
+      type: 'apply_field_forwarded';
+      field: string;
+      heard: string;
+      scope: VoiceCommandScope;
+    }
+  | {
+      /** PLAN-W2 (W2.4 item 8) — a field alias, a value and a scope clause
+       *  followed by MORE text ("rcd trip time 25 for circuit 3 and 4"). Not
+       *  an apply-field command: the caller treats it exactly as a `null`
+       *  parse, except that web's regex layer is bypassed for the final so it
+       *  cannot write part of it. `field` is the CANONICAL field name. */
+      type: 'apply_field_trailing_scope_declined';
+      field: string;
+      heard: string;
     }
   | {
       /** PLAN-F item 1, Decision 3 — the utterance named BOTH include- and
@@ -233,6 +272,12 @@ export interface VoiceCommandOutcome {
    *  protected local-command speech path (`speakLocalCommandOutcome`) with
    *  one operation identity, like Calculate, so it is heard exactly once. */
   protectedLocalReadback?: boolean;
+  /** PLAN-W2 — an `apply_field_unresolved` command: nothing was written and
+   *  nothing is to be spoken here; the caller routes it (Decision 7). */
+  valueUnresolved?: boolean;
+  /** PLAN-W2 — an `apply_field_forwarded` command: nothing was written and
+   *  nothing is to be spoken here; the caller forwards it (Decision W-1.3). */
+  forwardedField?: boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -708,6 +753,192 @@ function parseCalculate(transcript: string): VoiceCommand | null {
   return { type: 'calculate_impedance', kind, scope: parsed.scope, remainder: parsed.remainder };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// PLAN-W2 (Decision 7 wrong-value wave, audit rows I-22 / I-23 / W2-N1 /
+// W2-N2) — the apply-field VALUE contract. A value the local parser pulled out
+// of an utterance is either ACCEPTED (and stored exactly as the contract says)
+// or UNRESOLVED (handed to the model, never guessed). Normative source:
+// `config/apply-field-value-vectors.json`; the iOS twin is
+// `ApplyFieldIntent.resolveValue`. `web/tests/apply-field-value-contract.test.ts`
+// runs every fixture vector through this code and compares these constants to
+// the fixture, so the two cannot drift silently.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Canonical field → accepted unit tokens after the number. */
+const APPLY_FIELD_NUMERIC_UNITS: Readonly<Record<string, readonly string[]>> = {
+  rcd_time_ms: ['ms', 'msec', 'millisecond', 'milliseconds'],
+  ir_test_voltage_v: ['v', 'volt', 'volts'],
+  ocpd_rating_a: ['a', 'amp', 'amps', 'ampere', 'amperes'],
+  rcd_rating_a: ['a', 'amp', 'amps', 'ampere', 'amperes'],
+  rcd_operating_current_ma: ['ma', 'milliamp', 'milliamps'],
+  max_disconnect_time_s: ['s', 'sec', 'secs', 'second', 'seconds'],
+  number_of_points: ['point', 'points'],
+  ocpd_breaking_capacity_ka: ['ka', 'k', 'kiloamp', 'kiloamps'],
+  ocpd_max_zs_ohm: ['ω', 'ohm', 'ohms'],
+};
+
+/** The three boolean fields of the contract. */
+const APPLY_FIELD_BOOLEAN_FIELDS: ReadonlySet<string> = new Set([
+  'polarity_confirmed',
+  'rcd_button_confirmed',
+  'afdd_button_confirmed',
+]);
+
+/** Boolean vocabulary: token → stored sigil and spoken word. The iOS truthy set
+ *  plus web's `okay` / `passed`; web's `fail` / `failed` are falsy. `✓`, `✔`
+ *  and `1` speak "correct" — the read-back never speaks a sigil. */
+const APPLY_FIELD_BOOLEAN_VOCABULARY: ReadonlyMap<string, { stored: string; spoken: string }> =
+  new Map<string, { stored: string; spoken: string }>([
+    ...[
+      'ok',
+      'correct',
+      'confirmed',
+      'yes',
+      'true',
+      'pass',
+      'worked',
+      'works',
+      'operated',
+      'operates',
+      'okay',
+      'passed',
+    ].map((t): [string, { stored: string; spoken: string }] => [t, { stored: '✓', spoken: t }]),
+    ...['✓', '✔', '1'].map((t): [string, { stored: string; spoken: string }] => [
+      t,
+      { stored: '✓', spoken: 'correct' },
+    ]),
+    ...['fail', 'failed'].map((t): [string, { stored: string; spoken: string }] => [
+      t,
+      { stored: '✗', spoken: t },
+    ]),
+  ]);
+
+const APPLY_FIELD_LEADING_TRIM = /^(?:[,;:!?]|\.(?![0-9]))+/;
+const APPLY_FIELD_TRAILING_TRIM = /[.,;:!?]+$/;
+const APPLY_FIELD_NUMBER = /^([0-9]+(?:\.[0-9]+)?|\.[0-9]+)\s*(.*)$/;
+
+/** Every canonical field the value contract covers (12). */
+export const APPLY_FIELD_VALUE_CONTRACT_FIELDS: readonly string[] = Object.freeze([
+  ...APPLY_FIELD_BOOLEAN_FIELDS,
+  ...Object.keys(APPLY_FIELD_NUMERIC_UNITS),
+]);
+
+/** PLAN-W2 (W2.7, Decision W-1.3) — measured readings and cable sizes. iOS's
+ *  `ApplyFieldIntent` has no alias for any of them, so iOS forwards the
+ *  utterance to the model; web now does the same instead of applying them
+ *  locally. The aliases stay in `CIRCUIT_FIELD_ALIASES` because model-originated
+ *  `voice_command_response` actions still resolve through them. */
+export const LOCAL_APPLY_FORWARDED_FIELDS: ReadonlySet<string> = new Set([
+  'live_csa_mm2',
+  'cpc_csa_mm2',
+  'measured_zs_ohm',
+  'r1_r2_ohm',
+  'r2_ohm',
+  'ir_live_earth_mohm',
+  'ir_live_live_mohm',
+]);
+
+/** The trimmed value residue: whitespace, then edge punctuation `.,;:!?` —
+ *  keeping a leading decimal point that a digit follows (`.4`). This is also
+ *  the `heard` text a lag line quotes. */
+function trimApplyFieldResidue(raw: string): string {
+  return raw
+    .trim()
+    .replace(APPLY_FIELD_LEADING_TRIM, '')
+    .trim()
+    .replace(APPLY_FIELD_TRAILING_TRIM, '')
+    .trim();
+}
+
+/**
+ * PLAN-W2 — resolve a locally parsed apply-field value against the contract.
+ * Returns `{ stored, spoken }` when accepted, `null` when unresolved, and
+ * `undefined` when `canonicalField` is not one of the 12 contract fields (the
+ * caller keeps its own cleaning for those).
+ */
+export function resolveApplyFieldValue(
+  canonicalField: string,
+  raw: string
+): { stored: string; spoken: string } | null | undefined {
+  const units = APPLY_FIELD_NUMERIC_UNITS[canonicalField];
+  const isBoolean = APPLY_FIELD_BOOLEAN_FIELDS.has(canonicalField);
+  if (!units && !isBoolean) return undefined;
+  const residue = trimApplyFieldResidue(raw).toLowerCase();
+  if (units) {
+    const m = APPLY_FIELD_NUMBER.exec(residue);
+    if (!m) return null;
+    const rest = (m[2] ?? '').split(/\s+/).filter((t) => t.length > 0);
+    if (!rest.every((t) => units.includes(t))) return null;
+    return { stored: m[1], spoken: m[1] };
+  }
+  const distinct = new Set(residue.split(/\s+/).filter((t) => t.length > 0));
+  if (distinct.size !== 1) return null;
+  const [token] = [...distinct];
+  return APPLY_FIELD_BOOLEAN_VOCABULARY.get(token) ?? null;
+}
+
+/** PLAN-W2 — the lag line's label per canonical field, for every field iOS's
+ *  `ApplyFieldIntent` parses: the iOS `spokenLabel` values, so both clients
+ *  speak the same line (the fixture's `labels`). Web-only fields fall back to
+ *  `labelForField`. */
+const APPLY_FIELD_LAG_LABELS: Readonly<Record<string, string>> = {
+  rcd_time_ms: 'RCD trip time',
+  ir_test_voltage_v: 'insulation test voltage',
+  rcd_button_confirmed: 'RCD test button',
+  afdd_button_confirmed: 'AFDD test button',
+  polarity_confirmed: 'polarity',
+  wiring_type: 'wiring type',
+  ref_method: 'reference method',
+  max_disconnect_time_s: 'disconnection time',
+  ocpd_type: 'OCPD type',
+  ocpd_rating_a: 'OCPD rating',
+  ocpd_bs_en: 'OCPD BS EN',
+  ocpd_breaking_capacity_ka: 'OCPD breaking capacity',
+  ocpd_max_zs_ohm: 'OCPD maximum Zs',
+  rcd_type: 'RCD type',
+  rcd_rating_a: 'RCD rating',
+  rcd_bs_en: 'RCD BS EN',
+  rcd_operating_current_ma: 'RCD operating current',
+  number_of_points: 'number of points',
+};
+
+export type ApplyFieldLagTail = 'ask' | 'capture' | 'session';
+
+const APPLY_FIELD_LAG_TAILS: Readonly<Record<ApplyFieldLagTail, string>> = {
+  ask: 'Answer the question first, then say it again.',
+  capture: 'Finish the feedback first, then say it again.',
+  session: "I'm not connected. Say it again in a moment.",
+};
+
+/**
+ * PLAN-W2 — the one line a declined apply-field command speaks when it can be
+ * neither executed nor forwarded (routing rows 1–3):
+ * `I couldn't record {label} '{heard}'. {tail}`. `field` may be an alias phrase
+ * or a canonical field name.
+ */
+export function buildApplyFieldLagLine(
+  field: string,
+  heard: string,
+  tail: ApplyFieldLagTail
+): string {
+  const canonical = CIRCUIT_FIELD_ALIASES[field] ?? field;
+  const label = APPLY_FIELD_LAG_LABELS[canonical] ?? labelForField(canonical);
+  return `I couldn't record ${label} '${heard}'. ${APPLY_FIELD_LAG_TAILS[tail]}`;
+}
+
+/** PLAN-W2 — test seam: the contract constants, compared field by field with
+ *  the fixture in `web/tests/apply-field-value-contract.test.ts`. */
+export const __applyFieldValueContractForTests = {
+  numericUnits: APPLY_FIELD_NUMERIC_UNITS,
+  booleanFields: APPLY_FIELD_BOOLEAN_FIELDS,
+  booleanVocabulary: APPLY_FIELD_BOOLEAN_VOCABULARY,
+  lagLabels: APPLY_FIELD_LAG_LABELS,
+  lagTails: APPLY_FIELD_LAG_TAILS,
+  leadingTrim: APPLY_FIELD_LEADING_TRIM,
+  trailingTrim: APPLY_FIELD_TRAILING_TRIM,
+  numberPattern: APPLY_FIELD_NUMBER,
+};
+
 /** All known field-alias phrases, sorted longest-first so prefix
  *  matching picks "rcd test button" before falling back to "rcd". */
 const APPLY_FIELD_PHRASES = (() => {
@@ -788,9 +1019,56 @@ function matchTrailingScope(text: string): { scope: VoiceCommandScope; before: s
  *  the CLEANED text still parses as a genuine apply-field command (avoids
  *  misfiring on unrelated sentences that happen to mention both spare
  *  directions). */
-function parseApplyFieldShape(
-  stripped: string
-): Extract<VoiceCommand, { type: 'apply_field' }> | null {
+type ApplyFieldShapeResult = Extract<
+  VoiceCommand,
+  { type: 'apply_field' | 'apply_field_unresolved' | 'apply_field_forwarded' }
+>;
+
+/** PLAN-W2 — build the command for a matched (field phrase, value residue,
+ *  scope). Returns null when the residue is empty after cleaning, which keeps
+ *  the pre-plan "no value, not a command" behaviour. The FIELD is resolved
+ *  before the value is cleaned (PLAN-C), then:
+ *  - a W2.7 field (measured reading, cable size) is `apply_field_forwarded`;
+ *  - a contract field strips one leading `is ` / `to ` / `= ` (iOS does the
+ *    same, VoiceCommandExecutor.swift parse) and resolves through the contract:
+ *    accepted → `apply_field` storing the contract value, unresolved →
+ *    `apply_field_unresolved` (Decision 7: hand it on, never guess);
+ *  - every other field keeps `cleanValue` unchanged. */
+function buildApplyFieldShape(
+  fieldPhrase: string,
+  rawValue: string,
+  scope: VoiceCommandScope
+): ApplyFieldShapeResult | null {
+  const canonical = CIRCUIT_FIELD_ALIASES[fieldPhrase];
+  if (canonical && LOCAL_APPLY_FORWARDED_FIELDS.has(canonical)) {
+    const heard = trimApplyFieldResidue(rawValue);
+    if (!heard) return null;
+    return { type: 'apply_field_forwarded', field: canonical, heard, scope };
+  }
+  if (canonical && APPLY_FIELD_VALUE_CONTRACT_FIELDS.includes(canonical)) {
+    const heard = trimApplyFieldResidue(rawValue.trim().replace(/^(?:is|to|=)\s+/, ''));
+    if (!heard) return null;
+    const resolved = resolveApplyFieldValue(canonical, heard);
+    if (!resolved) {
+      return { type: 'apply_field_unresolved', field: canonical, heard, scope };
+    }
+    return {
+      type: 'apply_field',
+      field: fieldPhrase,
+      value: resolved.stored,
+      scope,
+      spokenValue: resolved.spoken,
+      heard,
+    };
+  }
+  // Outside the contract the cleaned value IS what a lag line quotes, so no
+  // separate `heard` is carried.
+  const value = cleanValue(rawValue, canonical);
+  if (!value) return null;
+  return { type: 'apply_field', field: fieldPhrase, value, scope };
+}
+
+function parseApplyFieldShape(stripped: string): ApplyFieldShapeResult | null {
   // Shape 2: "<field> for <scope> is <value>".
   // Search for " for ... is ..." inside the input, then split at " is ".
   const isPattern =
@@ -800,15 +1078,10 @@ function parseApplyFieldShape(
     const fieldPhrase = (isMatch[1] ?? '').trim();
     const scopeText = (isMatch[2] ?? '').trim();
     const fieldHit = matchFieldPrefix(fieldPhrase);
-    // PLAN-C — resolve the FIELD before cleaning the value; `cleanValue`
-    // mangles closed-enum values when it doesn't know the field.
-    const value = cleanValue(
-      (isMatch[3] ?? '').trim(),
-      fieldHit ? CIRCUIT_FIELD_ALIASES[fieldHit.phrase] : undefined
-    );
     const scope = parseScopeText(scopeText);
-    if (fieldHit && fieldHit.rest === '' && value && scope) {
-      return { type: 'apply_field', field: fieldHit.phrase, value, scope };
+    if (fieldHit && fieldHit.rest === '' && scope) {
+      const built = buildApplyFieldShape(fieldHit.phrase, (isMatch[3] ?? '').trim(), scope);
+      if (built) return built;
     }
   }
 
@@ -820,18 +1093,33 @@ function parseApplyFieldShape(
   if (trail) {
     const fieldHit = matchFieldPrefix(trail.before);
     if (fieldHit && fieldHit.rest.length > 0) {
-      const value = cleanValue(fieldHit.rest, CIRCUIT_FIELD_ALIASES[fieldHit.phrase]);
-      if (value) {
-        return {
-          type: 'apply_field',
-          field: fieldHit.phrase,
-          value,
-          scope: trail.scope,
-        };
-      }
+      const built = buildApplyFieldShape(fieldHit.phrase, fieldHit.rest, trail.scope);
+      if (built) return built;
     }
   }
   return null;
+}
+
+/** PLAN-W2 (W2.4 item 8) — the web twin of iOS's trailing-text refusal: a field
+ *  alias starts the text and a scope clause is followed by MORE text ("rcd trip
+ *  time 25 for circuit 3 and 4"). Neither shape above recognises it, and web's
+ *  regex would otherwise write part of it. */
+function matchTrailingScopeDecline(
+  stripped: string
+): Extract<VoiceCommand, { type: 'apply_field_trailing_scope_declined' }> | null {
+  const fieldHit = matchFieldPrefix(stripped);
+  if (!fieldHit) return null;
+  const m = /(?:^|\s)for\s+(?:all(?:\s+circuits)?|circuits?\s+\d+(?:\s+to\s+\d+)?)\b(.*)$/i.exec(
+    fieldHit.rest
+  );
+  if (!m) return null;
+  if (trimApplyFieldResidue(m[1] ?? '') === '') return null;
+  const canonical = CIRCUIT_FIELD_ALIASES[fieldHit.phrase] ?? fieldHit.phrase;
+  return {
+    type: 'apply_field_trailing_scope_declined',
+    field: canonical,
+    heard: trimApplyFieldResidue(fieldHit.rest),
+  };
 }
 
 function parseApplyField(transcript: string): VoiceCommand | null {
@@ -849,11 +1137,13 @@ function parseApplyField(transcript: string): VoiceCommand | null {
   // utterance that doesn't otherwise parse as apply-field never misfires.
   const spareInfo = extractSparePolicy(stripped);
   const base = parseApplyFieldShape(spareInfo.cleaned);
-  if (!base) return null;
+  if (!base) return matchTrailingScopeDecline(spareInfo.cleaned);
+  // PLAN-W2 — a contradiction keeps today's local refusal whatever the value
+  // resolved to (routing: "A contradiction keeps today's local refusal").
   if (spareInfo.contradictory) {
     return { type: 'apply_field_contradiction' };
   }
-  if (spareInfo.policy) {
+  if (spareInfo.policy && base.type !== 'apply_field_forwarded') {
     return { ...base, sparePolicy: spareInfo.policy };
   }
   return base;
@@ -1160,6 +1450,21 @@ export function applyVoiceCommand(
       break;
     case 'add_circuit':
       outcome = applyAddCircuit(command, job);
+      break;
+    case 'apply_field_unresolved':
+      // PLAN-W2 — nothing written, nothing spoken here; the caller routes it
+      // (hand-off, lag line or multi-board forward).
+      outcome = { response: '', valueUnresolved: true };
+      break;
+    case 'apply_field_forwarded':
+      // PLAN-W2 (Decision W-1.3) — nothing written, nothing spoken here; the
+      // caller forwards the utterance to the model, as iOS does.
+      outcome = { response: '', forwardedField: true };
+      break;
+    case 'apply_field_trailing_scope_declined':
+      // PLAN-W2 (W2.4 item 8) — the caller never applies this member; the case
+      // exists for exhaustiveness only.
+      outcome = { response: '' };
       break;
     case 'apply_field_contradiction':
       // PLAN-F item 1, Decision 3 — consumed locally: speak a deterministic
@@ -1785,7 +2090,9 @@ function applyApplyField(
   // policy (Decision 4's exact wording, shared with backend/iOS — no
   // client-invented variants).
   const skipSuffix = spareSkippedCount > 0 ? `, ${skipClause(spareSkippedCount, 'append')}` : '';
-  const actualSpokenValue = appliedResults[0]?.value ?? spokenValue;
+  // PLAN-W2 — a contract boolean stores the sigil and speaks the dictated
+  // word ("polarity correct" reads back "correct", never "✓").
+  const actualSpokenValue = command.spokenValue ?? appliedResults[0]?.value ?? spokenValue;
   const response =
     updated === 1
       ? `Set ${label} to ${actualSpokenValue} for 1 circuit${skipSuffix}.`
