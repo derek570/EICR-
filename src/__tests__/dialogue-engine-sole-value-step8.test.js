@@ -144,16 +144,15 @@ describe('red proofs — a non-sole reply hands off instead of writing', () => {
     }
   );
 
-  // A-1. The plan's repro string "the main switch is TYPE AC but this one is
-  // A" never reaches step 8: rcd_type's namedExtractor (`\btype\s*(AC)\b`)
-  // captures it at step 7 as one unambiguous capture, which M2d accepts by
-  // design. That residual is recorded as a follow-up in the EP log. This
-  // string exercises A-1's own mechanism — step 8's anywhere-scan parser.
-  test('RCD type question, "the main switch is AC but this one is A" (main writes AC)', () => {
-    expectHandoffNoWrite(
-      drive(processProtectiveDeviceTurn, RCD_TO_TYPE, 'the main switch is AC but this one is A'),
-      'rcd_type'
-    );
+  // A-1 — both shapes. The step-8 anywhere-scan ("…is AC but this one is A")
+  // is closed by the sole-value grammar. The plan's own repro ("…is TYPE AC but
+  // this one is A") is captured at step 7 by rcd_type's named extractor, so it
+  // is closed by M2d's retraction arm: "but" sets the earlier value aside.
+  test.each([
+    'the main switch is type AC but this one is A',
+    'the main switch is AC but this one is A',
+  ])('RCD type question, "%s" (main writes AC)', (reply) => {
+    expectHandoffNoWrite(drive(processProtectiveDeviceTurn, RCD_TO_TYPE, reply), 'rcd_type');
   });
 });
 

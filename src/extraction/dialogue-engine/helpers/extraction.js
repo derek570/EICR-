@@ -110,6 +110,13 @@ export function extractNamedFieldValues(text, slots) {
 export const CORRECTION_MARKER_RE =
   /\b(?:no|not|actually|sorry|wait|cancel\s+that|i\s+meant|scratch\s+that)\b/i;
 
+// PLAN-W1 review cycle 1 (Codex BLOCKER, the plan's A-1 repro) — "but"
+// introduces a contrasting value for the same thing: "the main switch is type
+// AC but this one is A". The capture before it is the value the inspector set
+// aside, so it counts as a retraction under the same attribution rule as the
+// correction markers ("32 amps but the kA is 6" still belongs to the kA slot).
+const CONTRAST_MARKER_RE = /\bbut\b/i;
+
 // A value directly preceded, within its own clause, by a negation: "the
 // rating isn't 20 amps".
 const NEGATION_BEFORE_VALUE_RE = /\b(?:not|isn['’]t|wasn['’]t|never)\s+(?:an?\s+)?$/i;
@@ -211,7 +218,7 @@ function capturesAreAmbiguous(text, captures, otherCaptures) {
   }
   // One value, later retracted: a correction marker after a capture, where
   // the corrected value may carry no label ("trip time 25 ms, no, 28").
-  const markers = new RegExp(CORRECTION_MARKER_RE.source, 'gi');
+  const markers = new RegExp(`${CORRECTION_MARKER_RE.source}|${CONTRAST_MARKER_RE.source}`, 'gi');
   for (const c of captures) {
     markers.lastIndex = c.end;
     let m;
@@ -232,7 +239,7 @@ function capturesAreAmbiguous(text, captures, otherCaptures) {
  *     same ring candidate direction;
  *   - every capture of its single value is negated in its own clause; or
  *   - a capture is followed, later in the utterance, by a correction marker
- *     that does not introduce another slot's value.
+ *     or a contrasting "but" that does not introduce another slot's value.
  * Repeats of one value are not ambiguous, and a field-first versus value-first
  * disagreement is left to today's smaller-gap arbitration (A-4, PLAN-W1b).
  *

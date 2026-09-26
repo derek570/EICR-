@@ -2458,7 +2458,7 @@ describe('PLAN-W1 M3 — fuzzy designation is a hint, never a write', () => {
     for (const reply of ['kitchin', 'bathroms', 'kitchin and bathroms']) {
       expect(resolve(reply).kind).not.toBe('auto_resolve');
     }
-    for (const reply of ['kitchin', 'bathroms']) {
+    for (const reply of ['kitchin', 'bathroms', 'kitchin and bathroms']) {
       const v = resolveMultiDescriptionFollowup({
         userText: reply,
         pendingWrite: SAMPLE_PENDING,

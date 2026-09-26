@@ -96,6 +96,19 @@ describe('helper — red proofs (each is written today as the value it corrected
     expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toBeNull();
   });
 
+  test.each([
+    ['rcd', 'the main switch is type AC but this one is A', 'rcd_type'],
+    ['ocpd', '32 amps but I think it is a 40', 'ocpd_rating_a'],
+  ])('a contrasting "but" retracts: %s "%s" is ambiguous on %s', (schema, text, field) => {
+    expect(findAmbiguousNamedCapture(text, slotsOf(schema))).toMatchObject({ field });
+  });
+
+  test('control: "but" introducing another slot\'s value is not a retraction', () => {
+    expect(
+      findAmbiguousNamedCapture('32 amps but the breaking capacity is 6 kA', slotsOf('ocpd'))
+    ).toBeNull();
+  });
+
   test('a marker followed by no value still retracts: "trip time 25 milliseconds, no issues" hands off', () => {
     expect(
       findAmbiguousNamedCapture('trip time 25 milliseconds, no issues', slotsOf('rcd'))
