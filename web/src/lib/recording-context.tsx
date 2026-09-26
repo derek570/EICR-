@@ -216,12 +216,12 @@ import {
   jobBoardCount,
   parseVoiceCommand,
   voiceCommandTargetsDesignation,
-  type ApplyFieldLagTail,
   type ClientCommandMarker,
   type JobZeLike,
   type VoiceCommandJob,
 } from '@certmate/shared-utils';
 import { mapServerActionToVoiceCommand } from './recording/voice-command-action';
+import { routeApplyFieldCommand } from './recording/apply-field-routing';
 import {
   createDesignationAliasStore,
   rewriteConfirmationDesignationText,
@@ -2599,22 +2599,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             });
           }
         }
-        // PLAN-W2 (Decision 7) — the apply-field routing table. A recognised
-        // apply-field command executes locally only when the job has 0–1
-        // boards, the contract ACCEPTED its value, and the field is not a W2.7
-        // measured reading or cable size. Every other one is DECLINED and
-        // takes the first matching row; nothing is written locally, and
-        // nothing is spoken except the one lag line of rows 1–3.
-        //   1  capture open                 → lag line (capture tail)
-        //   2  no Sonnet session            → lag line (session tail)
-        //   3  unresolved, 0–1 boards, ask  → lag line (ask tail; Decision 15)
-        //   4  unresolved, 0–1 boards       → hand-off with CD1 authority
-        //   5  2+ boards                    → forward, gate-only authority,
-        //                                      ordinary routing (Decision W-1.4)
-        //   6  W2.7 field, 0–1 boards       → forward, no authority (as iOS)
-        // A forward during a capture is swallowed by the capture, and a
-        // forward with no session is dropped after the chime, so rows 1–2 run
-        // first; today these commands were executed locally in both cases.
+        // PLAN-W2 (Decision 7) — the apply-field routing table, as a pure
+        // function in `./recording/apply-field-routing.ts` (the table and why
+        // each row sits where it does are there). A recognised apply-field
+        // command executes locally only on a 0–1 board job with an accepted
+        // value and a non-W2.7 field; a DECLINED one writes nothing locally
+        // and speaks nothing except the one lag line of rows 1–3.
         if (
           command &&
           (command.type === 'apply_field' ||
@@ -2622,36 +2612,28 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
             command.type === 'apply_field_forwarded')
         ) {
           const boardCount = jobBoardCount(jobRef.current as unknown as JobZeLike);
-          const declined = boardCount > 1 || command.type !== 'apply_field';
-          if (declined) {
-            const capturing = feedbackCaptureRef.current?.isCapturing === true;
-            const session = sonnetRef.current;
-            const heard =
-              command.type === 'apply_field' ? (command.heard ?? command.value) : command.heard;
-            let lagTail: ApplyFieldLagTail | null = null;
-            let route: string;
-            if (capturing) {
-              lagTail = 'capture';
-              route = 'lag_capture';
-            } else if (session == null) {
-              lagTail = 'session';
-              route = 'lag_session';
-            } else if (boardCount > 1) {
+          const routed = routeApplyFieldCommand({
+            kind:
+              command.type === 'apply_field'
+                ? 'accepted'
+                : command.type === 'apply_field_unresolved'
+                  ? 'unresolved'
+                  : 'forwarded_field',
+            boardCount,
+            capturing: feedbackCaptureRef.current?.isCapturing === true,
+            hasSession: sonnetRef.current != null,
+            askLive: () => sonnetRef.current?.hasUnresolvedBackendAsk() === true,
+          });
+          if (routed.route !== 'execute') {
+            const route = routed.route === 'lag' ? `lag_${routed.tail}` : routed.route;
+            if (routed.route === 'forward_multi_board') {
               forwardedLocalCommand = true;
               regexBypassForLocalCommand = true;
-              route = 'forward_multi_board';
-            } else if (command.type === 'apply_field_unresolved') {
-              if (session.hasUnresolvedBackendAsk()) {
-                lagTail = 'ask';
-                route = 'lag_ask';
-              } else {
-                cd1LocalForwardAuthority = true;
-                regexBypassForLocalCommand = true;
-                route = 'handoff';
-              }
-            } else {
+            } else if (routed.route === 'handoff') {
+              cd1LocalForwardAuthority = true;
               regexBypassForLocalCommand = true;
-              route = 'forward_field';
+            } else if (routed.route === 'forward_field') {
+              regexBypassForLocalCommand = true;
             }
             if (boardCount > 1) {
               clientDiagnostic('apply_field_forwarded', {
@@ -2669,10 +2651,12 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
                 textPreview: text.slice(0, 80),
               });
             }
-            if (lagTail) {
+            if (routed.route === 'lag') {
               // The lag line is a local command outcome: the protected FIFO,
               // never the pre-empting direct `speak()` (W2.4 item 7).
-              speakLocalCommandOutcome(buildApplyFieldLagLine(command.field, heard, lagTail));
+              const heard =
+                command.type === 'apply_field' ? (command.heard ?? command.value) : command.heard;
+              speakLocalCommandOutcome(buildApplyFieldLagLine(command.field, heard, routed.tail));
               sleepManagerRef.current?.onSpeechActivity();
               return;
             }
