@@ -12,6 +12,7 @@
 import {
   processRingContinuityTurn,
   processInsulationResistanceTurn,
+  processProtectiveDeviceTurn,
   processDialogueTurn,
   tryResumePausedScript,
   ringContinuitySchema,
@@ -2235,53 +2236,155 @@ describe('engine — IR L-L vs L-E disambiguation after resume (commit 4)', () =
     });
   });
 
-  test('L-L slot already filled → auto-assigns 299 to L-E without asking', () => {
+  // PLAN-W1 M4 (B-135, Decision 7) — a buffered bare value is only written
+  // where the inspector says it goes. It used to auto-assign to "the other"
+  // leg when one was filled, and to vanish silently when both were.
+  const DISAMBIG_Q = 'Was 299 megaohms live-to-live or live-to-earth?';
+
+  test('L-L slot filled with a different value → asks the disambiguation question, no write', () => {
     const session = buildSession({});
     const ws = pauseIrForCookerAndResume({
       session,
       snapshotForCooker: { ir_live_live_mohm: '500' },
     });
-    // No question — auto-assigned.
-    expect(session.stateSnapshot.circuits[2]).toMatchObject({
+    expect(session.stateSnapshot.circuits[2]).toEqual({
+      circuit_designation: 'Cooker',
       ir_live_live_mohm: '500',
-      ir_live_earth_mohm: '299',
     });
-    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
-    // Last emit is the next-slot ask (voltage).
-    expect(ws.sent.at(-1)).toMatchObject({
-      question: 'What was the test voltage?',
-    });
+    expect(session.dialogueScriptState.awaiting_disambiguation).toMatchObject({ value: '299' });
+    expect(ws.sent.at(-1).question).toBe(DISAMBIG_Q);
   });
 
-  test('L-E slot already filled → auto-assigns 299 to L-L without asking', () => {
-    const session = buildSession({});
-    pauseIrForCookerAndResume({
-      session,
-      snapshotForCooker: { ir_live_earth_mohm: '888' },
-    });
-    expect(session.stateSnapshot.circuits[2]).toMatchObject({
-      ir_live_earth_mohm: '888',
-      ir_live_live_mohm: '299',
-    });
-    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
-  });
-
-  test('both L-L and L-E already filled → bare value discarded silently', () => {
+  test('L-E slot filled with a different value → asks, no write (main wrote L-L 299)', () => {
     const session = buildSession({});
     const ws = pauseIrForCookerAndResume({
       session,
-      snapshotForCooker: { ir_live_live_mohm: '500', ir_live_earth_mohm: '600' },
+      snapshotForCooker: { ir_live_earth_mohm: '250' },
+    });
+    expect(session.stateSnapshot.circuits[2]).not.toHaveProperty('ir_live_live_mohm');
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('250');
+    expect(ws.sent.at(-1).question).toBe(DISAMBIG_Q);
+  });
+
+  test('L-E already holds the bare value → discarded as already recorded, no write (main wrote L-L 299)', () => {
+    const session = buildSession({});
+    const rows = [];
+    const ws = new FakeWS();
+    // Same walk as the helper, with a capturing logger on the resume.
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'Insulation resistance for the cooker is 299 milligrams.',
+      now: 1000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'unresolvable 1',
+      now: 2000,
+    });
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'cooker circuit',
+      now: 3000,
+    });
+    session.stateSnapshot.circuits[2] = {
+      circuit_designation: 'Cooker',
+      ir_live_earth_mohm: '299',
+    };
+    const wsResume = new FakeWS();
+    tryResumePausedScript({
+      session,
+      ws: wsResume,
+      schemas: ALL_DIALOGUE_SCHEMAS,
+      circuitUpdates: [{ op: 'create', circuit_ref: 2, meta: { designation: 'Cooker' } }],
+      logger: { info: (event, payload) => rows.push({ event, payload }), warn: () => {} },
+      now: 4000,
+    });
+    expect(session.stateSnapshot.circuits[2]).not.toHaveProperty('ir_live_live_mohm');
+    expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
+    expect(rows.some((r) => /_disambiguation_already_recorded$/.test(r.event))).toBe(true);
+    expect(wsResume.sent.at(-1).question).not.toBe(DISAMBIG_Q);
+  });
+
+  test('both legs filled with other values → asks (main discarded silently)', () => {
+    const session = buildSession({});
+    const ws = pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_live_mohm: '200', ir_live_earth_mohm: '250' },
     });
     expect(session.stateSnapshot.circuits[2]).toMatchObject({
-      ir_live_live_mohm: '500',
-      ir_live_earth_mohm: '600',
+      ir_live_live_mohm: '200',
+      ir_live_earth_mohm: '250',
     });
-    expect(session.dialogueScriptState.ambiguous_bare_value).toBeNull();
+    expect(ws.sent.at(-1).question).toBe(DISAMBIG_Q);
+  });
+
+  test('both legs filled, one equal → discarded as already recorded, proceeds to voltage', () => {
+    const session = buildSession({});
+    const ws = pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_live_mohm: '299', ir_live_earth_mohm: '600' },
+    });
     expect(session.dialogueScriptState.awaiting_disambiguation).toBeNull();
-    // Walk-through proceeds straight to voltage.
-    expect(ws.sent.at(-1)).toMatchObject({
-      question: 'What was the test voltage?',
+    expect(ws.sent.at(-1)).toMatchObject({ question: 'What was the test voltage?' });
+  });
+
+  test('answering "live to earth" with L-E = 250 overwrites L-E with 299, spoken once in the finish summary', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({ session, snapshotForCooker: { ir_live_earth_mohm: '250' } });
+    const ws = new FakeWS();
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'live to earth',
+      now: 5000,
     });
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('299');
+    // Finish the walk: L-L then a standard voltage.
+    for (const [t, at] of [
+      ['200', 6000],
+      ['500', 7000],
+    ]) {
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: t,
+        now: at,
+      });
+    }
+    const spoken = ws.sent
+      .map((f) => f.question ?? f.text ?? '')
+      .filter(Boolean)
+      .join(' | ');
+    expect(spoken.match(/299/g) ?? []).toHaveLength(1);
+  });
+
+  test('answering with the leg that already holds the value → no write', () => {
+    const session = buildSession({});
+    pauseIrForCookerAndResume({
+      session,
+      snapshotForCooker: { ir_live_live_mohm: '200', ir_live_earth_mohm: '250' },
+    });
+    const ws = new FakeWS();
+    // Force the equal case: L-E becomes 299 before the answer lands.
+    session.dialogueScriptState.values.ir_live_earth_mohm = '299';
+    session.stateSnapshot.circuits[2].ir_live_earth_mohm = '299';
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'live to earth',
+      now: 5000,
+    });
+    expect(ws.sent.filter((f) => f.type === 'extraction')).toHaveLength(0);
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('299');
   });
 });
 
@@ -2799,7 +2902,10 @@ describe('engine — IR post-completion correction breadcrumb (#1 belt-and-brace
     }); // standard voltage → finishes
   };
 
-  test('"No, 0.47." within the window re-writes the last reading leg (L-E) on the same circuit', () => {
+  // PLAN-W1 M4 (B-110, Decision 7) — this run wrote BOTH legs, so "No, 0.47"
+  // does not say which it corrects. It used to rewrite the last leg (L-E);
+  // it now hands the reply to the model with a server note.
+  test('two legs written: "No, 0.47." hands off with a note, no write, breadcrumb consumed', () => {
     const ws = new FakeWS();
     const session = buildSession({ 2: { circuit_designation: 'Cooker' } });
     completeIR(ws, session, 2, '0.33');
@@ -2813,9 +2919,71 @@ describe('engine — IR post-completion correction breadcrumb (#1 belt-and-brace
       transcriptText: 'No, 0.47.',
       now: 5000,
     });
+    expect(out).toEqual({
+      handled: true,
+      fallthrough: true,
+      transcriptText:
+        '[Server note: The assistant just read back insulation resistance for circuit 2: ' +
+        "live-to-live 200, live-to-earth 0.33. The user's reply follows. It corrects one of " +
+        'those two readings but does not say which.] No, 0.47.',
+    });
+    expect(session.stateSnapshot.circuits[2].ir_live_live_mohm).toBe('200');
+    expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.33');
+    expect(session.dialogueCorrectionBreadcrumb).toBeNull();
+    // The note carries none of the protective-device wrapper's trigger words.
+    expect(
+      processProtectiveDeviceTurn({
+        ws: new FakeWS(),
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: out.transcriptText,
+        now: 5001,
+      })
+    ).toEqual({ handled: false });
+  });
+
+  test('one leg written this run: "No, 0.47." re-writes that leg (unchanged)', () => {
+    const ws = new FakeWS();
+    const session = buildSession({
+      2: { circuit_designation: 'Cooker', ir_live_live_mohm: '200' },
+    });
+    for (const [t, at] of [
+      ['Insulation resistance for circuit 2.', 1000],
+      ['0.33', 2000],
+      ['500', 3000],
+    ]) {
+      processInsulationResistanceTurn({
+        ws,
+        session,
+        sessionId: SESSION_ID,
+        transcriptText: t,
+        now: at,
+      });
+    }
+    expect(session.dialogueScriptState).toBeFalsy();
+    const out = processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, 0.47.',
+      now: 5000,
+    });
     expect(out).toEqual({ handled: true, fallthrough: false });
     expect(session.stateSnapshot.circuits[2].ir_live_earth_mohm).toBe('0.47');
-    expect(ws.sent.at(-1).question).toMatch(/got it, live-to-earth 0\.47/i);
+  });
+
+  test('"No, L-L 250" is not consumed by the breadcrumb', () => {
+    const ws = new FakeWS();
+    const session = buildSession({ 2: { circuit_designation: 'Cooker' } });
+    completeIR(ws, session, 2, '0.33');
+    processInsulationResistanceTurn({
+      ws,
+      session,
+      sessionId: SESSION_ID,
+      transcriptText: 'No, L-L 250',
+      now: 5000,
+    });
+    expect(session.dialogueCorrectionBreadcrumb).not.toBeNull();
   });
 
   test('"No, 5 amps." (extra words / wrong unit) is rejected — breadcrumb not honoured', () => {

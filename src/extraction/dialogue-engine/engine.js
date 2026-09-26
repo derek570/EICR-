@@ -485,6 +485,33 @@ export function processDialogueTurn(ctx) {
         const m = text.match(cbCfg.correctionRe);
         if (m && cbCfg.valueOnlyRe.test(m[1])) {
           const corrected = cbCfg.valueParser(m[1]);
+          const legs = Array.isArray(crumb.legs) ? crumb.legs : [];
+          if (corrected !== null && corrected !== undefined && legs.length >= 2) {
+            // PLAN-W1 M4 (B-110, Decision 7) — the run wrote BOTH legs, so
+            // "No, 250" corrects one of them without saying which. Writing the
+            // last leg was a guess ("L-L 200, L-E 0.5" then "No, 250" wrote
+            // L-E = 250 when the inspector meant L-L). Consume the crumb and
+            // hand the reply to the model with a server-controlled note (no
+            // raw utterance inside the bracket); the model writes or asks, and
+            // a model write is read back once through record_reading.
+            session.dialogueCorrectionBreadcrumb = null; // one-shot
+            const legText = legs
+              .map(
+                (leg) =>
+                  `${cbCfg.fieldLabels?.[leg.field] ?? leg.field} ${speakSentinelValue(leg.value)}`
+              )
+              .join(', ');
+            const note =
+              `[Server note: The assistant just read back ${cbCfg.noteSubject ?? crumbSchema.name} ` +
+              `for circuit ${crumb.circuit_ref}: ${legText}. The user's reply follows. It corrects ` +
+              `one of those ${legs.length === 2 ? 'two ' : ''}readings but does not say which.] `;
+            logger?.info?.(`${crumbSchema.logEventPrefix}_post_completion_correction_ambiguous`, {
+              sessionId,
+              circuit_ref: crumb.circuit_ref,
+              legs: legs.map((leg) => leg.field),
+            });
+            return { handled: true, fallthrough: true, transcriptText: `${note}${text}` };
+          }
           if (corrected !== null && corrected !== undefined) {
             session.dialogueCorrectionBreadcrumb = null; // one-shot
             // Plan D Seam C (2026-07-25, feedback id 100(b)) — this breadcrumb is
@@ -3003,10 +3030,23 @@ function runActivePath({
       // Plan D Seam B — the clamped value actually stored, for the log row below.
       let disambiguatedValue = null;
       if (verdict && verdict.field) {
-        // Belt-and-braces: don't overwrite if the inspector somehow
-        // filled the chosen slot in the meantime (rare but possible if
-        // a parallel write landed).
-        if (state.values[verdict.field] == null) {
+        // PLAN-W1 M4 (B-135) — the question can now be asked about a leg that
+        // is already filled, so a filled leg is no longer skipped (that would
+        // be a silent drop):
+        //   - chosen leg empty           → write (unchanged);
+        //   - chosen leg holds another   → overwrite as a dictated correction;
+        //   - chosen leg holds the same  → satisfied-existing, no write.
+        // The finish summary reads each applied operation back once.
+        const chosenSlot = schema.slots.find((sl) => sl.field === verdict.field);
+        const existing = state.values[verdict.field];
+        if (existing != null && valuesCanonicallyEqual(chosenSlot, existing, bare.value)) {
+          const op = markDictated(state, verdict.field, bare.value, {
+            schema,
+            source: 'ir_bare_disambiguation',
+            circuit_ref: state.circuit_ref,
+          });
+          markSatisfiedExisting(op, existing, state.circuit_ref);
+        } else {
           // PLAN A2 §A2.2 — "buffered bare IR at queue-acceptance": the bare
           // value was captured circuit-less/field-less at entry
           // (ambiguous_bare_value); it becomes a known-field dictation only
@@ -6185,10 +6225,24 @@ function finishScript({
       }
     }
     if (lastReadingOp) {
+      // PLAN-W1 M4 (B-110) — every reading leg applied for this circuit this
+      // run, with its stored value. With two legs a bare "No, 250" does not
+      // say which one it corrects, so the consumer hands it to the model.
+      const legsByField = new Map();
+      for (const op of operations) {
+        if (
+          op.disposition === 'applied' &&
+          fields.includes(op.field) &&
+          op.effective_circuit_ref === circuit_ref
+        ) {
+          legsByField.set(op.field, op.written_value);
+        }
+      }
       session.dialogueCorrectionBreadcrumb = {
         schemaName: schema.name,
         circuit_ref,
         field: lastReadingOp.field,
+        legs: [...legsByField].map(([field, value]) => ({ field, value })),
         boardId: session.stateSnapshot?.currentBoardId ?? null,
         at: now,
       };
@@ -7075,36 +7129,48 @@ export function tryResumePausedScript({
     circuit_op: matchingOp.op,
   });
 
-  // Disambiguation pre-step for an ambiguous bare value captured at
-  // entry. Three branches:
+  // Disambiguation pre-step for an ambiguous bare value captured at entry.
+  // PLAN-W1 M4 (B-135, Decision 7) — the value is only ever written where the
+  // inspector says it goes. "Equal" is valuesCanonicallyEqual against a filled
+  // leg's stored value.
   //
-  //   (1) Both L-L and L-E are still empty → can't infer which slot the
-  //       bare value belongs to; ask the inspector. State flips into
-  //       `awaiting_disambiguation` mode and the active path's pre-slot
-  //       check (added below) routes the next reply through the
-  //       schema's `disambiguateBareValue`.
-  //   (2) Exactly ONE of L-L/L-E is already filled (existing snapshot
-  //       value or a drained pending_write) → auto-assign the bare
-  //       value to the OTHER slot and continue. No question needed
-  //       because there's only one possible target.
-  //   (3) Both L-L and L-E filled → the bare value is redundant.
-  //       Discard with a log; the script continues to whatever's
-  //       still missing (probably voltage).
+  //   L-L / L-E          | bare equals a filled leg | action
+  //   -------------------|--------------------------|--------------------------
+  //   both empty         | —                        | ask (unchanged)
+  //   one filled         | yes                      | discard: already recorded
+  //   one filled         | no                       | ask (was: auto-assign to
+  //                      |                          | the OTHER leg — a guess)
+  //   both filled        | yes, either leg          | discard: already recorded
+  //   both filled        | no                       | ask (was: silent discard)
+  //
+  // The question follows a successful parse of an understood value with two
+  // possible legs, so it is E3. The answer handler overwrites a filled leg as
+  // a dictated correction.
   //
   // Schema gates: `bareDisambiguationQuestion` + `disambiguateBareValue`
-  // must be functions for branch (1) to fire; otherwise fall through
-  // to the standard askNextOrFinish.
+  // must be functions; otherwise fall through to the standard askNextOrFinish.
   if (
     state.ambiguous_bare_value !== null &&
     typeof schema.bareDisambiguationQuestion === 'function' &&
     typeof schema.disambiguateBareValue === 'function'
   ) {
-    const llFilled = state.values.ir_live_live_mohm != null;
-    const leFilled = state.values.ir_live_earth_mohm != null;
     const bare = state.ambiguous_bare_value;
+    const legSlot = (field) => schema.slots.find((s) => s.field === field);
+    const alreadyRecorded = ['ir_live_live_mohm', 'ir_live_earth_mohm'].find(
+      (field) =>
+        state.values[field] != null &&
+        valuesCanonicallyEqual(legSlot(field), state.values[field], bare.value)
+    );
 
-    if (!llFilled && !leFilled) {
-      // Branch (1): true ambiguity — ask.
+    if (alreadyRecorded) {
+      logger?.info?.(`${schema.logEventPrefix}_disambiguation_already_recorded`, {
+        sessionId: session.sessionId,
+        circuit_ref: matchedRef,
+        bare_value: bare.value,
+        field: alreadyRecorded,
+      });
+      state.ambiguous_bare_value = null;
+    } else {
       state.awaiting_disambiguation = bare;
       state.ambiguous_bare_value = null;
       const question = schema.bareDisambiguationQuestion(bare.value);
@@ -7129,63 +7195,6 @@ export function tryResumePausedScript({
       );
       return { resumed: true, circuit_ref: matchedRef };
     }
-
-    if (llFilled !== leFilled) {
-      // Branch (2): exactly one filled — auto-assign the bare value to
-      // the other slot. No user question.
-      const targetField = llFilled ? 'ir_live_earth_mohm' : 'ir_live_live_mohm';
-      // PLAN A2 §A2.2 — "buffered bare IR at queue-acceptance": resolved to a
-      // known field here (the only-empty-slot auto-assign), so this is where
-      // the dictation becomes trackable.
-      const bareOp = markDictated(state, targetField, bare.value, {
-        schema,
-        source: 'ir_bare_auto_assign',
-        circuit_ref: matchedRef,
-      });
-      // Plan D — applyWrite is authoritative: it clamps, writes the clamped
-      // value into BOTH the snapshot and state.values, and records the
-      // correction. The raw `state.values[targetField] = bare.value` that used
-      // to follow was a split-brain generator (snapshot 1.6, local map 16) and
-      // is deleted in favour of the returned effective value.
-      const written = applyWrite(session, schema, matchedRef, targetField, bare.value, now);
-      markWritten(bareOp, written.value, matchedRef);
-      state.ambiguous_bare_value = null;
-      logger?.info?.(`${schema.logEventPrefix}_disambiguation_auto_assigned`, {
-        sessionId: session.sessionId,
-        circuit_ref: matchedRef,
-        bare_value: written.value,
-        target_field: targetField,
-        reason: llFilled ? 'll_already_filled' : 'le_already_filled',
-      });
-      safeSend(
-        ws,
-        buildExtractionPayload(
-          matchedRef,
-          [{ field: targetField, value: written.value }],
-          schema.extractionSource
-        )
-      );
-      askNextOrFinish({
-        ws,
-        session,
-        sessionId: session.sessionId,
-        schema,
-        logger,
-        now,
-        responseEpoch,
-      });
-      return { resumed: true, circuit_ref: matchedRef };
-    }
-
-    // Branch (3): both filled — bare value is redundant. Discard and
-    // proceed.
-    logger?.info?.(`${schema.logEventPrefix}_disambiguation_discarded`, {
-      sessionId: session.sessionId,
-      circuit_ref: matchedRef,
-      bare_value: bare.value,
-      reason: 'both_slots_already_filled',
-    });
-    state.ambiguous_bare_value = null;
   }
 
   askNextOrFinish({

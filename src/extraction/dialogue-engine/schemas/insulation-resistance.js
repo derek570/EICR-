@@ -52,6 +52,20 @@ const STANDARD_IR_VOLTAGES = Object.freeze(new Set([100, 250, 500, 1000]));
 const IR_VALUE_ONLY_RE =
   /^(?:>\s*\.?\d+(?:\.\d+)?|(?:greater|more)\s+than\s+\.?\d+(?:\.\d+)?|(?:over|above)\s+\.?\d+(?:\.\d+)?|\.?\d+(?:\.\d+)?|infinit(?:e|y)|off\s*scale|out\s*of\s*range|o\.?\s*l|max(?:ed)?(?:\s+out)?|lim|limb|limp|limitation)(?:\s*(?:mΩ|MΩ|meg(?:a|ger)?\s*ohms?|megohms?|milli\s*ohms?|m\s*ohms?|ohms?))?$/i;
 
+// PLAN-W1 M4 (B-115, W1-10) — the ONE pair of IR label sources, used by all
+// four live label sites: the L-L and L-E slot namedExtractors, the compound
+// entry label pair, and the bare-value router. `\b` sits between an
+// apostrophe and `l`, so the bare `l[\s.-]*l` arm matched "I'll", "we'll" and
+// "it'll": "we'll, 200" wrote L-L = 200, and the router read "I'll check" as
+// live-to-live. The lookbehind refuses an `l` glued to a letter or apostrophe.
+export const IR_LL_LABEL_SRC =
+  "live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|(?<![\\w'’])l[\\s.-]*l";
+export const IR_LE_LABEL_SRC =
+  "live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|(?<![\\w'’])l[\\s.-]*e";
+
+const IR_LL_ROUTER_RE = new RegExp(`\\b(?:${IR_LL_LABEL_SRC})\\b`, 'i');
+const IR_LE_ROUTER_RE = new RegExp(`\\b(?:${IR_LE_LABEL_SRC})\\b`, 'i');
+
 const slots = [
   {
     field: 'ir_live_live_mohm',
@@ -120,7 +134,7 @@ const slots = [
     // read m[1] ?? m[2] ?? m[3], so multi-group regexes work without
     // any helper change here.
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l)\\b` +
+      `\\b(?:${IR_LL_LABEL_SRC})\\b` +
         `(?:` +
         `[^a-z\\d∞]{0,6}?(${MEGAOHMS_BARE_SAFE_VALUE_GROUP})` +
         `|` +
@@ -142,7 +156,7 @@ const slots = [
     // future false-positive class will affect only one slot and fall through
     // unnoticed. See L-L for the rationale and trade-offs.
     namedExtractor: new RegExp(
-      `\\b(?:live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e)\\b` +
+      `\\b(?:${IR_LE_LABEL_SRC})\\b` +
         `(?:` +
         `[^a-z\\d∞]{0,6}?(${MEGAOHMS_BARE_SAFE_VALUE_GROUP})` +
         `|` +
@@ -201,8 +215,8 @@ const slots = [
 
 // The two label vocabularies, reused from the slot namedExtractors above —
 // keep in lockstep with them per this file's own comment.
-const LL_LABEL_SRC = 'live\\s+to\\s+live|line\\s+to\\s+line|l\\s+to\\s+l|l[\\s.-]*l';
-const LE_LABEL_SRC = 'live\\s+to\\s+earth|line\\s+to\\s+earth|l\\s+to\\s+e|l[\\s.-]*e';
+const LL_LABEL_SRC = IR_LL_LABEL_SRC;
+const LE_LABEL_SRC = IR_LE_LABEL_SRC;
 
 // Trailing label pair: both orderings, joined by an enumerated connector.
 // Plus the "both" phrasing — accepted ONLY as end-of-clause "both" or
@@ -491,12 +505,13 @@ export const insulationResistanceSchema = {
   bareDisambiguationQuestion: (value) => `Was ${value} megaohms live-to-live or live-to-earth?`,
   disambiguateBareValue: (text) => {
     if (typeof text !== 'string' || !text) return null;
-    if (/\b(?:live\s+to\s+live|line\s+to\s+line|l\s+to\s+l|l[\s.-]*l)\b/i.test(text)) {
-      return { field: 'ir_live_live_mohm' };
-    }
-    if (/\b(?:live\s+to\s+earth|line\s+to\s+earth|l\s+to\s+e|l[\s.-]*e)\b/i.test(text)) {
-      return { field: 'ir_live_earth_mohm' };
-    }
+    const namesLL = IR_LL_ROUTER_RE.test(text);
+    const namesLE = IR_LE_ROUTER_RE.test(text);
+    // PLAN-W1 M4 (B-115) — a reply naming BOTH legs picks neither; L-L used to
+    // win by test order. A null reaches the existing retry/drop path.
+    if (namesLL && namesLE) return null;
+    if (namesLL) return { field: 'ir_live_live_mohm' };
+    if (namesLE) return { field: 'ir_live_earth_mohm' };
     // Inspector wants out of the disambiguation — drop the bare value.
     if (/\b(?:neither|nothing|forget\s+(?:it|that)|skip|cancel|never\s+mind)\b/i.test(text)) {
       return { discard: true };
@@ -574,6 +589,8 @@ export const insulationResistanceSchema = {
     windowMs: 15_000,
     fields: IR_FIELDS,
     fieldLabels: { ir_live_live_mohm: 'live-to-live', ir_live_earth_mohm: 'live-to-earth' },
+    // PLAN-W1 M4 (B-110) — names the reading in the two-leg handoff note.
+    noteSubject: 'insulation resistance',
     // NEGATION + captured remainder.
     correctionRe: /^\s*no\b[,.]?\s+(.+?)[.!?]*\s*$/i,
     // The remainder must be NOTHING BUT an IR value (anchored ^…$).
