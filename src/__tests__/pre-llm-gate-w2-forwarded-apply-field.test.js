@@ -53,6 +53,12 @@ describe('PLAN-W2 — recognised forwarded apply-field commands pass the gate wi
     ],
     ['the cable is loose', 'no scope clause'],
     ['cable n/a', 'no scope clause'],
+    // Review cycle 4 — the scope-first grammar needs " is ", as web's parser
+    // does; iOS's recogniser is held to the same boundary.
+    ['cable for all n/a', 'scope-first without "is"'],
+    ['cable for all = n/a', 'scope-first with "=" instead of "is"'],
+    ['cable for all to n/a', 'scope-first with "to" instead of "is"'],
+    ['cable for all the circuits is n/a', 'a scope web does not recognise'],
   ])('%s is not admitted by this rule (%s)', (text) => {
     expect(isForwardedApplyFieldCommand(text)).toBe(false);
     const decision = shouldForwardToSonnet(text, { agenticAnswersEnabled: false });
