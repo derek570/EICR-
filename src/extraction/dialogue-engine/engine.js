@@ -32,6 +32,7 @@ import {
 } from './helpers/circuit-resolution.js';
 import {
   extractNamedFieldValues,
+  findAmbiguousNamedCapture,
   nextMissingSlot,
   countFilledForCancel,
   maskCircuitSpans,
@@ -426,6 +427,28 @@ export function processDialogueTurn(ctx) {
         clearScriptState(session);
         // Fall through to entry detection below.
       } else {
+        // PLAN-W1 M2d (Decision 7) — an utterance whose named capture is
+        // ambiguous (two values for one slot, a negated value, or a value
+        // followed by a correction marker) belongs to the model. One gate,
+        // before runActivePath, so it takes precedence over that function's
+        // own exits: each of them ends in a model turn or announces a script
+        // outcome, and for an ambiguous value the handoff is the outcome.
+        const ambiguous = findAmbiguousNamedCapture(maskCircuitSpans(replyText), schema.slots);
+        if (ambiguous) {
+          return handOffAmbiguousCapture({
+            ws,
+            session,
+            sessionId,
+            schema,
+            state,
+            logger,
+            now,
+            responseEpoch,
+            transcriptText,
+            replyText,
+            ambiguous,
+          });
+        }
         return runActivePath({
           ws,
           session,
@@ -702,6 +725,25 @@ export function processDialogueTurn(ctx) {
       // would block a hypothetical future cross-schema match, so
       // `continue` is the correct verb.
       continue;
+    }
+
+    // PLAN-W1 M2d — no entry for ANY schema when the entering schema's named
+    // capture is ambiguous: nothing is written, and the model gets the
+    // utterance as an ordinary turn. The cross-wrapper veto stops a later
+    // wrapper entering on the same words.
+    {
+      const ambiguous = findAmbiguousNamedCapture(maskCircuitSpans(replyText), schema.slots);
+      if (ambiguous) {
+        session.dialogueEntryGuardVeto = { text: replyText, at: now };
+        logger?.info?.('stage6.script_entry_ambiguous_capture', {
+          sessionId,
+          schema: schema.name,
+          field: ambiguous.field,
+          values: ambiguous.values,
+          textPreview: text.slice(0, 80),
+        });
+        return { handled: false };
+      }
     }
 
     return runEntry({
@@ -1757,6 +1799,60 @@ function renderHandoffNoteText(note) {
  *      now carrying a note. The failed utterance reaches the model in
  *      `transcriptText`; the note never carries it.
  */
+/**
+ * PLAN-W1 M2d — the active-path exit for an ambiguous named capture. Arms the
+ * cross-wrapper entry veto (the same line the entry guard runs), purges a
+ * queued confirmation prompt when the script was awaiting one (as every other
+ * confirmation-abandonment exit does), then hands off: nothing from this reply
+ * is written, earlier captures are read back once, the script clears, and the
+ * model gets the note plus the whole reply.
+ */
+function handOffAmbiguousCapture({
+  ws,
+  session,
+  sessionId,
+  schema,
+  state,
+  logger,
+  now,
+  responseEpoch,
+  transcriptText,
+  replyText,
+  ambiguous,
+}) {
+  session.dialogueEntryGuardVeto = { text: replyText, at: now };
+  if (state.awaiting_confirmation === true && schema.confirmation) {
+    sendScriptPurge(ws, schema, sessionId);
+  }
+  const currentSlot = nextMissingSlot(
+    state.values,
+    schema.slots,
+    state.skipped_slots,
+    getDeferredSlots(session, schema.name, state.circuit_ref)
+  );
+  logger?.info?.('stage6.script_ambiguous_capture', {
+    sessionId,
+    schema: schema.name,
+    field: ambiguous.field,
+    values: ambiguous.values,
+  });
+  return terminateWithHandoff({
+    ws,
+    session,
+    sessionId,
+    schema,
+    state,
+    logger,
+    now,
+    responseEpoch,
+    transcriptText,
+    kind: 'ambiguous_capture',
+    askedField: currentSlot?.field ?? null,
+    askedQuestion: currentSlot?.question ?? null,
+    textPreview: String(replyText ?? '').slice(0, 80),
+  });
+}
+
 function terminateWithHandoff({
   ws,
   session,
