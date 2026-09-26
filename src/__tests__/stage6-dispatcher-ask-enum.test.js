@@ -271,3 +271,23 @@ describe('dispatcher enum-resolve — multi-circuit fan-out (session C0C21546 20
     expect(autoResolveWrite).not.toHaveBeenCalled();
   });
 });
+
+describe('PLAN-W1 M2c — an enum escalation reaches the model as value_escalated', () => {
+  test('"not 61008, 61009" → value_escalated with the hint, no enum-rejection notice, no write, value resolver skipped', async () => {
+    const { body, logger, autoResolveWrite } = await runDispatcher({
+      userText: 'not 61008, 61009',
+    });
+    expect(body).toEqual({
+      answered: true,
+      untrusted_user_text: 'not 61008, 61009',
+      match_status: 'value_escalated',
+      parsed_hint: 'multiple_numerics:61008,61009',
+    });
+    expect(autoResolveWrite).not.toHaveBeenCalled();
+    const events = logger.info.mock.calls.map(([ev]) => ev);
+    expect(events).toContain('stage6.ask_user_enum_resolution_escalated');
+    // The value resolver never ran on the enum reply.
+    expect(events).not.toContain('stage6.ask_user_value_resolution_escalated');
+    expect(events.some((ev) => /enum.*reject|mandatory_notice/.test(ev))).toBe(false);
+  });
+});

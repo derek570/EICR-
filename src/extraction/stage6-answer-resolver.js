@@ -44,6 +44,9 @@ import {
   SOLE_VALUE_GRAMMARS,
   fieldUnitFamily,
   unitFamilyOf,
+  NOT_APPLICABLE_PHRASES,
+  notApplicableDeviceOf,
+  fieldDevice,
 } from './sole-value-reply.js';
 
 // JSON-import via createRequire mirrors the canonical pattern used by
@@ -3302,16 +3305,11 @@ function summariseBoards(boards) {
 // matcher serves all of them. "no rcd" stays in the list because it's a
 // natural inspector phrase even when the field being asked about isn't
 // rcd_bs_en — a permissive synonym is cheaper than a per-field overlay.
-const NA_PHRASES = [
-  'n/a',
-  'na',
-  'not applicable',
-  'none',
-  'no rcd',
-  'no rcd fitted',
-  'no ocpd',
-  'no spd',
-];
+//
+// PLAN-W1 M2c — the list now lives, device-tagged, in sole-value-reply.js
+// (NOT_APPLICABLE_PHRASES); this is its phrase column, used to spot an N/A
+// phrase inside a reply that is not a sole value.
+const NA_PHRASES = NOT_APPLICABLE_PHRASES.map((p) => p.phrase);
 
 /**
  * Levenshtein distance between two strings (substitution / insertion /
@@ -3472,6 +3470,10 @@ export function resolveOcpdStandardAnswer({
  *   { kind: 'did_you_mean', received, suggestions: [...], valid_options: [...] }
  *   { kind: 'invalid_value', received, valid_options: [...] }
  *   { kind: 'no_value_context' }   — fall through (field not select, no options, etc.)
+ *   { kind: 'escalate', parsed_hint } — PLAN-W1 M2c: the reply is not a sole
+ *     N/A phrase or BS code; the dispatcher hands it to the model as
+ *     `value_escalated` (hints `na_other_device`, `reply_not_value_only`,
+ *     `multiple_numerics:<list>`)
  *
  * Pure function — no side effects, no I/O. Caller (dispatcher) decides
  * how to surface each verdict in the tool_result body.
@@ -3555,15 +3557,30 @@ export function resolveEnumAnswer({
   }
   const lower = text.toLowerCase();
 
-  // N/A short-circuit. Any of NA_PHRASES as a contained whole-word match.
-  const naMatch = NA_PHRASES.some((p) =>
-    new RegExp(`\\b${p.replace(/\//g, '\\/')}\\b`).test(lower)
-  );
-  if (naMatch && field.options.includes('N/A')) {
-    return {
-      kind: 'auto_resolve',
-      writes: buildWrites('N/A', 0.95),
-    };
+  // N/A position. PLAN-W1 M2c (Decision 7, B-55; W1-3, W1-9): an N/A phrase
+  // writes N/A only as the WHOLE reply and only when it names this field's
+  // device or no device. It used to match anywhere, so "none of that 61008
+  // stuff, it's 61009" and "there's no RCD on this one, it's a 61009" wrote
+  // N/A, and "no ocpd" wrote N/A into an RCD field.
+  const naSole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.notApplicable);
+  if (naSole) {
+    const device = notApplicableDeviceOf(naSole.value);
+    if (device !== 'any' && device !== fieldDevice(contextField)) {
+      return { kind: 'escalate', parsed_hint: 'na_other_device' };
+    }
+    if (field.options.includes('N/A')) {
+      return {
+        kind: 'auto_resolve',
+        writes: buildWrites('N/A', 0.95),
+      };
+    }
+  } else {
+    const naAnywhere = NA_PHRASES.some((p) =>
+      new RegExp(`\\b${p.replace(/\//g, '\\/')}\\b`).test(lower)
+    );
+    if (naAnywhere) {
+      return { kind: 'escalate', parsed_hint: 'reply_not_value_only' };
+    }
   }
 
   // §3.4 (2026-07-30, feedback id 103) — ref_method A–G / 100–103 answer
@@ -3725,15 +3742,30 @@ export function resolveEnumAnswer({
   // "BS 60898" → "60898", "BS 88-2" → "88-2", "60947-3" → "60947-3".
   // The trailing alternation `|\d+` is a fallback for cases where the
   // first token is just digits with no hyphen.
-  const digitMatch = text.match(/\d[\d-]*\d|\d+/);
-  if (!digitMatch) {
+  //
+  // PLAN-W1 M2c — the candidate is taken only from a reply that is ONE BS code
+  // (optionally led by "BS"/"BS EN"). The first digit run anywhere used to
+  // decide: "not 61008, 61009" wrote BS EN 61008.
+  const digitRuns = text.match(/\d[\d-]*\d|\d+/g);
+  if (!digitRuns) {
     return {
       kind: 'invalid_value',
       received: text,
       valid_options: field.options,
     };
   }
-  const candidate = digitMatch[0];
+  const bsSole = matchSoleValueReply(text, SOLE_VALUE_GRAMMARS.bsCode);
+  if (!bsSole) {
+    const distinctRuns = [...new Set(digitRuns)];
+    return {
+      kind: 'escalate',
+      parsed_hint:
+        distinctRuns.length > 1
+          ? `multiple_numerics:${distinctRuns.join(',')}`
+          : 'reply_not_value_only',
+    };
+  }
+  const candidate = bsSole.value;
   const candidateDigits = normaliseBsEnDigits(candidate);
 
   // Exact match against any option (compared on the digit form so

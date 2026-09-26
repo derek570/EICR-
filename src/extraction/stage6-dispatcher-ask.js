@@ -1938,16 +1938,33 @@ async function buildResolvedBody({
         ...(enumVerdict.suggestions ? { suggestions: enumVerdict.suggestions } : {}),
       };
     }
+    // PLAN-W1 M2c — the enum reply is not a sole N/A phrase or BS code. It
+    // goes to the model as a value escalation, and the value resolver must
+    // NOT run on it: it would re-read "not 61008, 61009" as numbers.
+    if (enumVerdict.kind === 'escalate') {
+      logger?.info?.('stage6.ask_user_enum_resolution_escalated', {
+        sessionId,
+        turnId,
+        tool_call_id: toolCallId,
+        field: contextField,
+        circuit: contextCircuit,
+        parsed_hint: enumVerdict.parsed_hint,
+      });
+      valueEscalation = { parsed_hint: enumVerdict.parsed_hint ?? null };
+    }
     // `no_value_context` — fall through to value-resolver as before.
 
-    const valueVerdict = resolveValueAnswer({
-      userText: outcome.user_text,
-      contextField,
-      contextCircuit,
-      contextCircuits,
-      sourceTurnId: turnId,
-      contextBoardId,
-    });
+    const valueVerdict =
+      enumVerdict.kind === 'escalate'
+        ? { kind: 'enum_escalated' }
+        : resolveValueAnswer({
+            userText: outcome.user_text,
+            contextField,
+            contextCircuit,
+            contextCircuits,
+            sourceTurnId: turnId,
+            contextBoardId,
+          });
     if (valueVerdict.kind === 'auto_resolve') {
       const dispatched = [];
       for (const write of valueVerdict.writes) {

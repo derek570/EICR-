@@ -116,7 +116,11 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
     expect(verdict.writes[0].value).toBe('BS EN 61009');
   });
 
-  test('"the BS number is 62423" — embedded digit run resolves', () => {
+  // PLAN-W1 M2c — the digit path writes only a sole BS code. The plan's
+  // bsCode grammar has no field-label lead-in (a missed shape costs one model
+  // turn; a wrong write reaches a certificate), so this reply now escalates and
+  // the model writes it. It used to take the first digit run anywhere.
+  test('"the BS number is 62423" — not a sole BS code: escalates to the model', () => {
     const verdict = resolveEnumAnswer({
       userText: 'the BS number is 62423',
       contextField: 'rcd_bs_en',
@@ -124,8 +128,7 @@ describe('resolveEnumAnswer — happy path (canonical match)', () => {
       sourceTurnId: null,
       fieldSchema: RCD_SCHEMA,
     });
-    expect(verdict.kind).toBe('auto_resolve');
-    expect(verdict.writes[0].value).toBe('BS EN 62423');
+    expect(verdict).toEqual({ kind: 'escalate', parsed_hint: 'reply_not_value_only' });
   });
 });
 
@@ -743,5 +746,55 @@ describe('non-circuit context-field guard (multi-circuit fan-out only)', () => {
       fieldSchema: RCD_SCHEMA,
     });
     expect(verdict.kind).toBe('no_value_context');
+  });
+});
+
+// PLAN-W1 M2c (B-55) — an N/A phrase or a BS code writes only as the WHOLE
+// reply, and an N/A phrase naming another device is not this field's N/A.
+describe('PLAN-W1 M2c — sole-value enum replies only', () => {
+  const AFDD_SCHEMA = {
+    circuit_fields: {
+      ...RCD_SCHEMA.circuit_fields,
+      afdd_button_confirmed: {
+        label: 'AFDD Test Button',
+        type: 'select',
+        options: ['', 'OK', 'FAIL', 'N/A', 'Y', 'N'],
+      },
+    },
+  };
+  const resolve = (userText, contextField = 'rcd_bs_en', fieldSchema = AFDD_SCHEMA) =>
+    resolveEnumAnswer({
+      userText,
+      contextField,
+      contextCircuit: 1,
+      sourceTurnId: 't',
+      fieldSchema,
+    });
+
+  test.each([
+    ["none of that 61008 stuff, it's 61009", 'rcd_bs_en', 'reply_not_value_only'],
+    ['not 61008, 61009', 'rcd_bs_en', 'multiple_numerics:61008,61009'],
+    ["there's no RCD on this one, it's a 61009", 'rcd_bs_en', 'reply_not_value_only'],
+    ['no ocpd', 'rcd_bs_en', 'na_other_device'],
+    ["none, it's type A", 'rcd_type', 'reply_not_value_only'],
+    ['no RCD', 'afdd_button_confirmed', 'na_other_device'],
+  ])('red proof: "%s" (%s) escalates %s', (reply, field, hint) => {
+    expect(resolve(reply, field)).toEqual({ kind: 'escalate', parsed_hint: hint });
+  });
+
+  test.each([
+    ['61009', 'BS EN 61009'],
+    ['BS EN 61009', 'BS EN 61009'],
+    ['N/A', 'N/A'],
+    ['na', 'N/A'],
+    ['no RCD fitted', 'N/A'],
+  ])('control: "%s" for rcd_bs_en → %s', (reply, value) => {
+    const v = resolve(reply);
+    expect(v.kind).toBe('auto_resolve');
+    expect(v.writes[0].value).toBe(value);
+  });
+
+  test('a reply with no digit run keeps today’s invalid_value (B-53, backend nets plan)', () => {
+    expect(resolve('banana').kind).toBe('invalid_value');
   });
 });
