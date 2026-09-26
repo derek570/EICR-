@@ -1833,6 +1833,14 @@ function renderHandoffNoteText(note) {
  * confirmation-abandonment exit does), then hands off: nothing from this reply
  * is written, earlier captures are read back once, the script clears, and the
  * model gets the note plus the whole reply.
+ *
+ * KNOWN GAP, accepted by Derek as Decision W-4.1 (2026-09-26; owned by
+ * PLAN-W1c): when the script is awaiting confirmation, the queued "All
+ * correct?" prompt already marked its readings `covered_by = 'confirmation'`,
+ * so the terminal read-back below skips them. If the purge cancels that prompt
+ * BEFORE it played, those readings are never heard. The server has no playback
+ * signal for script prompts. The confirmation-mode cancel exit has the same
+ * race. PLAN-W1c replaces this with a playback-aware purge.
  */
 function handOffAmbiguousCapture({
   ws,

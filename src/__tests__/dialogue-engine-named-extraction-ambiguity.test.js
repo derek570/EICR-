@@ -170,6 +170,31 @@ describe('active path — the script hands off instead of writing', () => {
   });
 });
 
+// KNOWN GAP pinned as a tripwire — Decision W-4.1 (Derek, 2026-09-26), owned
+// by PLAN-W1c. After the ambiguous-capture purge of a queued "All correct?",
+// the confirmation-covered readings are NOT re-read. That is accepted for now
+// because the server cannot tell whether the prompt played. PLAN-W1c's
+// playback-aware purge is expected to change this assertion deliberately.
+describe('known gap W-4.1 — confirmation-covered readings are not re-read after the purge', () => {
+  test('awaiting confirmation + ambiguous reply: purge, handoff, and no read-back of R1/Rn/R2', () => {
+    const { ws, session, turn } = rig({ 3: {} });
+    for (const t of ['Ring continuity for circuit 3.', 'lives 0.5', 'neutrals 0.6', 'CPC 0.7']) {
+      turn(processRingContinuityTurn, t);
+    }
+    expect(session.dialogueScriptState?.awaiting_confirmation).toBe(true);
+    const sentBefore = ws.sent.length;
+    const out = turn(processRingContinuityTurn, 'no, lives 0.8, no lives 0.9');
+    const turnFrames = ws.sent.slice(sentBefore);
+    expect(turnFrames.filter((f) => f.type === 'cancel_pending_tts')).toHaveLength(1);
+    const spoken = turnFrames
+      .filter((f) => f.type !== 'cancel_pending_tts')
+      .map((f) => f.question ?? f.text ?? '')
+      .join(' ');
+    expect(spoken).not.toMatch(/0\.5|0\.6|0\.7/);
+    expect(out.transcriptText.startsWith('[Server note:')).toBe(true);
+  });
+});
+
 describe('active path — a marker after a capture hands off, never writes', () => {
   test('OCPD type question answered "type B, actually BS 3871": no write, handoff', () => {
     const { ws, session, rows, turn } = rig();
