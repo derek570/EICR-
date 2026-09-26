@@ -181,8 +181,37 @@ function glyphCount(token: string): number {
   return Array.from(token).length;
 }
 
+// PLAN-W2 (B-138) — a spelled-code token is at most two ASCII letters, digits or
+// `+`, and never two digits. "C, 32" used to join to `C,32` (the comma rode in on
+// a two-glyph token) and "C 32" to `C32` (a rating read as half a code). Mirrors
+// `isSpelledCodeToken` in mcb-type.js and OcpdType.swift.
 function isSpelledCodeToken(token: string): boolean {
-  return glyphCount(token) <= 2 && !SPELLED_CODE_STOPWORDS.has(token.toLowerCase());
+  return (
+    glyphCount(token) <= 2 &&
+    !SPELLED_CODE_STOPWORDS.has(token.toLowerCase()) &&
+    /^[A-Za-z0-9+]+$/.test(token) &&
+    !/^[0-9]{2}$/.test(token)
+  );
+}
+
+/** PLAN-W2 (B-138) — the one-letter suggestions (B, C, D, K, Z, I) are curve
+ *  letters. Read from the manifest, never hard-coded. */
+const CURVE_LETTERS: ReadonlySet<string> = new Set(
+  OCPD_TYPE_SUGGESTIONS.filter((s) => /^[A-Za-z]$/.test(s)).map((s) => s.toLowerCase())
+);
+
+/** PLAN-W2 (B-138) — 2–4 spelled tokens, except a curve letter followed by a
+ *  number: that is a letter and a rating ("B 6"), not a spelled code, and the
+ *  token rule alone misses a single-digit rating. */
+function isSpelledCodeList(tokens: readonly string[]): boolean {
+  if (tokens.length < 2 || tokens.length > 4 || !tokens.every(isSpelledCodeToken)) return false;
+  if (
+    CURVE_LETTERS.has(tokens[0].toLowerCase()) &&
+    tokens.slice(1).some((t) => /^[0-9]+$/.test(t))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -235,8 +264,9 @@ export function canonicaliseOcpdType(raw: unknown): string | null {
     }
   }
 
-  // Step 2 — spelled code: 2–4 tokens, each at most 2 glyphs, none a word.
-  if (tokens.length >= 2 && tokens.length <= 4 && tokens.every(isSpelledCodeToken)) {
+  // Step 2 — spelled code: 2–4 tokens, each at most 2 glyphs, none a word, and
+  // not a curve letter followed by a rating (PLAN-W2, B-138).
+  if (isSpelledCodeList(tokens)) {
     return tokens.join('').toUpperCase();
   }
 
