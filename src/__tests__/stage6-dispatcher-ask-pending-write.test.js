@@ -565,11 +565,18 @@ describe('createAskDispatcher — pending_write validation', () => {
 });
 
 describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
+  // PLAN-W1 M3 (B-52, W1-33/W1-36): circuits 5 and 6 exist so that "upstairs"
+  // and "alarm" are genuinely AMBIGUOUS spans. The mdr-* cases below used a
+  // fuzzy span ("upstars lights") to open the server ask; a fuzzy span now
+  // escalates the whole reply to the model, so they are re-fixtured onto the
+  // non-fuzzy ambiguous_match reason and keep their mdr-* coverage.
   const multiCircuits = [
     { circuit_ref: 1, circuit_designation: 'Ground floor lighting' },
     { circuit_ref: 2, circuit_designation: 'First floor lighting' },
     { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
     { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
+    { circuit_ref: 5, circuit_designation: 'Upstairs Sockets' },
+    { circuit_ref: 6, circuit_designation: 'Heat Alarm' },
   ];
 
   function startMultiDispatcher({
@@ -1000,12 +1007,38 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     );
   });
 
-  test('fuzzy disposition emits one registered mdr-* ask and dispatches its answer', async () => {
+  // PLAN-W1 M3 (B-52, W1-26) — a fuzzy span no longer opens a server mdr-*
+  // ask. The whole reply reaches the model as an `escalated` body carrying the
+  // candidate hint, the pending write and the census; nothing is written.
+  test('a fuzzy span escalates the whole reply to the model: no mdr-* frame, no write', async () => {
     const run = startMultiDispatcher();
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
       user_text: 'upstars lights and the smoke alarm',
+    });
+    const body = JSON.parse((await run.promise).content);
+
+    expect(body).toMatchObject({
+      match_status: 'escalated',
+      parsed_hint: 'multi_description_fuzzy_designation:4',
+      pending_write: expect.objectContaining({ field: 'number_of_points' }),
+      available_circuits: expect.arrayContaining([
+        expect.objectContaining({ circuit_ref: 4, circuit_designation: 'Upstairs Lights' }),
+      ]),
+    });
+    expect(run.autoResolveWrite).not.toHaveBeenCalled();
+    expect(run.ws.sent.filter((frame) => String(frame.tool_call_id).startsWith('mdr-'))).toEqual(
+      []
+    );
+  });
+
+  test('ambiguous disposition emits one registered mdr-* ask and dispatches its answer', async () => {
+    const run = startMultiDispatcher();
+    await tick();
+    run.pendingAsks.resolve('toolu_multi', {
+      answered: true,
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
 
@@ -1016,8 +1049,8 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       expected_answer_shape: 'free_text',
       context_field: 'number_of_points',
     });
-    expect(frames[0].question).toMatch(/circuit 4/i);
-    expect(frames[0].question).not.toMatch(/upstars/i);
+    expect(frames[0].question).toMatch(/circuits 4 and 5/i);
+    expect(frames[0].question).not.toMatch(/upstairs/i);
     const mdrId = frames[0].tool_call_id;
     expect([...run.pendingAsks.entries()].some(([id]) => id === mdrId)).toBe(true);
     expect(run.onAskRegistered).toHaveBeenCalledWith(mdrId);
@@ -1073,7 +1106,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       await tick();
       run.pendingAsks.resolve('toolu_multi', {
         answered: true,
-        user_text: 'upstars lights and smke alarm',
+        user_text: 'upstairs and alarm',
       });
       await tick();
       const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1243,12 +1276,13 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       session: buildSession([
         { circuit_ref: 3, circuit_designation: 'Upstairs Lights' },
         { circuit_ref: 4, circuit_designation: 'Smoke Alarm' },
+        { circuit_ref: 5, circuit_designation: 'Upstairs Sockets' },
       ]),
     });
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1272,12 +1306,13 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         { circuit_ref: 3, circuit_designation: 'Smoke Alarm' },
         { circuit_ref: 4, circuit_designation: 'Upstairs Lights' },
         { circuit_ref: 5, circuit_designation: 'Garage sockets' },
+        { circuit_ref: 6, circuit_designation: 'Upstairs Sockets' },
       ]),
     });
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1475,7 +1510,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1533,7 +1568,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: '2 lighting circuits and ground floor lightng',
+      user_text: '2 lighting circuits and floor lighting',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1558,7 +1593,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and smke alarm',
+      user_text: 'upstairs and alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1572,7 +1607,12 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     expect(body.match_status).toBe('partial');
     expect(body.resolved_writes).toEqual([expect.objectContaining({ circuit: 3 })]);
     expect(body.unresolved.filter((entry) => entry.disposition === 'ask')).toEqual([
-      expect.objectContaining({ identity: 4, candidates: [4] }),
+      expect.objectContaining({
+        identity: 1,
+        span_kind: 'segment_ordinal',
+        candidates: [4, 5],
+        reason: 'ambiguous_match',
+      }),
     ]);
     expect(run.session.pendingVoicePrompts).toEqual([
       expect.objectContaining({
@@ -1588,7 +1628,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: '3 lighting circuits and upstars lights',
+      user_text: '3 lighting circuits and upstairs',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1608,7 +1648,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         candidates: [1, 2],
         reason: 'quantifier_count_mismatch',
       }),
-      expect.objectContaining({ identity: 4, candidates: [4], reason: 'fuzzy_match' }),
+      expect.objectContaining({ identity: 2, candidates: [4, 5], reason: 'ambiguous_match' }),
     ]);
     expect(run.session.pendingVoicePrompts).toEqual([
       expect.objectContaining({
@@ -1628,7 +1668,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
 
     await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
@@ -1706,7 +1746,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
 
     await expect(run.promise).rejects.toBeInstanceOf(ExtractionCancelledError);
@@ -1737,7 +1777,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights, ground floor lightng, and the smoke alarm',
+      user_text: 'upstairs, floor lighting, and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1774,7 +1814,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1795,7 +1835,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1817,7 +1857,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the smoke alarm',
+      user_text: 'upstairs and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1890,6 +1930,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         circuits: {
           3: { circuit_designation: 'Smoke Alarm' },
           4: { circuit_designation: 'Upstairs Lights' },
+          5: { circuit_designation: 'Upstairs Sockets' },
           'sub-b::3': {
             circuit: 3,
             board_id: 'sub-b',
@@ -1920,7 +1961,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the attic circuit and the smoke alarm',
+      user_text: 'upstairs and the attic circuit and the smoke alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -1970,6 +2011,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
         ],
         circuits: {
           4: { circuit_designation: 'Upstairs Lights' },
+          5: { circuit_designation: 'Upstairs Sockets' },
           'sub-b::4': {
             circuit: 4,
             board_id: 'sub-b',
@@ -2004,7 +2046,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the attic circuit',
+      user_text: 'upstairs and the attic circuit',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -2358,7 +2400,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the attic circuit',
+      user_text: 'upstairs and the attic circuit',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -2417,7 +2459,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
       await tick();
       run.pendingAsks.resolve('toolu_multi', {
         answered: true,
-        user_text: 'upstars lights and smke alarm',
+        user_text: 'upstairs and alarm',
       });
       await tick();
       const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -2452,7 +2494,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     await tick();
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and smke alarm',
+      user_text: 'upstairs and alarm',
     });
     await tick();
     const mdrFrame = run.ws.sent.find((frame) => String(frame.tool_call_id).startsWith('mdr-'));
@@ -2499,7 +2541,7 @@ describe('createAskDispatcher — PLAN-2B multi-description execution', () => {
     breakBroker(run);
     run.pendingAsks.resolve('toolu_multi', {
       answered: true,
-      user_text: 'upstars lights and the attic circuit',
+      user_text: 'upstairs and the attic circuit',
     });
     const body = JSON.parse((await run.promise).content);
 

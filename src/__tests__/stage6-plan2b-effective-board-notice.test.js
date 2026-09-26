@@ -145,7 +145,10 @@ async function driveBrokeredBoardAsk(session, askInput) {
   while (!answered && Date.now() < deadline) {
     answered = pendingAsks.resolve(ASK_ID, {
       answered: true,
-      user_text: 'the smoke alarm, upstars lights, and the attic circuit',
+      // PLAN-W1 M3 (B-52): "upstairs" is an AMBIGUOUS span (Upstairs Lights,
+      // Upstairs Sockets) so the broker still opens its mdr-* follow-up; a
+      // fuzzy span ("upstars lights") now escalates the whole reply instead.
+      user_text: 'the smoke alarm, upstairs, and the attic circuit',
     });
     if (!answered) await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -350,6 +353,7 @@ describe('PLAN-2B — effective-board identity survives through the notice drain
         circuits: {
           3: { circuit: 3, circuit_designation: 'Smoke Alarm' },
           4: { circuit: 4, circuit_designation: 'Upstairs Lights' },
+          5: { circuit: 5, circuit_designation: 'Upstairs Sockets' },
           'sub-1::3': {
             circuit: 3,
             board_id: 'sub-1',

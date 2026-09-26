@@ -1644,7 +1644,8 @@ function designationForRef(circuits, ref) {
  * contained by one designation — and reject the lossy direction here.
  */
 function isWholeReplyDesignationMatch(match, cleaned, circuits) {
-  if (match.kind === 'exact' || match.kind === 'fuzzy') return true;
+  // PLAN-W1 M3 (B-52, Decision W-1.1): a fuzzy verdict is never a write.
+  if (match.kind === 'exact') return true;
   if (match.kind !== 'unique_substring' || match.circuitRefs.length !== 1) return false;
   const designation = designationForRef(circuits, match.circuitRefs[0]);
   return Boolean(designation && designation.includes(cleaned));
@@ -1911,6 +1912,8 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
   }
   const writesByRef = new Map();
   const unresolved = [];
+  // PLAN-W1 M3 (B-52) — circuit refs of every fuzzy span in this reply.
+  const fuzzyRefs = [];
 
   segmentStates.forEach(({ rawExactMatch, attached }, index) => {
     const ordinal = index + 1;
@@ -1987,18 +1990,11 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       quantifier === null ? safeDesignationAnswerMatch(rawMatch, cleaned, circuits) : rawMatch;
     const refs = [...new Set(match.circuitRefs.filter(Number.isInteger))].sort((a, b) => a - b);
 
+    // PLAN-W1 M3 (B-52, W1-26) — a fuzzy span is a candidate for the model,
+    // not a server ask. Its refs are recorded and the WHOLE reply escalates
+    // after the loop.
     if (match.kind === 'fuzzy') {
-      unresolved.push(
-        unresolvedSpan({
-          ordinal,
-          disposition: 'ask',
-          reason: 'fuzzy_match',
-          circuitRefs: refs,
-          requiredCount: quantifier?.expected,
-          pendingWrite,
-          contextBoardId,
-        })
-      );
+      fuzzyRefs.push(...refs);
       return;
     }
 
@@ -2072,6 +2068,22 @@ function resolveMultiDescriptionAnswer({ text, pendingWrite, availableCircuits, 
       }
     }
   });
+
+  // PLAN-W1 M3 (B-52, Decision W-1.1, W1-26) — a fuzzy span anywhere hands the
+  // WHOLE reply to the model with the candidate as a hint, in place of any
+  // auto_resolve or partial_resolve verdict. Nothing accumulated in
+  // writesByRef is returned, so no sibling write is split from the fuzzy one;
+  // the model writes every span itself. Same shape as the early correction /
+  // negation escalate above.
+  if (fuzzyRefs.length > 0) {
+    return {
+      kind: 'escalate',
+      parsed_hint: `multi_description_fuzzy_designation:${[...new Set(fuzzyRefs)]
+        .sort((a, b) => a - b)
+        .join(',')}`,
+      available_circuits: circuits,
+    };
+  }
 
   if (
     wholeList.quantifier?.kind === 'count' &&
@@ -2610,13 +2622,23 @@ export function resolveCircuitAnswer({
     cleaned,
     availableCircuits ?? []
   );
-  // §C1 — 'fuzzy' is the new conservative Levenshtein verdict (plural/typo
-  // variants of a real designation, strict margin). Treated exactly like the
-  // deterministic matches: the write auto-resolves to that circuit.
-  if (match.kind === 'exact' || match.kind === 'unique_substring' || match.kind === 'fuzzy') {
+  if (match.kind === 'exact' || match.kind === 'unique_substring') {
     return {
       kind: 'auto_resolve',
       writes: [buildWrite(pendingWrite, match.circuitRefs[0], contextBoardId)],
+    };
+  }
+  // §C1 — 'fuzzy' is the conservative Levenshtein verdict (plural/typo
+  // variants of a real designation, strict margin). PLAN-W1 M3 (B-52,
+  // Decision W-1.1, 2026-09-26): it is a HINT, never a write. It used to
+  // auto-resolve like the deterministic matches ("kitchin" → Kitchen), which
+  // Derek approved on 2026-07-14; Decision 7 supersedes that. The model gets
+  // the candidate and writes or asks.
+  if (match.kind === 'fuzzy') {
+    return {
+      kind: 'escalate',
+      parsed_hint: `fuzzy_designation_candidate:${match.circuitRefs[0]}`,
+      available_circuits: availableCircuits ?? [],
     };
   }
   if (match.kind === 'ambiguous') {
@@ -3054,6 +3076,11 @@ const MAIN_KEYWORD_PHRASES = new Set([
   'mains',
   'the mains',
   'the main one',
+  // PLAN-W1 M3 (B-46) — these two NAME the main board after the "yes", so
+  // they resolve here rather than reaching the affirmative step, which now
+  // always escalates.
+  'yes the main',
+  'yes the main board',
 ]);
 
 /**
@@ -3192,30 +3219,17 @@ export function resolveBoardIdAnswer({ userText, contextField, boards }) {
     }
   }
 
-  // 3) Affirmative reply — only confident with exactly one main board.
-  //    Pre-condition: the model phrased the ask as a yes/no on the main
-  //    ("Is the parent the main board?") and the user assented. We can't
-  //    verify the question shape here, so we use the boards[] as the
-  //    proxy: a job with exactly one main has only one valid affirmative
-  //    target.
+  // 3) Affirmative reply — PLAN-W1 M3 (Decision 7, B-46): always escalates.
+  //    It used to resolve to the only main board, on the assumption that the
+  //    model had asked a yes/no about the main. This resolver cannot see the
+  //    question, so that was a guess: "Is it fed from the garage board or the
+  //    main?" → "yes" wrote the main board. The model can see its own
+  //    blocking question in the same tool loop and resolves it; no candidate
+  //    board is named here, because any candidate would be the same guess.
   if (AFFIRMATIVE_PHRASES.includes(stripped)) {
-    const mains = Array.isArray(boards)
-      ? boards.filter((b) => b && (b.board_type === 'main' || !b.board_type))
-      : [];
-    if (mains.length === 1 && typeof mains[0].id === 'string') {
-      return {
-        kind: 'auto_resolve',
-        resolved_board_id: mains[0].id,
-        resolved_via: 'affirmative_single_main',
-        board: mains[0],
-        available_boards: summariseBoards(boards),
-      };
-    }
-    // Otherwise escalate — "yes" against a multi-main snapshot is
-    // structurally ambiguous.
     return {
       kind: 'escalate',
-      parsed_hint: mains.length === 0 ? 'affirmative_no_main_board' : 'affirmative_multiple_mains',
+      parsed_hint: 'affirmative_board_answer',
       available_boards: summariseBoards(boards),
     };
   }
